@@ -855,9 +855,41 @@ def cmd_clean(args):
         if confirm != "y":
             dim("   Cancelled")
             return 0
+        # Don't follow a symlinked model dir — its target may be outside
+        # HF_CACHE (e.g. shared models tree on another volume). rmtree would
+        # silently delete the target. Internal symlinks (HF's snapshots/ →
+        # blobs/) stay safe — rmtree unlinks them, doesn't follow.
+        cleanup_errors: list[tuple[str, BaseException]] = []
+
+        def _log_rmtree_error(func, path, exc):
+            cleanup_errors.append((str(path), exc))
+
+        deleted = 0
+        skipped_symlinks = []
         for m in models:
-            shutil.rmtree(m, ignore_errors=True)
-        ok(f"Deleted {len(models)} models ({total / (1024**3):.1f} GB freed)")
+            if m.is_symlink():
+                skipped_symlinks.append(m)
+                continue
+            if not m.is_dir():
+                continue
+            shutil.rmtree(m, onexc=_log_rmtree_error)
+            deleted += 1
+
+        if skipped_symlinks:
+            warn(f"Skipped {len(skipped_symlinks)} symlinked model dir(s) "
+                 f"— refusing to follow:")
+            for s in skipped_symlinks:
+                print(f"   {C.DIM}• {s}{C.END}")
+        if cleanup_errors:
+            warn(f"{len(cleanup_errors)} error(s) during deletion:")
+            for path, exc in cleanup_errors[:5]:
+                print(f"   {C.DIM}• {path}: {exc}{C.END}")
+            if len(cleanup_errors) > 5:
+                more = len(cleanup_errors) - 5
+                print(f"   {C.DIM}  ... and {more} more{C.END}")
+
+        ok(f"Deleted {deleted} model(s) "
+           f"({total / (1024**3):.1f} GB freed)")
 
     return 0
 
