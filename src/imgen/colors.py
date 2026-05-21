@@ -1,23 +1,123 @@
 """Terminal colors + leveled print helpers.
 
-Colors are auto-disabled when stdout is not a tty (e.g. piped to a file).
+Color enable/disable is resolved lazily on first access. The order:
+
+  1. `NO_COLOR` env var (https://no-color.org/) — any non-empty value
+     disables. Beats config + tty.
+  2. `[ui] color` from ~/.imgen/config.toml — "auto" / "always" / "never".
+     - "always" → enabled regardless of tty.
+     - "never"  → disabled regardless of tty.
+     - "auto"   → fall through to tty check.
+  3. Fallback: `sys.stdout.isatty()`.
+
+The result is cached for the process. Tests call `reset_color_cache()`
+between cases. The `C` namespace (`C.OK`, `C.WARN`, ...) returns the ANSI
+escape or `""` per attribute access, so all existing `f"{C.OK}..."` call
+sites keep working without code change.
 """
 from __future__ import annotations
 
+import os
 import sys
 
-_USE_COLOR = sys.stdout.isatty()
+__all__ = [
+    "C",
+    "color_enabled",
+    "reset_color_cache",
+    "ok",
+    "warn",
+    "err",
+    "info",
+    "step",
+    "dim",
+    "die",
+]
 
 
-class C:
-    OK = "\033[92m" if _USE_COLOR else ""
-    WARN = "\033[93m" if _USE_COLOR else ""
-    ERR = "\033[91m" if _USE_COLOR else ""
-    INFO = "\033[94m" if _USE_COLOR else ""
-    BOLD = "\033[1m" if _USE_COLOR else ""
-    DIM = "\033[2m" if _USE_COLOR else ""
-    END = "\033[0m" if _USE_COLOR else ""
+# ── Enable/disable resolution ───────────────────────────────────────────
 
+_color_enabled_cache: bool | None = None
+
+
+def color_enabled() -> bool:
+    """Return whether ANSI color should be emitted. Cached after first call."""
+    global _color_enabled_cache
+    if _color_enabled_cache is not None:
+        return _color_enabled_cache
+    # Prime with the tty/NO_COLOR default so any color access during the
+    # config load (warnings printed by malformed config.toml etc.) gets
+    # a sensible value instead of re-entering this function and blowing
+    # the stack.
+    _color_enabled_cache = (
+        sys.stdout.isatty() and not _no_color_env_set()
+    )
+    _color_enabled_cache = _compute_color_enabled()
+    return _color_enabled_cache
+
+
+def reset_color_cache() -> None:
+    """Clear the cached resolution. For tests + manual config reloads."""
+    global _color_enabled_cache
+    _color_enabled_cache = None
+
+
+def _no_color_env_set() -> bool:
+    """True if NO_COLOR is set to any non-empty value (no-color.org spec)."""
+    return bool(os.environ.get("NO_COLOR"))
+
+
+def _compute_color_enabled() -> bool:
+    if _no_color_env_set():
+        return False
+    mode = _resolve_ui_color()
+    if mode == "never":
+        return False
+    if mode == "always":
+        return True
+    return sys.stdout.isatty()
+
+
+def _resolve_ui_color() -> str:
+    """Read `[ui] color` from config.toml. Returns "auto" if unavailable.
+
+    Swallows all exceptions: a broken config must not break terminal
+    colors. The config validator surfaces real errors elsewhere (cli +
+    doctor).
+    """
+    try:
+        from . import paths as paths_mod
+        from .config import load_validated_config
+        cfg = load_validated_config(paths_mod.CONFIG_FILE)
+        return cfg.get("ui", {}).get("color", "auto")
+    except Exception:
+        return "auto"
+
+
+# ── Color namespace ─────────────────────────────────────────────────────
+
+class _ColorNamespace:
+    """Per-attribute ANSI lookup. `C.OK` → "\\033[92m" or "" at call time."""
+
+    _CODES = {
+        "OK": "\033[92m",
+        "WARN": "\033[93m",
+        "ERR": "\033[91m",
+        "INFO": "\033[94m",
+        "BOLD": "\033[1m",
+        "DIM": "\033[2m",
+        "END": "\033[0m",
+    }
+
+    def __getattr__(self, name: str) -> str:
+        if name in self._CODES:
+            return self._CODES[name] if color_enabled() else ""
+        raise AttributeError(f"colors.C has no attribute {name!r}")
+
+
+C = _ColorNamespace()
+
+
+# ── Leveled print helpers ───────────────────────────────────────────────
 
 def ok(msg: str) -> None:
     print(f"{C.OK}✅{C.END} {msg}")

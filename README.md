@@ -176,11 +176,14 @@ output_dir = "~/Pictures/imgen"
 
 [ui]
 open_in_preview = false     # don't auto-open results
+color = "auto"              # "auto" | "always" | "never"
 ```
 
 **Precedence:** CLI flag > `~/.imgen/config.toml` > built-in defaults. Bad value (e.g. `steps = 999`) → `imgen` warns and falls back to built-ins until you fix the file. Unknown keys are dropped with a warning so old `imgen` versions don't break on configs written by newer ones.
 
 For `output_dir` specifically, `$IMGEN_OUTPUT_DIR` env var still wins over config — env is the one-off override channel.
+
+**Color:** `[ui] color = "auto"` (default) emits ANSI only when stdout is a tty; `"always"` forces color (handy for piping into `less -R`); `"never"` disables. The `NO_COLOR` env var (https://no-color.org/) beats both — any non-empty value disables color regardless of config.
 
 ## Environment
 
@@ -189,6 +192,7 @@ For `output_dir` specifically, `$IMGEN_OUTPUT_DIR` env var still wins over confi
 | `~/.imgen/hf_token`    | HuggingFace token (chmod 600). v0.2.x used `~/.hf_token`; that path is still read as a fallback and auto-migrated on first run. |
 | `$HF_TOKEN`            | Overrides `~/.imgen/hf_token` |
 | `$IMGEN_OUTPUT_DIR`    | One-off override of output dir (beats config.toml) |
+| `$NO_COLOR`            | Any non-empty value disables ANSI color (https://no-color.org/) |
 | `~/.imgen/config.toml` | Persistent defaults — see [Persistent config](#persistent-config) |
 | `~/.imgen/styles.d/*.toml` | User-defined style presets — see [User-defined styles](#user-defined-styles) |
 | `~/.imgen/history.jsonl` | Generation history (JSONL, schema-versioned) |

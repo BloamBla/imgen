@@ -39,7 +39,7 @@ _STARTER_CONFIG_TEMPLATE = f"""\
 
 [ui]
 # open_in_preview = true          # auto-open result in Preview (default true)
-# color = "auto"                  # "auto" | "always" | "never"  (reserved for v0.3)
+# color = "auto"                  # "auto" | "always" | "never"  (NO_COLOR env wins)
 """
 
 
