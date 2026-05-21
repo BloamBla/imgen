@@ -11,7 +11,11 @@ import re
 import subprocess
 import sys
 
-_TOKEN_LEAK_RE = re.compile(rb"hf_[A-Za-z0-9_\-]{8,}")
+# Minimum 36 chars after `hf_` so a truncated prefix at a buffer boundary
+# (e.g. `hf_AbC\n` flushed via the last-`\r`-or-`\n` rule before the rest
+# of the token arrives) can't sneak through as plaintext. Real HF tokens
+# are 36+ chars; anything shorter that looks like `hf_` is harmless.
+_TOKEN_LEAK_RE = re.compile(rb"hf_[A-Za-z0-9_\-]{36,}")
 
 
 def run_with_stderr_redaction(cmd: list[str], env: dict) -> int:

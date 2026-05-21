@@ -76,6 +76,35 @@ def test_dash_with_stdin_at_cap_is_accepted():
     assert len(result) == PROMPT_MAX_BYTES
 
 
+def test_prompt_file_with_loose_perms_warns(tmp_path, capsys):
+    """A --prompt-file with non-0o600 mode might be world-readable —
+    warn so the user notices. The README already says "chmod 600"; this
+    is the runtime backstop. (v0.3-nit #15)"""
+    p = tmp_path / "prompt.txt"
+    p.write_text("sensitive prompt content")
+    p.chmod(0o644)
+    result = resolve_prompt(custom_prompt=None, prompt_file=p)
+    assert result == "sensitive prompt content"  # still loads
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "mode" in combined.lower() or "perm" in combined.lower() \
+        or "chmod" in combined.lower(), \
+        f"expected a perms warning, got {combined!r}"
+
+
+def test_prompt_file_with_0o600_perms_no_warning(tmp_path, capsys):
+    """The warn only fires for non-0o600 modes — chmod 600 stays silent."""
+    p = tmp_path / "prompt.txt"
+    p.write_text("ok")
+    p.chmod(0o600)
+    resolve_prompt(custom_prompt=None, prompt_file=p)
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    # Should be empty (no warns for the happy path)
+    assert "mode" not in combined.lower()
+    assert "perm" not in combined.lower()
+
+
 # ── --prompt-file PATH reads file ────────────────────────────────────────
 
 def test_prompt_file_reads_content(tmp_path):

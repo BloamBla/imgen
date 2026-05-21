@@ -80,6 +80,13 @@ def append_history(entry: dict) -> int:
             os.fchmod(f.fileno(), 0o600)
             fcntl.flock(f.fileno(), fcntl.LOCK_EX)
             try:
+                # load_history() opens a SEPARATE read fd without flock —
+                # that's intentional and safe. Our LOCK_EX serializes
+                # ALL writers (any second imgen process trying to
+                # append blocks on flock above), so the file is stable
+                # for the duration of our critical section. Unlocked
+                # readers (this load_history call) see a consistent
+                # state because no concurrent writer can interleave.
                 existing = load_history()
                 assigned_id = max(
                     (e.get("id", 0) for e in existing), default=0

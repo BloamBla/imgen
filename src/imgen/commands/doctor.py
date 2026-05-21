@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 from ..checks import (
     check_disk_gb,
@@ -25,6 +26,33 @@ from ..paths import (
 )
 from ..styles import BUILTIN_STYLES, list_styles, load_user_styles_dir
 from ..tokens import check_token_perms, load_token
+
+
+def detect_install_collision(
+    home: Path,
+    imgen_home: Path | None,
+) -> str | None:
+    """Return a warning string if both bootstrap and pipx imgen installs
+    are present on the system. Pure / injectable for tests.
+
+    A colleague who ran both `bootstrap.sh` and `pipx install imgen`
+    ends up with `~/imgen/.venv/bin/imgen` (used by the alias-pointed
+    shim) AND `~/.local/bin/imgen` (used by raw shell PATH). Either
+    works, but they may have diverged versions if the user upgraded
+    one without the other. Surface it so the user can pick one.
+    """
+    if imgen_home is None:
+        return None  # pipx-only mode — no collision possible
+    bootstrap_imgen = imgen_home / ".venv" / "bin" / "imgen"
+    pipx_imgen = home / ".local" / "bin" / "imgen"
+    if bootstrap_imgen.exists() and pipx_imgen.exists():
+        return (
+            f"Both install paths present: bootstrap ({bootstrap_imgen}) "
+            f"AND pipx ({pipx_imgen}). They can diverge in version. "
+            "Pick one: `pipx uninstall imgen` to drop the pipx copy, "
+            "or `rm -rf ~/imgen` to drop the bootstrap one."
+        )
+    return None
 
 
 def cmd_doctor(_args) -> int:
@@ -174,6 +202,9 @@ def cmd_doctor(_args) -> int:
         ok(f"unpacked at {IMGEN_HOME} (no git — manual reinstall to update)")
     else:
         ok("pipx install (use `pipx upgrade imgen` for updates)")
+    collision = detect_install_collision(Path.home(), IMGEN_HOME)
+    if collision:
+        warn(collision)
 
     # User config
     print()

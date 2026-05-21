@@ -19,8 +19,9 @@ set -euo pipefail
 DIR="$(dirname "$(readlink -f "$0" 2>/dev/null || python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$0")")"
 export IMGEN_HOME="$DIR"
 
-if [ ! -d "$DIR/.venv" ]; then
-  echo "❌ venv missing at $DIR/.venv" >&2
+if [ ! -d "$DIR/.venv" ] || [ ! -x "$DIR/.venv/bin/python" ]; then
+  echo "❌ venv missing or broken at $DIR/.venv" >&2
+  echo "   (e.g. Homebrew upgrade may have snapped the python symlink)" >&2
   echo "   Run: $DIR/bootstrap.sh" >&2
   exit 3
 fi

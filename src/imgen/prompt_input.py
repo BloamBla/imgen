@@ -18,6 +18,8 @@ import sys
 from pathlib import Path
 from typing import IO
 
+from .colors import warn
+
 PROMPT_MAX_BYTES = 64 * 1024  # 64 KB — way more than any real prompt
 
 __all__ = ["PromptInputError", "PROMPT_MAX_BYTES", "resolve_prompt"]
@@ -63,6 +65,7 @@ def _read_prompt_file(path: Path) -> str:
     # extra syscall. PROMPT_MAX_BYTES + 1 lets us tell "exactly at cap"
     # from "over cap".
     try:
+        st = path.stat()
         with path.open("rb") as f:
             raw = f.read(PROMPT_MAX_BYTES + 1)
     except OSError as e:
@@ -79,6 +82,13 @@ def _read_prompt_file(path: Path) -> str:
         ) from e
     if not content:
         raise PromptInputError(f"--prompt-file is empty: {path}")
+    # Loose-perms warning: the user passed --prompt-file specifically to
+    # keep the prompt out of `ps auxww`, so a world-readable file
+    # undercuts the threat model. Don't refuse — just warn.
+    mode = st.st_mode & 0o777
+    if mode != 0o600:
+        warn(f"--prompt-file {path} has mode {oct(mode)} — "
+             f"chmod 600 if it contains anything sensitive")
     return content
 
 

@@ -140,3 +140,38 @@ def test_replay_entry_legacy_v0_entries_pass_schema_gate(tmp_state_dir, capsys):
     # must NOT trigger it (they pass through to cmd_generate which then
     # dies on the missing input file — that's an unrelated failure).
     assert "newer schema" not in stderr
+
+
+def test_replay_entry_namespace_has_explicit_v021_fields(tmp_state_dir, monkeypatch):
+    """architect #7: replay_entry constructs an argparse.Namespace that
+    cmd_generate reads. v0.2 introduced --prompt-file and the
+    imgen_merged_defaults stash, both consumed via getattr-with-default
+    today. Pin the explicit fields so a future required attribute fails
+    loudly instead of silently."""
+    import imgen.commands.history as history_cmd
+    captured_args = {}
+
+    def fake_cmd_generate(args):
+        # Snapshot args so the test can inspect — return 0 (success)
+        captured_args["args"] = args
+        return 0
+
+    monkeypatch.setattr(history_cmd, "cmd_generate", fake_cmd_generate)
+
+    entry = {
+        "id": 1,
+        "v": HISTORY_SCHEMA_VERSION,
+        "input": "/some.jpg",
+        "style": "anime",
+        "backend": "flux",
+        "quantize": 8,
+        "steps": 20,
+        "guidance": 3.5,
+        "strength": 0.55,
+    }
+    history_cmd.replay_entry(entry)
+    args = captured_args["args"]
+    assert hasattr(args, "prompt_file"), "replay Namespace missing prompt_file"
+    assert args.prompt_file is None
+    assert hasattr(args, "imgen_merged_defaults"), \
+        "replay Namespace missing imgen_merged_defaults"

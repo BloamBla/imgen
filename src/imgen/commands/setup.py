@@ -131,7 +131,9 @@ def cmd_setup(_args) -> int:
     # drop their .toml files without reading README first)
     styles_dir = STATE_DIR / "styles.d"
     if not styles_dir.exists():
-        styles_dir.mkdir()
+        # 0o700 for consistency with STATE_DIR — user-authored style
+        # presets may embed proprietary prompts.
+        styles_dir.mkdir(mode=0o700)
         (styles_dir / "README.txt").write_text(
             "Drop *.toml files here to add user style presets.\n"
             "Filename (without .toml) becomes the style name.\n"

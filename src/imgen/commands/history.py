@@ -13,6 +13,15 @@ from ..defaults import DEFAULTS, HISTORY_SCHEMA_VERSION
 from ..history import load_history
 from .generate import cmd_generate
 
+# Fields the replay Namespace must carry so cmd_generate doesn't have to
+# rely on getattr-with-default. Each is what cmd_generate reads for a
+# "user didn't pass this flag" semantics.
+_REPLAY_DEFAULTS = {
+    "prompt_file": None,
+    "imgen_merged_defaults": DEFAULTS,
+    "imgen_config_output_dir": None,
+}
+
 
 def cmd_history(args) -> int:
     entries = load_history()
@@ -78,5 +87,10 @@ def replay_entry(entry: dict) -> int:
         no_open=False,
         dry_run=False,
         force=False,
+        # Explicit fields cmd_generate would otherwise read via getattr-
+        # with-default. Pinning them here means a future required arg
+        # added to cmd_generate fails replay loudly instead of silently
+        # falling back to "user didn't pass it".
+        **_REPLAY_DEFAULTS,
     )
     return cmd_generate(args)

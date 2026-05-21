@@ -6,17 +6,42 @@ import os
 import urllib.error
 import urllib.request
 
+from .colors import warn
 from .paths import TOKEN_FILE
+
+# Cap on ~/.hf_token size. Real HF tokens are ~70 chars (`hf_` + 37-char
+# secret + room to grow). 4 KB is several orders above realistic use; a
+# larger file means something's wrong — refuse rather than slurp into
+# memory and pass to mflux.
+TOKEN_MAX_BYTES = 4096
 
 
 def load_token() -> str | None:
-    """Load HF token from $HF_TOKEN or ~/.hf_token."""
+    """Load HF token from $HF_TOKEN or ~/.hf_token.
+
+    Files larger than TOKEN_MAX_BYTES are rejected with a warn — a real
+    token wouldn't be that long, and passing junk to mflux would just
+    fail later with a confusing 401.
+    """
     tok = os.environ.get("HF_TOKEN")
     if tok:
         return tok.strip()
-    if TOKEN_FILE.exists():
+    if not TOKEN_FILE.exists():
+        return None
+    try:
+        size = TOKEN_FILE.stat().st_size
+    except OSError as e:
+        warn(f"Couldn't stat {TOKEN_FILE}: {e}")
+        return None
+    if size > TOKEN_MAX_BYTES:
+        warn(f"{TOKEN_FILE} too large ({size} bytes; cap {TOKEN_MAX_BYTES}) "
+             "— refusing to load. Replace the file with a valid token.")
+        return None
+    try:
         return TOKEN_FILE.read_text().strip()
-    return None
+    except OSError as e:
+        warn(f"Couldn't read {TOKEN_FILE}: {e}")
+        return None
 
 
 def check_token_perms() -> bool:

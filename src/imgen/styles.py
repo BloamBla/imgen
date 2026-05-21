@@ -34,6 +34,7 @@ __all__ = [
     "load_user_style_file",
     "load_user_styles_dir",
     "merge_user_styles",
+    "reset_styles_cache",
 ]
 
 # Cap on per-file size for ~/.imgen/styles.d/*.toml. Real style files are
@@ -315,3 +316,15 @@ def get_style(name: str) -> dict:
         available = ", ".join(sorted(merged.keys()))
         raise KeyError(f"Unknown style '{name}'. Available: {available}")
     return merged[name]
+
+
+def reset_styles_cache() -> None:
+    """Drop the cached merge of built-in + user TOMLs.
+
+    Tests use this between cases that touch the on-disk styles.d/
+    contents. Future `imgen serve`-style long-lived processes can call
+    this from a file-watcher to pick up user-added presets without a
+    restart. CLI is single-threaded, so no lock needed.
+    """
+    global _cached_merged
+    _cached_merged = None

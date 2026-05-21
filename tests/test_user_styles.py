@@ -11,7 +11,9 @@ from imgen.styles import (
     load_user_style_file,
     load_user_styles_dir,
     merge_user_styles,
+    reset_styles_cache,
 )
+import imgen.styles as styles_mod
 
 
 # ── load_user_style_file — single TOML → preset dict ─────────────────────
@@ -107,6 +109,24 @@ def test_load_user_style_file_rejects_oversized(tmp_path):
     with pytest.raises(UserStyleError) as exc_info:
         load_user_style_file(p)
     assert "too large" in str(exc_info.value).lower()
+
+
+# ── reset_styles_cache — public API for tests / future imgen serve ──────
+
+def test_reset_styles_cache_clears_module_cache():
+    """The merged-styles cache is process-scoped. A public reset API lets
+    tests + future `imgen serve` invalidate it without poking the private
+    `_cached_merged` attribute. (architect #5)"""
+    from imgen.styles import _load_merged_styles
+    # Populate the cache
+    _load_merged_styles()
+    assert styles_mod._cached_merged is not None
+    # Reset clears it
+    reset_styles_cache()
+    assert styles_mod._cached_merged is None
+    # Next access repopulates
+    _load_merged_styles()
+    assert styles_mod._cached_merged is not None
 
 
 # ── load_user_styles_dir — directory scan ────────────────────────────────
