@@ -15,6 +15,7 @@ from ..paths import (
     CONFIG_FILE,
     DEFAULT_OUTPUT_DIR,
     IMGEN_HOME,
+    LEGACY_TOKEN_FILE,
     STATE_DIR,
     TOKEN_FILE,
     VENV_BIN,
@@ -113,6 +114,15 @@ def cmd_setup(_args) -> int:
             except OSError as e:
                 die(f"Couldn't write {TOKEN_FILE}: {e}", code=3)
             ok(f"Token saved to {TOKEN_FILE} (chmod 600)")
+            # Drop the legacy ~/.hf_token if it's still hanging around so
+            # we don't end up with two copies and silent fallback later.
+            if LEGACY_TOKEN_FILE.exists():
+                try:
+                    LEGACY_TOKEN_FILE.unlink()
+                    dim(f"   removed legacy {LEGACY_TOKEN_FILE}")
+                except OSError as e:
+                    warn(f"Saved new token but couldn't remove legacy "
+                         f"{LEGACY_TOKEN_FILE}: {e}")
             user = validate_token(tok)
             if user:
                 ok(f"Token valid (HF user: {user})")

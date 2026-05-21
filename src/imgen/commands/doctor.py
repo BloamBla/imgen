@@ -1,6 +1,7 @@
 """`imgen doctor` — environment + resource forecast + cached models report."""
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -20,12 +21,13 @@ from ..paths import (
     CONFIG_FILE,
     HF_CACHE,
     IMGEN_HOME,
+    LEGACY_TOKEN_FILE,
     STATE_DIR,
     TOKEN_FILE,
     VENV_BIN,
 )
 from ..styles import BUILTIN_STYLES, list_styles, load_user_styles_dir
-from ..tokens import check_token_perms, load_token
+from ..tokens import active_token_path, check_token_perms, load_token
 
 
 def detect_install_collision(
@@ -161,8 +163,18 @@ def cmd_doctor(_args) -> int:
     tok = load_token()
     if tok:
         ok(f"HF_TOKEN found ({tok[:8]}...{tok[-4:]})")
-        if not check_token_perms():
-            warn(f"~/.hf_token permissions not 600 — run: chmod 600 {TOKEN_FILE}")
+        if os.environ.get("HF_TOKEN"):
+            dim("   source: $HF_TOKEN env")
+        else:
+            active = active_token_path()
+            if active is not None:
+                dim(f"   source: {active}")
+                if active == LEGACY_TOKEN_FILE:
+                    warn(f"Using legacy {LEGACY_TOKEN_FILE}; "
+                         f"auto-migration to {TOKEN_FILE} failed earlier. "
+                         f"Move manually: mv {LEGACY_TOKEN_FILE} {TOKEN_FILE}")
+                if not check_token_perms():
+                    warn(f"{active} permissions not 600 — run: chmod 600 {active}")
     else:
         warn("No HF token found")
         print(f"   {C.DIM}FLUX backend won't work without token.{C.END}")

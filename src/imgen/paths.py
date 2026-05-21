@@ -33,7 +33,11 @@ VENV_BIN = Path(sys.executable).parent
 STATE_DIR = Path.home() / ".imgen"
 HISTORY_FILE = STATE_DIR / "history.jsonl"
 CONFIG_FILE = STATE_DIR / "config.toml"
-TOKEN_FILE = Path.home() / ".hf_token"
+# HF token moved under STATE_DIR in v0.3 — `~/.hf_token` was a generic
+# name other HF tooling might claim. Legacy path is still read as a
+# fallback and auto-migrated to TOKEN_FILE on first load. See tokens.py.
+TOKEN_FILE = STATE_DIR / "hf_token"
+LEGACY_TOKEN_FILE = Path.home() / ".hf_token"
 # Fallback only — runtime env ($IMGEN_OUTPUT_DIR) and ~/.imgen/config.toml
 # `[defaults] output_dir` win in that order. Resolution lives in
 # config.effective_output_dir, which checks env at call time so test

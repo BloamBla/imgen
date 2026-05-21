@@ -186,8 +186,8 @@ For `output_dir` specifically, `$IMGEN_OUTPUT_DIR` env var still wins over confi
 
 | Variable / file        | Purpose |
 |------------------------|---------|
-| `~/.hf_token`          | HuggingFace token (chmod 600) |
-| `$HF_TOKEN`            | Overrides `~/.hf_token` |
+| `~/.imgen/hf_token`    | HuggingFace token (chmod 600). v0.2.x used `~/.hf_token`; that path is still read as a fallback and auto-migrated on first run. |
+| `$HF_TOKEN`            | Overrides `~/.imgen/hf_token` |
 | `$IMGEN_OUTPUT_DIR`    | One-off override of output dir (beats config.toml) |
 | `~/.imgen/config.toml` | Persistent defaults — see [Persistent config](#persistent-config) |
 | `~/.imgen/styles.d/*.toml` | User-defined style presets — see [User-defined styles](#user-defined-styles) |

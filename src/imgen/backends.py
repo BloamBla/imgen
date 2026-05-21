@@ -20,7 +20,7 @@ __all__ = ["Backend", "BACKENDS", "build_mflux_cmd"]
 @dataclass(frozen=True, slots=True)
 class Backend:
     binary: str                  # basename of the mflux entry-point script
-    needs_token: bool            # gated HF repo → require ~/.hf_token / $HF_TOKEN
+    needs_token: bool            # gated HF repo → require ~/.imgen/hf_token / $HF_TOKEN
     image_flag: str              # mflux's input-image flag (--image-path vs --image-paths)
     supports_strength: bool      # accepts --image-strength
     supports_negative: bool      # accepts --negative-prompt
