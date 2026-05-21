@@ -1,7 +1,7 @@
 """Dynamic color resolution: NO_COLOR env, [ui] color config, tty fallback.
 
-Before v0.3 `_USE_COLOR = sys.stdout.isatty()` was evaluated at import
-and frozen for the process. v0.3 makes it lazy so:
+Up through v0.2.1 `_USE_COLOR = sys.stdout.isatty()` was evaluated at
+import and frozen for the process. v0.2.2 makes it lazy so:
   - `NO_COLOR` env (https://no-color.org/) takes precedence.
   - `[ui] color` from ~/.imgen/config.toml: auto / always / never.
   - Fallback: stdout.isatty().

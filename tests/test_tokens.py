@@ -168,6 +168,73 @@ def test_active_token_path_prefers_new_when_both_exist(tmp_token):
     assert active_token_path() == tmp_token.new
 
 
+# ── Migration race + edge cases (post-v0.2.2 review) ────────────────────
+
+def test_load_token_legacy_oversized_does_not_migrate(tmp_token, capsys):
+    """A bloated legacy file (huggingface-cli writing garbage etc.) must
+    not be migrated into the new path — that would just promote the
+    garbage. _read_token_file's oversize warn fires; no new file is
+    created."""
+    payload = "h" * (TOKEN_MAX_BYTES + 100)
+    tmp_token.legacy.write_text(payload)
+
+    result = load_token()
+
+    assert result is None
+    assert not tmp_token.new.exists(), "oversize legacy must not be migrated"
+    assert tmp_token.legacy.exists(), "legacy stays for manual cleanup"
+    captured = capsys.readouterr()
+    out = captured.out + captured.err
+    assert "too large" in out.lower()
+    # The 'too large' warn must fire at most twice (once during migration
+    # probe + once during fallback read) — never more.
+    assert out.lower().count("too large") <= 2
+
+
+def test_try_migrate_legacy_handles_sibling_already_wrote(tmp_token):
+    """If TOKEN_FILE exists when _try_migrate_legacy tries to save (i.e. a
+    sibling imgen process beat us between our `not TOKEN_FILE.exists()`
+    check in load_token and our save), save_token_atomic raises
+    FileExistsError. We swallow it, clean up the legacy file, and report
+    success — the sibling's value is what subsequent reads will see.
+
+    Tests _try_migrate_legacy directly since load_token() short-circuits
+    at TOKEN_FILE.exists() in production; the race window only opens
+    once you're already inside the migration function.
+    """
+    from imgen.tokens import _try_migrate_legacy
+
+    tmp_token.legacy.write_text("hf_legacy_value")
+    tmp_token.new.write_text("hf_sibling_value")
+    tmp_token.new.chmod(0o600)
+
+    result = _try_migrate_legacy()
+
+    assert result is True
+    assert not tmp_token.legacy.exists(), "legacy must be cleaned after sibling won"
+    # Sibling's content preserved — we didn't overwrite.
+    assert tmp_token.new.read_text() == "hf_sibling_value"
+
+
+def test_load_token_legacy_migration_never_widens_perms(tmp_token):
+    """Pin the no-chmod-window guarantee: even when legacy is world-readable
+    AND we observe the new file mid-creation (which we can't, but we can
+    pin the post-condition), the new file's mode is 0o600 from creation.
+    save_token_atomic uses O_CREAT|O_EXCL 0o600, so there is no window
+    where the new file inherits 0o644."""
+    tmp_token.legacy.write_text("hf_legacy")
+    tmp_token.legacy.chmod(0o644)
+
+    load_token()
+
+    # Belt-and-braces: assert final mode, and that the legacy file's
+    # mode never propagated. (The real race-window guard is in the
+    # implementation choice — save_token_atomic vs os.replace+chmod.)
+    new_mode = tmp_token.new.stat().st_mode & 0o777
+    assert new_mode == 0o600
+    assert not tmp_token.legacy.exists()
+
+
 # ── save_token_atomic auto-creates state dir ────────────────────────────
 
 def test_save_token_atomic_creates_state_dir(tmp_token):

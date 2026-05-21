@@ -56,10 +56,38 @@ def pipx_like_venv(tmp_path_factory):
 
 
 def _env_without_imgen_home() -> dict[str, str]:
-    """Copy parent env but scrub IMGEN_HOME so the child runs in pipx mode."""
+    """Copy parent env but scrub IMGEN_HOME so the child runs in pipx mode.
+
+    Also drops HF_TOKEN — the dev shell may have a real token set; we
+    never want it inheriting into a captured subprocess whose output may
+    be logged by CI.
+    """
     env = os.environ.copy()
     env.pop("IMGEN_HOME", None)
+    env.pop("HF_TOKEN", None)
     return env
+
+
+def _run_imgen(bin_path: Path, *args: str) -> subprocess.CompletedProcess:
+    """Run an imgen subcommand and assert clean exit, surfacing output on fail.
+
+    `subprocess.run(..., check=True, capture_output=True)` raises
+    CalledProcessError on failure but pytest's default output doesn't
+    show the captured stdout/stderr — CI logs become useless. Catch and
+    re-raise via pytest.fail with the full output instead.
+    """
+    proc = subprocess.run(
+        [str(bin_path), *args],
+        env=_env_without_imgen_home(),
+        capture_output=True, text=True, check=False,
+    )
+    if proc.returncode != 0:
+        pytest.fail(
+            f"imgen {' '.join(args)} exited {proc.returncode}\n"
+            f"stdout:\n{proc.stdout}\n"
+            f"stderr:\n{proc.stderr}"
+        )
+    return proc
 
 
 def test_pipx_imgen_version_matches_module_version(pipx_like_venv):
@@ -68,11 +96,7 @@ def test_pipx_imgen_version_matches_module_version(pipx_like_venv):
     Regression guard for any module-level reference to IMGEN_HOME that
     forgets to None-check — would AttributeError on import here.
     """
-    result = subprocess.run(
-        [str(pipx_like_venv), "--version"],
-        env=_env_without_imgen_home(),
-        capture_output=True, text=True, check=True,
-    )
+    result = _run_imgen(pipx_like_venv, "--version")
     assert __version__ in (result.stdout + result.stderr)
 
 
@@ -82,11 +106,7 @@ def test_pipx_imgen_list_styles_no_crash(pipx_like_venv):
     These are the heaviest pure-Python startup paths short of generate /
     doctor; if any of them blows up in pipx mode this catches it.
     """
-    result = subprocess.run(
-        [str(pipx_like_venv), "--list-styles"],
-        env=_env_without_imgen_home(),
-        capture_output=True, text=True, check=True,
-    )
+    result = _run_imgen(pipx_like_venv, "--list-styles")
     assert "Available styles" in result.stdout
     assert "anime" in result.stdout  # one of the built-in presets
 
@@ -95,10 +115,6 @@ def test_pipx_imgen_help_no_crash(pipx_like_venv):
     """`imgen --help` should work without IMGEN_HOME — the upgrade-command
     epilog references IMGEN_HOME in its text, but only via .py-level f-strings
     that must handle None gracefully."""
-    result = subprocess.run(
-        [str(pipx_like_venv), "--help"],
-        env=_env_without_imgen_home(),
-        capture_output=True, text=True, check=True,
-    )
+    result = _run_imgen(pipx_like_venv, "--help")
     assert "imgen" in result.stdout.lower()
     assert "upgrade" in result.stdout

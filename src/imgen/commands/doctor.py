@@ -21,9 +21,7 @@ from ..paths import (
     CONFIG_FILE,
     HF_CACHE,
     IMGEN_HOME,
-    LEGACY_TOKEN_FILE,
     STATE_DIR,
-    TOKEN_FILE,
     VENV_BIN,
 )
 from ..styles import BUILTIN_STYLES, list_styles, load_user_styles_dir
@@ -169,10 +167,9 @@ def cmd_doctor(_args) -> int:
             active = active_token_path()
             if active is not None:
                 dim(f"   source: {active}")
-                if active == LEGACY_TOKEN_FILE:
-                    warn(f"Using legacy {LEGACY_TOKEN_FILE}; "
-                         f"auto-migration to {TOKEN_FILE} failed earlier. "
-                         f"Move manually: mv {LEGACY_TOKEN_FILE} {TOKEN_FILE}")
+                # No second warn about legacy path here — _try_migrate_legacy
+                # (called by load_token above) already printed its own
+                # remediation hint with full context.
                 if not check_token_perms():
                     warn(f"{active} permissions not 600 — run: chmod 600 {active}")
     else:

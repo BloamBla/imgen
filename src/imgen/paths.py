@@ -33,7 +33,7 @@ VENV_BIN = Path(sys.executable).parent
 STATE_DIR = Path.home() / ".imgen"
 HISTORY_FILE = STATE_DIR / "history.jsonl"
 CONFIG_FILE = STATE_DIR / "config.toml"
-# HF token moved under STATE_DIR in v0.3 — `~/.hf_token` was a generic
+# HF token moved under STATE_DIR in v0.2.2 — `~/.hf_token` was a generic
 # name other HF tooling might claim. Legacy path is still read as a
 # fallback and auto-migrated to TOKEN_FILE on first load. See tokens.py.
 TOKEN_FILE = STATE_DIR / "hf_token"

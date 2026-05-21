@@ -1,6 +1,8 @@
 """Terminal colors + leveled print helpers.
 
-Color enable/disable is resolved lazily on first access. The order:
+v0.2.2 moved the enable/disable resolution from import-time
+(`_USE_COLOR = sys.stdout.isatty()` frozen for the process) to lazy on
+first access. Order:
 
   1. `NO_COLOR` env var (https://no-color.org/) — any non-empty value
      disables. Beats config + tty.
