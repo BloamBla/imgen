@@ -46,6 +46,10 @@ IMGEN_HOME = Path(__file__).parent.resolve()
 VENV_DIR = IMGEN_HOME / ".venv"
 STATE_DIR = Path.home() / ".imgen"
 HISTORY_FILE = STATE_DIR / "history.jsonl"
+# Bump when an entry field changes meaning. Old entries without "v" key
+# are treated as v=0 and still replay (best-effort .get throughout). An
+# entry with "v" > this constant is refused with a "run imgen upgrade" hint.
+HISTORY_SCHEMA_VERSION = 1
 TOKEN_FILE = Path.home() / ".hf_token"
 DEFAULT_OUTPUT_DIR = Path(
     os.environ.get("IMGEN_OUTPUT_DIR", Path.home() / "Desktop" / "imgen")
@@ -1029,6 +1033,7 @@ def append_history(entry: dict) -> int:
                 entry["id"] = max(
                     (e.get("id", 0) for e in existing), default=0
                 ) + 1
+                entry["v"] = HISTORY_SCHEMA_VERSION
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
                 return entry["id"]
             finally:
@@ -1074,10 +1079,19 @@ def cmd_replay(args):
 
 
 def replay_entry(entry: dict) -> int:
+    entry_v = entry.get("v", 0)
+    if entry_v > HISTORY_SCHEMA_VERSION:
+        die(f"History entry #{entry.get('id', '?')} is from a newer schema "
+            f"(v{entry_v} > v{HISTORY_SCHEMA_VERSION}). "
+            f"Run `imgen upgrade` to pick up the new fields.", code=2)
+    image = entry.get("input")
+    if not image:
+        die(f"History entry #{entry.get('id', '?')} has no input path — "
+            f"cannot replay.", code=1)
     info(f"Replaying #{entry.get('id')}: {entry.get('style')} on "
-         f"{Path(entry.get('input', '?')).name}")
+         f"{Path(image).name}")
     args = argparse.Namespace(
-        image=entry["input"],
+        image=image,
         style=entry.get("style", "pixar") if not entry.get("custom_prompt") else None,
         custom_prompt=entry.get("custom_prompt"),
         scope=entry.get("scope"),
