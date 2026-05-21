@@ -25,6 +25,12 @@ dependencies = [
     "mflux==0.17.5",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+]
+
 [project.scripts]
 imgen = "imgen.cli:main"
 
@@ -45,4 +51,12 @@ include = [
     "imgen",
     "README.md",
     "LICENSE",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
 ]
