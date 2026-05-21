@@ -12,8 +12,9 @@ typo'd attribute access.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
-__all__ = ["Backend", "BACKENDS"]
+__all__ = ["Backend", "BACKENDS", "build_mflux_cmd"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,3 +45,53 @@ BACKENDS: dict[str, Backend] = {
         extra_args=("--model", "qwen"),
     ),
 }
+
+
+def build_mflux_cmd(
+    *,
+    binary: Path,
+    backend: Backend,
+    input_path: Path,
+    output_path: Path,
+    prompt: str,
+    negative: str,
+    quantize: int,
+    steps: int,
+    guidance: float,
+    strength: float,
+    seed: int,
+    width: int,
+    height: int,
+    mlx_cache_gb: int,
+    battery_stop: int,
+) -> list[str]:
+    """Build the mflux argv for `backend` from already-resolved parameters.
+
+    Pure: no I/O, no env reads, no subprocess. Keyword-only because 15
+    positional args would be a footgun.
+
+    Order preserved from v0.1.x: common args first, then strength (if
+    supported), then `extra_args` (e.g. `--model dev`), then negative
+    prompt (if supported and non-empty). Locked in by test_generate_cmd.
+    """
+    cmd = [
+        str(binary),
+        "--quantize", str(quantize),
+        backend.image_flag, str(input_path),
+        "--prompt", prompt,
+        "--steps", str(steps),
+        "--guidance", str(guidance),
+        "--seed", str(seed),
+        "--width", str(width),
+        "--height", str(height),
+        "--mlx-cache-limit-gb", str(mlx_cache_gb),
+        "--battery-percentage-stop-limit", str(battery_stop),
+        "--metadata",
+        "--output", str(output_path),
+    ]
+    if backend.supports_strength:
+        cmd += ["--image-strength", str(strength)]
+    cmd += list(backend.extra_args)
+    if backend.supports_negative and negative:
+        cmd += ["--negative-prompt", negative]
+    return cmd

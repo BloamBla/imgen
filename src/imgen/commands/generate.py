@@ -14,7 +14,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from ..backends import BACKENDS
+from ..backends import BACKENDS, build_mflux_cmd
 from ..checks import check_mflux, check_resources, check_venv
 from ..colors import C, die, err, ok, step, warn
 from ..defaults import DEFAULTS, PREVIEW_OVERRIDES
@@ -135,26 +135,23 @@ def cmd_generate(args) -> int:
     seed = (args.seed if args.seed is not None
             else int.from_bytes(os.urandom(4), "big"))
 
-    cmd = [
-        str(binary),
-        "--quantize", str(final_quantize),
-        be.image_flag, str(input_path),
-        "--prompt", prompt,
-        "--steps", str(final_steps),
-        "--guidance", str(final_guidance),
-        "--seed", str(seed),
-        "--width", str(width),
-        "--height", str(height),
-        "--mlx-cache-limit-gb", str(DEFAULTS["mlx_cache_gb"]),
-        "--battery-percentage-stop-limit", str(DEFAULTS["battery_stop"]),
-        "--metadata",
-        "--output", str(output_path),
-    ]
-    if be.supports_strength:
-        cmd += ["--image-strength", str(final_strength)]
-    cmd += list(be.extra_args)
-    if be.supports_negative and negative:
-        cmd += ["--negative-prompt", negative]
+    cmd = build_mflux_cmd(
+        binary=binary,
+        backend=be,
+        input_path=input_path,
+        output_path=output_path,
+        prompt=prompt,
+        negative=negative,
+        quantize=final_quantize,
+        steps=final_steps,
+        guidance=final_guidance,
+        strength=final_strength,
+        seed=seed,
+        width=width,
+        height=height,
+        mlx_cache_gb=DEFAULTS["mlx_cache_gb"],
+        battery_stop=DEFAULTS["battery_stop"],
+    )
 
     # 8) Dry run (skip resource checks — just show what would run)
     if args.dry_run:
