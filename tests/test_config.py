@@ -262,3 +262,61 @@ def test_effective_output_dir_env_set_after_import_is_picked_up(monkeypatch):
     # After setenv: env wins
     monkeypatch.setenv("IMGEN_OUTPUT_DIR", "/from-env-late")
     assert effective_output_dir(config_value=None, module_default=default) == Path("/from-env-late")
+
+
+# ── effective_output_dir cli_value (--output-dir flag, v0.2.3) ──────────
+
+def test_effective_output_dir_cli_value_beats_env(monkeypatch):
+    """`--output-dir` is the highest-priority channel — beats env even if
+    env was the "one-off override" in v0.1.x. CLI > env > config > default.
+    (architect I1 from v0.2.2 audit)"""
+    monkeypatch.setenv("IMGEN_OUTPUT_DIR", "/from-env")
+    result = effective_output_dir(
+        cli_value="/from-cli",
+        config_value="/from-config",
+        module_default=Path("/from-default"),
+    )
+    assert result == Path("/from-cli")
+
+
+def test_effective_output_dir_cli_value_beats_config(monkeypatch):
+    monkeypatch.delenv("IMGEN_OUTPUT_DIR", raising=False)
+    result = effective_output_dir(
+        cli_value="/from-cli",
+        config_value="/from-config",
+        module_default=Path("/from-default"),
+    )
+    assert result == Path("/from-cli")
+
+
+def test_effective_output_dir_cli_value_expands_tilde(monkeypatch):
+    monkeypatch.delenv("IMGEN_OUTPUT_DIR", raising=False)
+    result = effective_output_dir(
+        cli_value="~/runs",
+        config_value=None,
+        module_default=Path("/from-default"),
+    )
+    assert result == Path("~/runs").expanduser()
+
+
+def test_effective_output_dir_cli_value_none_falls_through_to_env(monkeypatch):
+    """`--output-dir` not passed → behaviour matches pre-v0.2.3 (env > config > default)."""
+    monkeypatch.setenv("IMGEN_OUTPUT_DIR", "/from-env")
+    result = effective_output_dir(
+        cli_value=None,
+        config_value="/from-config",
+        module_default=Path("/from-default"),
+    )
+    assert result == Path("/from-env")
+
+
+def test_effective_output_dir_cli_value_empty_string_treated_as_unset(monkeypatch):
+    """`--output-dir ''` (someone scripting badly) → treat as no override,
+    not as "write to cwd". Same forgiveness as empty config_value."""
+    monkeypatch.delenv("IMGEN_OUTPUT_DIR", raising=False)
+    default = Path("/from-default")
+    assert effective_output_dir(
+        cli_value="",
+        config_value=None,
+        module_default=default,
+    ) == default

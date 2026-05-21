@@ -9,7 +9,7 @@ imgen photo.jpg --style simpsons --preview   # ~3 min fast test
 imgen photo.jpg --custom-prompt "Mona Lisa painting style"
 ```
 
-Output lands in `~/Desktop/imgen/<basename>_<style>_<timestamp>.png` and opens in Preview automatically.
+Every run creates a timestamped folder under `~/Desktop/imgen/` — e.g. `~/Desktop/imgen/2026-05-21-14-30-12/photo-pixar.png`. The result opens in Preview automatically. Change the parent with `--output-dir PATH` or pin an exact path with `--output FILE`.
 
 ## Requirements
 
@@ -181,7 +181,9 @@ color = "auto"              # "auto" | "always" | "never"
 
 **Precedence:** CLI flag > `~/.imgen/config.toml` > built-in defaults. Bad value (e.g. `steps = 999`) → `imgen` warns and falls back to built-ins until you fix the file. Unknown keys are dropped with a warning so old `imgen` versions don't break on configs written by newer ones.
 
-For `output_dir` specifically, `$IMGEN_OUTPUT_DIR` env var still wins over config — env is the one-off override channel.
+For `output_dir` specifically the resolution is **`--output-dir` CLI flag > `$IMGEN_OUTPUT_DIR` env > config > default**. The CLI flag wins (added in v0.2.3 — beats env, which was the v0.1.x one-off channel); env is still the easiest way to redirect without touching config.
+
+**Output layout (v0.2.3+):** every run writes into a fresh timestamped folder under the resolved output root — `~/Desktop/imgen/2026-05-21-14-30-12/photo-pixar.png`. The folder name is `YYYY-MM-DD-HH-MM-SS`, sortable both alphabetically and chronologically. Files inside are named `<input-basename>-<style>.png`; `mtime` in Finder gives completion-time ordering. To bypass the folder entirely and write to one specific file, use `-o`/`--output FILE` (mutex with `--output-dir`).
 
 **Color:** `[ui] color = "auto"` (default) emits ANSI only when stdout is a tty; `"always"` forces color (handy for piping into `less -R`); `"never"` disables. The `NO_COLOR` env var (https://no-color.org/) beats both — any non-empty value disables color regardless of config.
 
@@ -191,7 +193,7 @@ For `output_dir` specifically, `$IMGEN_OUTPUT_DIR` env var still wins over confi
 |------------------------|---------|
 | `~/.imgen/hf_token`    | HuggingFace token (chmod 600). v0.2.x used `~/.hf_token`; that path is still read as a fallback and auto-migrated on first run. |
 | `$HF_TOKEN`            | Overrides `~/.imgen/hf_token` |
-| `$IMGEN_OUTPUT_DIR`    | One-off override of output dir (beats config.toml) |
+| `$IMGEN_OUTPUT_DIR`    | One-off override of output dir parent (beats config.toml; `--output-dir` flag beats env) |
 | `$NO_COLOR`            | Any non-empty value disables ANSI color (https://no-color.org/) |
 | `~/.imgen/config.toml` | Persistent defaults — see [Persistent config](#persistent-config) |
 | `~/.imgen/styles.d/*.toml` | User-defined style presets — see [User-defined styles](#user-defined-styles) |

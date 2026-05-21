@@ -13,6 +13,7 @@ where the imgen package itself was installed.
 """
 from __future__ import annotations
 
+import datetime as _dt
 import os
 import sys
 from pathlib import Path
@@ -51,6 +52,36 @@ HF_CACHE = Path.home() / ".cache" / "huggingface" / "hub"
 # .command / .sh etc would auto-execute. Restrict to known-safe image
 # suffixes.
 SAFE_OUTPUT_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
+
+
+def auto_run_dirname(now: _dt.datetime | None = None) -> str:
+    """Folder name for one CLI invocation: '2026-05-21-14-30-12'.
+
+    All-dashes, second precision. Sortable alphabetically = sortable
+    chronologically. No colons (`:`) so the path survives macOS quirks
+    and copy-paste into terminals that quote-mangle `:`. We run mflux
+    serially so no two generations within one invocation finish in the
+    same second; folder-level collisions only arise from scripted
+    double-invokes, handled by `next_available_run_dir`.
+    """
+    if now is None:
+        now = _dt.datetime.now()
+    return now.strftime("%Y-%m-%d-%H-%M-%S")
+
+
+def next_available_run_dir(parent: Path, dirname: str) -> Path:
+    """Return parent/dirname, suffixing `_2`, `_3` if it already exists.
+
+    Pure: does not create the directory. Caller is responsible for
+    `mkdir(parents=True, exist_ok=True)` on the returned path.
+    """
+    target = parent / dirname
+    if not target.exists():
+        return target
+    i = 2
+    while (parent / f"{dirname}_{i}").exists():
+        i += 1
+    return parent / f"{dirname}_{i}"
 
 
 def ensure_state_dir() -> None:

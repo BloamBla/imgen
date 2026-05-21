@@ -21,7 +21,13 @@ from ..config import effective_output_dir
 from ..defaults import DEFAULTS, PREVIEW_OVERRIDES
 from ..history import append_history
 from ..images import apply_scope, detect_resolution
-from ..paths import DEFAULT_OUTPUT_DIR, SAFE_OUTPUT_EXTS, VENV_BIN
+from ..paths import (
+    DEFAULT_OUTPUT_DIR,
+    SAFE_OUTPUT_EXTS,
+    VENV_BIN,
+    auto_run_dirname,
+    next_available_run_dir,
+)
 from ..prompt_input import PromptInputError, resolve_prompt
 from ..styles import get_style
 from ..subprocess_helpers import format_cmd, run_with_stderr_redaction
@@ -153,12 +159,27 @@ def cmd_generate(args) -> int:
     # 5) Output path. Precedence on the auto-derived dir:
     #    env IMGEN_OUTPUT_DIR > config.toml [defaults] output_dir > module default
     if args.output:
+        # Explicit single-file output — bypass the folder-per-invocation
+        # layout entirely. Existing v0.2.x scripts that pin a path keep
+        # working unchanged. The directory is mkdir'd later, only if we
+        # actually run (not on --dry-run).
         output_path = Path(args.output).expanduser().resolve()
+        run_dir: Path | None = None
     else:
-        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_dir = effective_output_dir(config_output_dir, DEFAULT_OUTPUT_DIR)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        output_path = output_dir / f"{input_path.stem}_{style_name}_{ts}.png"
+        # New in v0.2.3: each invocation gets its own timestamped folder
+        # under the resolved output root. File is <basename>-<style>.png;
+        # mtime gives completion-time ordering in Finder for free, so we
+        # don't repeat a timestamp inside the filename.
+        # Precedence: --output-dir > $IMGEN_OUTPUT_DIR > config.toml > default.
+        # mkdir is deferred until after the dry-run check so a dry-run
+        # doesn't pollute ~/Desktop/imgen/ with empty timestamped dirs.
+        parent = effective_output_dir(
+            cli_value=getattr(args, "output_dir", None),
+            config_value=config_output_dir,
+            module_default=DEFAULT_OUTPUT_DIR,
+        )
+        run_dir = next_available_run_dir(parent, auto_run_dirname())
+        output_path = run_dir / f"{input_path.stem}-{style_name}.png"
 
     # 6) Backend & token
     backend = args.backend
@@ -211,6 +232,14 @@ def cmd_generate(args) -> int:
         print(format_cmd(cmd))
         print()
         return 0
+
+    # 8a) mkdir the output dir now that we know we'll actually run.
+    # Deferred from path-resolution above so --dry-run doesn't leave
+    # empty timestamped folders behind.
+    if run_dir is not None:
+        run_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # 8a) Resource preflight — block runs that can't reasonably finish
     if not args.force:

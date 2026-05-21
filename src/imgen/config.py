@@ -204,18 +204,25 @@ def effective_defaults(
 
 
 def effective_output_dir(
-    config_value: str | None,
-    module_default: Path,
+    cli_value: str | None = None,
+    config_value: str | None = None,
+    module_default: Path = Path("/"),
 ) -> Path:
     """Resolve the output directory.
 
-    Precedence:
-        1. $IMGEN_OUTPUT_DIR if set (matches v0.1.x behavior)
-        2. config_value from [defaults] output_dir (if non-empty)
-        3. module_default
+    Precedence (highest first):
+        1. cli_value from `--output-dir` (v0.2.3+) — explicit user
+           intent on this invocation, beats env.
+        2. $IMGEN_OUTPUT_DIR env var (v0.1.x one-off override channel).
+        3. config_value from [defaults] output_dir in config.toml.
+        4. module_default (DEFAULT_OUTPUT_DIR).
 
-    `~` is expanded for config_value via Path.expanduser.
+    `~` is expanded for cli_value / config_value. Empty strings at
+    cli/config are treated as unset (`--output-dir ""` should not
+    silently mean "write to cwd").
     """
+    if cli_value:
+        return Path(cli_value).expanduser()
     env = os.environ.get("IMGEN_OUTPUT_DIR")
     if env:
         return Path(env)

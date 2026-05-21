@@ -138,9 +138,22 @@ def _add_generate_args(
                    help="Read prompt from PATH instead of an argv string. "
                         "Mutually exclusive with --custom-prompt. Keeps "
                         "sensitive prompts out of process arguments.")
-    p.add_argument("-o", "--output", type=_safe_output_path,
-                   help=f"Output path with .png/.jpg/.jpeg/.webp suffix "
-                        f"(default: {DEFAULT_OUTPUT_DIR}/<auto>.png)")
+    # --output FILE writes to exactly that path (bypasses the
+    # folder-per-invocation layout); --output-dir PATH overrides the
+    # parent of the timestamped run folder. Mutex — only one shape
+    # makes sense per invocation.
+    output_group = p.add_mutually_exclusive_group()
+    output_group.add_argument(
+        "-o", "--output", type=_safe_output_path,
+        help=f"Output path with .png/.jpg/.jpeg/.webp suffix "
+             f"(bypasses run-folder layout; default: "
+             f"{DEFAULT_OUTPUT_DIR}/<start-ts>/<basename>-<style>.png)",
+    )
+    output_group.add_argument(
+        "--output-dir", type=str, default=None,
+        help="Parent directory for the auto-named run folder. "
+             "Overrides $IMGEN_OUTPUT_DIR and [defaults] output_dir.",
+    )
     # Override args use default=None so we can tell "user set" from "use default"
     p.add_argument("--steps", type=_int_range(1, 200), default=None,
                    help=f"Inference steps 1..200 (default {defaults['steps']}, "
