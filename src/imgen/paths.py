@@ -34,9 +34,12 @@ STATE_DIR = Path.home() / ".imgen"
 HISTORY_FILE = STATE_DIR / "history.jsonl"
 CONFIG_FILE = STATE_DIR / "config.toml"
 TOKEN_FILE = Path.home() / ".hf_token"
-DEFAULT_OUTPUT_DIR = Path(
-    os.environ.get("IMGEN_OUTPUT_DIR", Path.home() / "Desktop" / "imgen")
-)
+# Fallback only — runtime env ($IMGEN_OUTPUT_DIR) and ~/.imgen/config.toml
+# `[defaults] output_dir` win in that order. Resolution lives in
+# config.effective_output_dir, which checks env at call time so test
+# monkeypatches see the patched value (previously this constant captured
+# env at module import → tests had no way to override).
+DEFAULT_OUTPUT_DIR = Path.home() / "Desktop" / "imgen"
 HF_CACHE = Path.home() / ".cache" / "huggingface" / "hub"
 
 # Output extensions allowed for --output and auto-`open`. macOS `open`

@@ -44,8 +44,20 @@ def test_load_config_malformed_toml_returns_empty_with_warning(tmp_path, capsys)
     cfg.write_text("[defaults\nstyle = anime")  # missing closing bracket + quotes
     result = load_config(cfg)
     assert result == {}
-    err = capsys.readouterr().out + capsys.readouterr().err
-    assert "broken.toml" in err  # path mentioned in warning
+    captured = capsys.readouterr()
+    assert "broken.toml" in (captured.out + captured.err)
+
+
+def test_load_config_oversized_file_returns_empty_with_warning(tmp_path, capsys):
+    """A 500 MB config file shouldn't get fully loaded into RAM by tomllib.
+    Cap at 1 MB — anything larger gets warn + empty. (security I2)"""
+    from imgen.config import CONFIG_MAX_BYTES
+    cfg = tmp_path / "huge.toml"
+    cfg.write_bytes(b"x = 1\n" * (CONFIG_MAX_BYTES // 6 + 100))
+    result = load_config(cfg)
+    assert result == {}
+    captured = capsys.readouterr()
+    assert "too large" in (captured.out + captured.err).lower()
 
 
 # ── validate_section — type + range gate for known keys ─────────────────
@@ -59,9 +71,25 @@ def test_validate_section_accepts_all_known_keys():
         "guidance": 4.5,
         "strength": 0.6,
         "output_dir": "~/Pictures/imgen",
+        "mlx_cache_gb": 24,
+        "battery_stop": 15,
     }
     out = validate_section("defaults", raw, DEFAULTS_SCHEMA)
     assert out == raw
+
+
+@pytest.mark.parametrize("bad", [0, -1, 1024])
+def test_validate_section_rejects_mlx_cache_gb_out_of_range(bad):
+    """architect C2: mlx_cache_gb missing from schema would warn-as-unknown
+    instead of validating. Lock the range."""
+    with pytest.raises(ConfigError):
+        validate_section("defaults", {"mlx_cache_gb": bad}, DEFAULTS_SCHEMA)
+
+
+@pytest.mark.parametrize("bad", [-1, 101, 999])
+def test_validate_section_rejects_battery_stop_out_of_range(bad):
+    with pytest.raises(ConfigError):
+        validate_section("defaults", {"battery_stop": bad}, DEFAULTS_SCHEMA)
 
 
 def test_validate_section_drops_unknown_keys_with_warning(capsys):
@@ -220,3 +248,17 @@ def test_effective_output_dir_empty_config_treated_as_none(monkeypatch):
     monkeypatch.delenv("IMGEN_OUTPUT_DIR", raising=False)
     default = Path("/some/default")
     assert effective_output_dir(config_value="", module_default=default) == default
+
+
+def test_effective_output_dir_env_set_after_import_is_picked_up(monkeypatch):
+    """paths.DEFAULT_OUTPUT_DIR baked env at module import — but
+    effective_output_dir reads env at CALL time, so an env change after
+    import (e.g. in tests via monkeypatch.setenv) must be visible.
+    (python-reviewer I5)"""
+    monkeypatch.delenv("IMGEN_OUTPUT_DIR", raising=False)
+    default = Path("/module/default")
+    # Before setenv: returns module_default
+    assert effective_output_dir(config_value=None, module_default=default) == default
+    # After setenv: env wins
+    monkeypatch.setenv("IMGEN_OUTPUT_DIR", "/from-env-late")
+    assert effective_output_dir(config_value=None, module_default=default) == Path("/from-env-late")

@@ -99,6 +99,16 @@ def test_load_user_style_file_rejects_non_string_prompt(tmp_path):
         load_user_style_file(p)
 
 
+def test_load_user_style_file_rejects_oversized(tmp_path):
+    """A 100 MB rogue TOML in styles.d/ shouldn't OOM tomllib. (security I2)"""
+    from imgen.styles import USER_STYLE_MAX_BYTES
+    p = tmp_path / "huge.toml"
+    p.write_bytes(b"prompt = \"x\"\n" + b"# pad " * (USER_STYLE_MAX_BYTES // 6 + 100))
+    with pytest.raises(UserStyleError) as exc_info:
+        load_user_style_file(p)
+    assert "too large" in str(exc_info.value).lower()
+
+
 # ── load_user_styles_dir — directory scan ────────────────────────────────
 
 def test_load_user_styles_dir_missing_returns_empty(tmp_path):

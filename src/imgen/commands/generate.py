@@ -200,8 +200,8 @@ def cmd_generate(args) -> int:
         seed=seed,
         width=width,
         height=height,
-        mlx_cache_gb=DEFAULTS["mlx_cache_gb"],
-        battery_stop=DEFAULTS["battery_stop"],
+        mlx_cache_gb=merged_defaults["mlx_cache_gb"],
+        battery_stop=merged_defaults["battery_stop"],
     )
 
     # 8) Dry run (skip resource checks — just show what would run)

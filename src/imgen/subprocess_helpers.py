@@ -43,6 +43,9 @@ def run_with_stderr_redaction(cmd: list[str], env: dict) -> int:
                 sys.stderr.buffer.write(
                     _TOKEN_LEAK_RE.sub(b"hf_***REDACTED***", to_flush))
                 sys.stderr.buffer.flush()
+        # wait() must be inside the same try so a hang here is still
+        # interruptible via Ctrl-C — previously the wait() was outside
+        # and a wedged mflux child made the shell unresponsive.
         proc.wait()
     except KeyboardInterrupt:
         proc.terminate()

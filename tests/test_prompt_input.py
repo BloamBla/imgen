@@ -56,6 +56,26 @@ def test_dash_with_whitespace_only_stdin_raises():
         )
 
 
+def test_dash_with_oversized_stdin_raises():
+    """`cat /dev/zero | imgen --custom-prompt -` shouldn't OOM the process.
+    Cap matches PROMPT_MAX_BYTES — symmetric with --prompt-file. (security I1)"""
+    payload = "x" * (PROMPT_MAX_BYTES + 100)
+    with pytest.raises(PromptInputError) as exc_info:
+        resolve_prompt(
+            custom_prompt="-", prompt_file=None, stdin=io.StringIO(payload)
+        )
+    assert "too large" in str(exc_info.value).lower()
+
+
+def test_dash_with_stdin_at_cap_is_accepted():
+    """Boundary: exactly PROMPT_MAX_BYTES of stdin is OK."""
+    payload = "x" * PROMPT_MAX_BYTES
+    result = resolve_prompt(
+        custom_prompt="-", prompt_file=None, stdin=io.StringIO(payload)
+    )
+    assert len(result) == PROMPT_MAX_BYTES
+
+
 # ── --prompt-file PATH reads file ────────────────────────────────────────
 
 def test_prompt_file_reads_content(tmp_path):

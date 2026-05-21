@@ -59,20 +59,40 @@ def _read_prompt_file(path: Path) -> str:
         raise PromptInputError(f"--prompt-file not found: {path}")
     if not path.is_file():
         raise PromptInputError(f"--prompt-file is not a file: {path}")
-    size = path.stat().st_size
-    if size > PROMPT_MAX_BYTES:
+    # Single open + bounded read avoids the stat-then-read TOCTOU and the
+    # extra syscall. PROMPT_MAX_BYTES + 1 lets us tell "exactly at cap"
+    # from "over cap".
+    try:
+        with path.open("rb") as f:
+            raw = f.read(PROMPT_MAX_BYTES + 1)
+    except OSError as e:
+        raise PromptInputError(f"--prompt-file read failed: {path}: {e}") from e
+    if len(raw) > PROMPT_MAX_BYTES:
         raise PromptInputError(
-            f"--prompt-file too large: {size} bytes "
-            f"(cap {PROMPT_MAX_BYTES})"
+            f"--prompt-file too large: > {PROMPT_MAX_BYTES} bytes"
         )
-    content = path.read_text(encoding="utf-8").strip()
+    try:
+        content = raw.decode("utf-8").strip()
+    except UnicodeDecodeError as e:
+        raise PromptInputError(
+            f"--prompt-file is not UTF-8: {path}: {e}"
+        ) from e
     if not content:
         raise PromptInputError(f"--prompt-file is empty: {path}")
     return content
 
 
 def _read_stdin(stdin: IO[str]) -> str:
-    content = stdin.read().strip()
+    # Bounded read so `cat /dev/zero | imgen --custom-prompt -` can't OOM.
+    # Symmetric with --prompt-file's cap. read(N+1) lets us distinguish
+    # "exactly at cap" from "over cap" without slurping unbounded.
+    raw = stdin.read(PROMPT_MAX_BYTES + 1)
+    if len(raw) > PROMPT_MAX_BYTES:
+        raise PromptInputError(
+            f"stdin input too large: > {PROMPT_MAX_BYTES} bytes "
+            "(--custom-prompt - cap)"
+        )
+    content = raw.strip()
     if not content:
         raise PromptInputError(
             "stdin is empty (--custom-prompt - requires piped input)"

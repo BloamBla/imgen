@@ -25,8 +25,12 @@ def test_append_history_assigns_v_and_monotonic_id(tmp_state_dir):
 
 
 def test_append_history_sets_schema_version(tmp_state_dir):
-    entry = {"input": "/a.jpg", "output": "/a.png"}
-    append_history(entry)
+    """The STORED record (not the caller's dict) gets `v` stamped. The
+    earlier version of this test asserted mutation on the caller dict —
+    that was a side-effect bug; the test now reads back via load_history
+    and verifies the persisted record has the schema version."""
+    append_history({"input": "/a.jpg", "output": "/a.png"})
+    [entry] = load_history()
     assert entry["v"] == HISTORY_SCHEMA_VERSION
 
 
@@ -55,6 +59,47 @@ def test_load_history_tolerates_corrupted_lines(tmp_state_dir):
     assert len(entries) == 2  # corrupted line dropped, others survive
     assert entries[0]["id"] == 1
     assert entries[1]["id"] == 2
+
+
+def test_load_history_warns_on_corrupted_line(tmp_state_dir, capsys):
+    """Silent `pass` on JSONDecodeError loses user data with no feedback.
+    A warn surfaces the loss so the user knows. (python-reviewer I3)"""
+    from imgen.history import HISTORY_FILE
+    HISTORY_FILE.write_text(
+        json.dumps({"id": 1, "input": "/a.jpg"}) + "\n"
+        + "{broken\n"
+    )
+    load_history()
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "skip" in combined.lower() or "malformed" in combined.lower()
+
+
+def test_append_history_does_not_mutate_caller_dict(tmp_state_dir):
+    """`entry["id"] = ...` was being written into the caller's dict
+    as a hidden side-effect. (python-reviewer C1)"""
+    original = {"input": "/a.jpg", "output": "/a.png"}
+    snapshot = dict(original)
+    append_history(original)
+    # Caller's dict must be untouched
+    assert original == snapshot
+
+
+def test_append_history_resets_mode_on_existing_world_readable_file(tmp_state_dir):
+    """If history.jsonl pre-existed at 0o644 (e.g. v0.1.0 install before
+    the v0.1.1 chmod fix), os.open(O_CREAT, 0o600) ignores mode on existing
+    files. Must explicitly fchmod under the lock. (security I3)"""
+    import os as _os
+    from imgen.history import HISTORY_FILE
+    # Pre-create with permissive mode
+    HISTORY_FILE.write_text("")
+    HISTORY_FILE.chmod(0o644)
+    assert (HISTORY_FILE.stat().st_mode & 0o777) == 0o644
+
+    append_history({"input": "/a.jpg", "output": "/a.png"})
+
+    mode = HISTORY_FILE.stat().st_mode & 0o777
+    assert mode == 0o600, f"history.jsonl mode {oct(mode)} after append, want 0o600"
 
 
 def test_replay_entry_refuses_future_schema(tmp_state_dir, capsys):

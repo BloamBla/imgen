@@ -30,6 +30,7 @@ from .styles import list_styles
 
 
 __all__ = [
+    "CONFIG_MAX_BYTES",
     "ConfigError",
     "DEFAULTS_SCHEMA",
     "UI_SCHEMA",
@@ -39,6 +40,11 @@ __all__ = [
     "effective_defaults",
     "effective_output_dir",
 ]
+
+# Cap config.toml size so a rogue/oversized file can't OOM tomllib.
+# Real configs are well under 1 KB; the cap is several orders of magnitude
+# above realistic use.
+CONFIG_MAX_BYTES = 1 * 1024 * 1024  # 1 MB
 
 
 class ConfigError(Exception):
@@ -91,6 +97,14 @@ DEFAULTS_SCHEMA: dict[str, _SchemaEntry] = {
         "path string",
         lambda v: isinstance(v, str),
     ),
+    "mlx_cache_gb": (
+        "int 1..256",
+        lambda v: _is_int_not_bool(v) and 1 <= v <= 256,
+    ),
+    "battery_stop": (
+        "int 0..100",
+        lambda v: _is_int_not_bool(v) and 0 <= v <= 100,
+    ),
 }
 
 UI_SCHEMA: dict[str, _SchemaEntry] = {
@@ -108,11 +122,23 @@ UI_SCHEMA: dict[str, _SchemaEntry] = {
 # ── Loaders + validator ──────────────────────────────────────────────────
 
 def load_config(path: Path) -> dict[str, Any]:
-    """Read TOML file. Missing → empty dict. Malformed → empty + warn.
+    """Read TOML file. Missing → empty dict. Malformed/oversized → empty + warn.
 
     Pure on the file contents; no side effects beyond the warn print.
+
+    Cap at CONFIG_MAX_BYTES (1 MB) so a rogue file can't OOM tomllib,
+    which slurps the whole file before parsing.
     """
     if not path.exists():
+        return {}
+    try:
+        size = path.stat().st_size
+    except OSError as e:
+        warn(f"Couldn't stat {path}: {e} — using built-in defaults")
+        return {}
+    if size > CONFIG_MAX_BYTES:
+        warn(f"{path} too large ({size} bytes; cap {CONFIG_MAX_BYTES}) "
+             "— using built-in defaults")
         return {}
     try:
         with path.open("rb") as f:

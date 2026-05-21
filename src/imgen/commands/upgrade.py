@@ -112,9 +112,13 @@ def cmd_upgrade(args) -> int:
     pip = VENV_BIN / "pip"
     try:
         subprocess.check_call(
-            [str(pip), "install", "--upgrade", target]
+            [str(pip), "install", "--upgrade", target],
+            timeout=300,
         )
         ok(f"mflux is now {check_mflux()}")
     except subprocess.CalledProcessError as e:
         die(f"mflux upgrade failed: {e}", code=3)
+    except subprocess.TimeoutExpired:
+        die("mflux upgrade timed out after 5 min — check your network",
+            code=3)
     return 0

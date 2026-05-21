@@ -27,6 +27,7 @@ from typing import Any, Callable
 __all__ = [
     "BUILTIN_STYLES",
     "STYLES",
+    "USER_STYLE_MAX_BYTES",
     "UserStyleError",
     "get_style",
     "list_styles",
@@ -34,6 +35,12 @@ __all__ = [
     "load_user_styles_dir",
     "merge_user_styles",
 ]
+
+# Cap on per-file size for ~/.imgen/styles.d/*.toml. Real style files are
+# under 2 KB (one prompt + a few tunings); 256 KB is way above realistic
+# use, while still bounded to defend against a rogue/oversized file
+# OOM'ing tomllib.
+USER_STYLE_MAX_BYTES = 256 * 1024
 
 
 BUILTIN_STYLES: dict[str, dict] = {
@@ -176,6 +183,15 @@ def load_user_style_file(path: Path) -> dict[str, Any]:
     """
     # Local import to avoid the styles → colors → … cycle risk
     from .colors import warn
+
+    try:
+        size = path.stat().st_size
+    except OSError as e:
+        raise UserStyleError(f"{path}: {e}") from e
+    if size > USER_STYLE_MAX_BYTES:
+        raise UserStyleError(
+            f"{path}: too large ({size} bytes; cap {USER_STYLE_MAX_BYTES})"
+        )
 
     try:
         with path.open("rb") as f:
