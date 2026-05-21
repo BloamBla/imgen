@@ -38,7 +38,10 @@ from .commands import (
     cmd_setup,
     cmd_upgrade,
 )
+from .config import ConfigError, effective_defaults, load_validated_config
+from .defaults import DEFAULTS
 from .parser import build_parser, print_styles
+from .paths import CONFIG_FILE
 
 _KNOWN_SUBCOMMANDS = {
     "setup", "doctor", "upgrade", "clean",
@@ -68,9 +71,33 @@ def main() -> int:
     if first_positional and first_positional not in _KNOWN_SUBCOMMANDS:
         argv = ["generate"] + argv
 
+    # Load ~/.imgen/config.toml best-effort. A broken config WARNs and
+    # falls back to built-in defaults rather than blocking — keeps
+    # `imgen --version`/`doctor` working when the user's config has a
+    # typo'd value.
+    try:
+        config = load_validated_config(CONFIG_FILE)
+    except ConfigError as e:
+        warn(f"~/.imgen/config.toml: {e}")
+        warn("Falling back to built-in defaults. Fix the file or remove it.")
+        config = {"defaults": {}, "ui": {}}
+
+    merged_defaults = effective_defaults(config["defaults"], DEFAULTS)
+
     epilog = __doc__.split("Usage:", 1)[1] if __doc__ else None
-    parser = build_parser(epilog=epilog)
+    parser = build_parser(epilog=epilog, defaults=merged_defaults)
     args = parser.parse_args(argv)
+
+    # Stash config-aware values for handlers (commands/generate.py reads
+    # these). `imgen_` prefix to avoid clashing with any future argparse
+    # field name.
+    args.imgen_merged_defaults = merged_defaults
+    args.imgen_config_output_dir = config["defaults"].get("output_dir")
+
+    # UI: [ui] open_in_preview = false → behave like --no-open by default
+    if getattr(args, "no_open", False) is False:
+        if config["ui"].get("open_in_preview", True) is False:
+            args.no_open = True
 
     # Top-level info actions: handled before subcommand dispatch
     if getattr(args, "list_styles", False):

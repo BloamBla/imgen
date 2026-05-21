@@ -17,6 +17,7 @@ from pathlib import Path
 from ..backends import BACKENDS, build_mflux_cmd
 from ..checks import check_mflux, check_resources, check_venv
 from ..colors import C, die, err, ok, step, warn
+from ..config import effective_output_dir
 from ..defaults import DEFAULTS, PREVIEW_OVERRIDES
 from ..history import append_history
 from ..images import apply_scope, detect_resolution
@@ -27,6 +28,12 @@ from ..tokens import load_token
 
 
 def cmd_generate(args) -> int:
+    # Config-aware defaults (config.toml [defaults] merged over module
+    # DEFAULTS, populated in cli.main). For old callers that bypass
+    # cli.main — e.g. direct test invocation — fall back to module DEFAULTS.
+    merged_defaults = getattr(args, "imgen_merged_defaults", DEFAULTS)
+    config_output_dir = getattr(args, "imgen_config_output_dir", None)
+
     # 1) Validate input
     input_path = Path(args.image).expanduser().resolve()
     if not input_path.exists():
@@ -48,7 +55,7 @@ def cmd_generate(args) -> int:
         negative = ""
         style_name = "custom"
     else:
-        style_name = args.style or DEFAULTS["style"]
+        style_name = args.style or merged_defaults["style"]
         try:
             preset = get_style(style_name)
         except KeyError as e:
@@ -66,34 +73,34 @@ def cmd_generate(args) -> int:
             prompt = apply_scope(prompt, args.scope)
 
     # 3b) Resolve final parameter values:
-    #   CLI flag (if set) > style preset > preview override > global default
+    #   CLI flag (if set) > style preset > preview override > config/global default
     if args.steps is not None:
         final_steps = args.steps
     elif args.preview:
         final_steps = PREVIEW_OVERRIDES["steps"]
     else:
-        final_steps = DEFAULTS["steps"]
+        final_steps = merged_defaults["steps"]
 
     if args.quantize is not None:
         final_quantize = args.quantize
     elif args.preview:
         final_quantize = PREVIEW_OVERRIDES["quantize"]
     else:
-        final_quantize = DEFAULTS["quantize"]
+        final_quantize = merged_defaults["quantize"]
 
     if args.guidance is not None:
         final_guidance = args.guidance
     elif preset and "guidance" in preset:
         final_guidance = preset["guidance"]
     else:
-        final_guidance = DEFAULTS["guidance"]
+        final_guidance = merged_defaults["guidance"]
 
     if args.strength is not None:
         final_strength = args.strength
     elif preset and "strength" in preset:
         final_strength = preset["strength"]
     else:
-        final_strength = DEFAULTS["strength"]
+        final_strength = merged_defaults["strength"]
 
     # 4) Resolution
     if args.width and args.height:
@@ -101,13 +108,15 @@ def cmd_generate(args) -> int:
     else:
         width, height = detect_resolution(input_path, preview=args.preview)
 
-    # 5) Output path
+    # 5) Output path. Precedence on the auto-derived dir:
+    #    env IMGEN_OUTPUT_DIR > config.toml [defaults] output_dir > module default
     if args.output:
         output_path = Path(args.output).expanduser().resolve()
     else:
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        DEFAULT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        output_path = DEFAULT_OUTPUT_DIR / f"{input_path.stem}_{style_name}_{ts}.png"
+        output_dir = effective_output_dir(config_output_dir, DEFAULT_OUTPUT_DIR)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / f"{input_path.stem}_{style_name}_{ts}.png"
 
     # 6) Backend & token
     backend = args.backend

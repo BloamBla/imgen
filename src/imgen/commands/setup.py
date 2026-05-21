@@ -10,7 +10,9 @@ from pathlib import Path
 
 from ..checks import check_mflux, check_venv
 from ..colors import C, dim, die, info, ok, step, warn
+from ..defaults import DEFAULTS
 from ..paths import (
+    CONFIG_FILE,
     DEFAULT_OUTPUT_DIR,
     IMGEN_HOME,
     STATE_DIR,
@@ -18,6 +20,26 @@ from ..paths import (
     VENV_BIN,
 )
 from ..tokens import load_token, save_token_atomic, validate_token
+
+
+_STARTER_CONFIG_TEMPLATE = f"""\
+# imgen config — uncomment lines to override built-in defaults.
+# All keys are optional; missing keys fall back to module DEFAULTS.
+# Precedence: CLI flag > this file > built-in DEFAULTS.
+
+[defaults]
+# style = "{DEFAULTS['style']}"             # one of: imgen --list-styles
+# backend = "{DEFAULTS['backend']}"             # "flux" (needs HF token) | "qwen" (open)
+# quantize = {DEFAULTS['quantize']}                  # 3, 4, 5, 6, or 8
+# steps = {DEFAULTS['steps']}                    # 1..200
+# guidance = {DEFAULTS['guidance']}                # 0.5..15.0  (preset may override)
+# strength = {DEFAULTS['strength']}               # 0.0..1.0   (preset may override)
+# output_dir = "~/Desktop/imgen"  # env IMGEN_OUTPUT_DIR still wins over this
+
+[ui]
+# open_in_preview = true          # auto-open result in Preview (default true)
+# color = "auto"                  # "auto" | "always" | "never"  (reserved for v0.3)
+"""
 
 
 def cmd_setup(_args) -> int:
@@ -104,6 +126,21 @@ def cmd_setup(_args) -> int:
     # State dirs
     STATE_DIR.mkdir(mode=0o700, exist_ok=True)
     DEFAULT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Starter config.toml — only if not present, never overwrite. All
+    # keys commented out so defaults stay in effect until the user opts in.
+    print()
+    info("Config file")
+    if CONFIG_FILE.exists():
+        ok(f"Config already at {CONFIG_FILE}")
+    else:
+        try:
+            CONFIG_FILE.write_text(_STARTER_CONFIG_TEMPLATE)
+            CONFIG_FILE.chmod(0o600)
+            ok(f"Created starter config at {CONFIG_FILE}")
+            print(f"   {C.DIM}Edit to customize style/backend/output_dir/etc.{C.END}")
+        except OSError as e:
+            warn(f"Couldn't write {CONFIG_FILE}: {e}")
 
     # Shell alias — only for bootstrap-installed users. pipx users have
     # `imgen` in PATH via ~/.local/bin/ already; an alias would shadow.

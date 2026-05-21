@@ -13,8 +13,9 @@ from ..checks import (
     get_memory_gb,
 )
 from ..colors import C, dim, err, info, ok, step, warn
+from ..config import ConfigError, load_validated_config
 from ..defaults import MIN_BATTERY_PCT, MIN_DISK_GB, RAM_REQUIRED_GB
-from ..paths import HF_CACHE, IMGEN_HOME, TOKEN_FILE, VENV_BIN
+from ..paths import CONFIG_FILE, HF_CACHE, IMGEN_HOME, TOKEN_FILE, VENV_BIN
 from ..styles import STYLES, list_styles
 from ..tokens import check_token_perms, load_token
 
@@ -159,6 +160,26 @@ def cmd_doctor(_args) -> int:
         ok(f"unpacked at {IMGEN_HOME} (no git — manual reinstall to update)")
     else:
         ok("pipx install (use `pipx upgrade imgen` for updates)")
+
+    # User config
+    print()
+    info("User config")
+    if not CONFIG_FILE.exists():
+        dim(f"   (no {CONFIG_FILE} — using built-in defaults)")
+        dim("   Run `imgen setup` to create a starter template.")
+    else:
+        try:
+            cfg = load_validated_config(CONFIG_FILE)
+            n_defaults = len(cfg["defaults"])
+            n_ui = len(cfg["ui"])
+            ok(f"{CONFIG_FILE}: {n_defaults} default(s), {n_ui} ui setting(s)")
+            for k, v in cfg["defaults"].items():
+                print(f"   {C.DIM}[defaults] {k} = {v!r}{C.END}")
+            for k, v in cfg["ui"].items():
+                print(f"   {C.DIM}[ui] {k} = {v!r}{C.END}")
+        except ConfigError as e:
+            err(f"{CONFIG_FILE}: {e}")
+            issues += 1
 
     print()
     if issues == 0 and mflux_ver and tok:

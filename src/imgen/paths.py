@@ -32,6 +32,7 @@ VENV_BIN = Path(sys.executable).parent
 # Persistent state — independent of install mode.
 STATE_DIR = Path.home() / ".imgen"
 HISTORY_FILE = STATE_DIR / "history.jsonl"
+CONFIG_FILE = STATE_DIR / "config.toml"
 TOKEN_FILE = Path.home() / ".hf_token"
 DEFAULT_OUTPUT_DIR = Path(
     os.environ.get("IMGEN_OUTPUT_DIR", Path.home() / "Desktop" / "imgen")

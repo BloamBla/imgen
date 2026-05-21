@@ -120,13 +120,36 @@ For 32 GB Macs, **Q8** is recommended for FLUX Kontext.
   - License acceptance at https://huggingface.co/black-forest-labs/FLUX.1-Kontext-dev
 - `qwen` — **Qwen-Image-Edit-2509** — open model, no token required. Lower quality at low quants.
 
+## Persistent config
+
+`imgen setup` creates `~/.imgen/config.toml` with every key commented out. Uncomment what you want to override:
+
+```toml
+[defaults]
+style = "anime"
+backend = "qwen"            # save the FLUX token check for one-off --backend flux
+quantize = 4
+steps = 12
+guidance = 4.0
+strength = 0.6
+output_dir = "~/Pictures/imgen"
+
+[ui]
+open_in_preview = false     # don't auto-open results
+```
+
+**Precedence:** CLI flag > `~/.imgen/config.toml` > built-in defaults. Bad value (e.g. `steps = 999`) → `imgen` warns and falls back to built-ins until you fix the file. Unknown keys are dropped with a warning so old `imgen` versions don't break on configs written by newer ones.
+
+For `output_dir` specifically, `$IMGEN_OUTPUT_DIR` env var still wins over config — env is the one-off override channel.
+
 ## Environment
 
 | Variable / file        | Purpose |
 |------------------------|---------|
 | `~/.hf_token`          | HuggingFace token (chmod 600) |
 | `$HF_TOKEN`            | Overrides `~/.hf_token` |
-| `$IMGEN_OUTPUT_DIR`    | Override default output dir |
+| `$IMGEN_OUTPUT_DIR`    | One-off override of output dir (beats config.toml) |
+| `~/.imgen/config.toml` | Persistent defaults — see [Persistent config](#persistent-config) |
 | `~/.imgen/history.jsonl` | Generation history (JSONL, schema-versioned) |
 | `~/imgen/.venv/`       | bootstrap install — mflux + imgen venv |
 | `~/.local/pipx/venvs/imgen/` | pipx install — mflux + imgen venv |

@@ -8,6 +8,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from typing import Any
+
 from . import __version__
 from .backends import BACKENDS
 from .colors import C, step
@@ -54,13 +56,23 @@ def _safe_output_path(s: str) -> str:
 
 # ── Parser ───────────────────────────────────────────────────────────────
 
-def build_parser(epilog: str | None = None) -> argparse.ArgumentParser:
+def build_parser(
+    epilog: str | None = None,
+    defaults: dict[str, Any] | None = None,
+) -> argparse.ArgumentParser:
     """Build the top-level argparse parser.
 
     `epilog` is the usage-examples text shown after the help options. cli.py
     passes its module docstring here so the source of truth for that text
     stays with the entry module.
+
+    `defaults` is the effective DEFAULTS dict (config.toml `[defaults]`
+    merged over the module DEFAULTS). Used for argparse `default=` slots
+    on `--style`/`--backend` so the CLI default reflects any user config.
     """
+    if defaults is None:
+        defaults = DEFAULTS
+
     p = argparse.ArgumentParser(
         prog="imgen",
         description="Photo style transfer for Apple Silicon Macs.",
@@ -102,15 +114,18 @@ def build_parser(epilog: str | None = None) -> argparse.ArgumentParser:
     # generate (default — no subcommand, positional image)
     g = sub.add_parser("generate",
                        help="Generate styled image (default command)")
-    _add_generate_args(g)
+    _add_generate_args(g, defaults)
 
     return p
 
 
-def _add_generate_args(p: argparse.ArgumentParser) -> None:
+def _add_generate_args(
+    p: argparse.ArgumentParser,
+    defaults: dict[str, Any],
+) -> None:
     p.add_argument("image", help="Path to input photo")
     p.add_argument("-s", "--style", choices=list_styles(),
-                   help=f"Style preset (default: {DEFAULTS['style']})")
+                   help=f"Style preset (default: {defaults['style']})")
     p.add_argument("--custom-prompt",
                    help="Custom prompt (overrides --style)")
     p.add_argument("-o", "--output", type=_safe_output_path,
@@ -118,22 +133,22 @@ def _add_generate_args(p: argparse.ArgumentParser) -> None:
                         f"(default: {DEFAULT_OUTPUT_DIR}/<auto>.png)")
     # Override args use default=None so we can tell "user set" from "use default"
     p.add_argument("--steps", type=_int_range(1, 200), default=None,
-                   help=f"Inference steps 1..200 (default {DEFAULTS['steps']}, "
+                   help=f"Inference steps 1..200 (default {defaults['steps']}, "
                         f"preview {PREVIEW_OVERRIDES['steps']})")
     p.add_argument("-g", "--guidance", type=_float_range(0.5, 15.0), default=None,
-                   help=f"Guidance scale 0.5..15 (default {DEFAULTS['guidance']}, "
+                   help=f"Guidance scale 0.5..15 (default {defaults['guidance']}, "
                         "style preset may override)")
     p.add_argument("--strength", type=_float_range(0.0, 1.0), default=None,
-                   help=f"Image strength 0..1 (default {DEFAULTS['strength']}, "
+                   help=f"Image strength 0..1 (default {defaults['strength']}, "
                         "style preset may override)")
     p.add_argument("--seed", type=_int_range(0, 2**32 - 1),
                    help="Seed (default: random)")
     p.add_argument("--backend", choices=list(BACKENDS),
-                   default=DEFAULTS["backend"],
-                   help=f"Backend (default {DEFAULTS['backend']})")
+                   default=defaults["backend"],
+                   help=f"Backend (default {defaults['backend']})")
     p.add_argument("-q", "--quantize", type=int, choices=[3, 4, 5, 6, 8],
                    default=None,
-                   help=f"Quantization (default {DEFAULTS['quantize']}, "
+                   help=f"Quantization (default {defaults['quantize']}, "
                         f"preview {PREVIEW_OVERRIDES['quantize']})")
     p.add_argument("--scope", choices=["person", "scene"],
                    help="person=transform person only (keep background); "
