@@ -91,7 +91,11 @@ def build_parser(
     # setup / doctor / upgrade
     sub.add_parser("setup", help="First-time install & token setup")
     sub.add_parser("doctor", help="Check environment & cached models")
-    u = sub.add_parser("upgrade", help=f"Upgrade mflux to pinned {MFLUX_PIN}")
+    u = sub.add_parser(
+        "upgrade",
+        help=f"Self-update imgen (git pull + reinstall) + refresh mflux "
+             f"(pinned {MFLUX_PIN})",
+    )
     u.add_argument("--latest", action="store_true",
                    help="Install newest mflux instead of pinned version "
                         "(may have breaking changes)")

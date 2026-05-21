@@ -7,20 +7,25 @@ Uses mflux (MLX-native) under the hood. Default backend is FLUX Kontext Dev
 Usage:
     imgen photo.jpg                              # default: pixar style
     imgen photo.jpg --style anime
-    imgen photo.jpg --custom-prompt "..."
+    imgen photo.jpg --custom-prompt "..."        # prompt in argv (visible to `ps auxww`)
+    imgen photo.jpg --custom-prompt -            # prompt from stdin (hidden from ps)
+    imgen photo.jpg --prompt-file ~/p.txt        # prompt from file (hidden from ps)
     imgen photo.jpg -s simpsons --steps 30 --strength 0.7
     imgen photo.jpg --backend qwen               # use Qwen Edit instead of FLUX
 
     imgen --list-styles
     imgen --dry-run photo.jpg --style anime
 
-    imgen setup                                  # first-time install / token
-    imgen doctor                                 # check environment
-    imgen upgrade                                # update mflux
+    imgen setup                                  # first-time install / token / config / styles.d
+    imgen doctor                                 # check environment + cached models + user config
+    imgen upgrade                                # self-update imgen + refresh mflux
     imgen clean [--all]                          # cleanup HF cache
     imgen history [--last N]                     # show generation history
     imgen last                                   # repeat last generation
     imgen replay <id>                            # repeat generation by id
+
+User config: ~/.imgen/config.toml — see README
+User styles: ~/.imgen/styles.d/*.toml — see README
 """
 from __future__ import annotations
 
