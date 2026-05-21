@@ -21,10 +21,16 @@ def tmp_state_dir(tmp_path, monkeypatch):
 
     import imgen.history as history_mod
     import imgen.paths as paths_mod
+    import imgen.styles as styles_mod
 
     monkeypatch.setattr(paths_mod, "STATE_DIR", state_dir)
     monkeypatch.setattr(paths_mod, "HISTORY_FILE", history_file)
     # history.py imported HISTORY_FILE at module load — rebind locally too
     monkeypatch.setattr(history_mod, "HISTORY_FILE", history_file)
+    # styles.py caches the merged built-in + user-styles dict on first
+    # access; reset so a test using this fixture sees the patched
+    # STATE_DIR/styles.d (which is empty in the tmp dir) rather than
+    # the real ~/.imgen/styles.d state from a previous test.
+    monkeypatch.setattr(styles_mod, "_cached_merged", None)
 
     return state_dir

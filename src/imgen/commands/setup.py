@@ -127,6 +127,26 @@ def cmd_setup(_args) -> int:
     STATE_DIR.mkdir(mode=0o700, exist_ok=True)
     DEFAULT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+    # User-styles directory (empty placeholder so the user finds where to
+    # drop their .toml files without reading README first)
+    styles_dir = STATE_DIR / "styles.d"
+    if not styles_dir.exists():
+        styles_dir.mkdir()
+        (styles_dir / "README.txt").write_text(
+            "Drop *.toml files here to add user style presets.\n"
+            "Filename (without .toml) becomes the style name.\n"
+            "Required fields: none — but if `prompt` is missing, you'll\n"
+            "need to pass --custom-prompt at run time.\n"
+            "Optional fields: prompt, negative, guidance (0.5-15),\n"
+            "                 strength (0-1).\n"
+            "\n"
+            "Example: ~/.imgen/styles.d/noir.toml\n"
+            '  prompt = "film noir, black and white, dramatic shadows"\n'
+            '  negative = "color, daylight"\n'
+            "  guidance = 4.5\n"
+            "  strength = 0.65\n"
+        )
+
     # Starter config.toml — only if not present, never overwrite. All
     # keys commented out so defaults stay in effect until the user opts in.
     print()

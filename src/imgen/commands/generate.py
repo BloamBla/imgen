@@ -43,25 +43,52 @@ def cmd_generate(args) -> int:
     if not input_path.is_file():
         die(f"Not a file: {input_path}", code=2)
 
-    # 2) Validate style vs custom-prompt
-    if args.style and args.custom_prompt:
-        die("Cannot use both --style and --custom-prompt; pick one",
-            code=2)
-
-    # 3) Build prompt
+    # 2) Resolve style preset if --style passed
     preset: dict | None = None
-    if args.custom_prompt:
-        prompt = args.custom_prompt
-        negative = ""
-        style_name = "custom"
-    else:
-        style_name = args.style or merged_defaults["style"]
+    if args.style:
         try:
-            preset = get_style(style_name)
-        except KeyError as e:
-            name = e.args[0] if e.args else str(e)
-            die(f"Unknown style: {name}",
+            preset = get_style(args.style)
+        except KeyError:
+            die(f"Unknown style: {args.style}",
                 code=2, hint="See: imgen --list-styles")
+
+    # 3) Determine prompt source. Four valid combos + two errors:
+    #    a. --style (w/ prompt)            → use style.prompt
+    #    b. --style (param-only, no prompt) + --custom-prompt → use both
+    #    c. --custom-prompt (no --style)   → use custom, no preset params
+    #    d. no --style and no --custom-prompt → use default style
+    #    ERR: --style (w/ prompt) AND --custom-prompt   → mutex
+    #    ERR: --style (param-only) AND no --custom-prompt → no prompt anywhere
+    if args.custom_prompt:
+        if preset and preset.get("prompt"):
+            die("--style (which has a prompt) and --custom-prompt are "
+                "mutually exclusive.",
+                code=2,
+                hint="To use only a style's parameters with your own prompt, "
+                     "create a param-only TOML (no `prompt` field) in "
+                     "~/.imgen/styles.d/.")
+        prompt = args.custom_prompt
+        negative = preset.get("negative", "") if preset else ""
+        style_name = args.style or "custom"
+    else:
+        if preset is None:
+            # No --style at all → load the default style
+            style_name = merged_defaults["style"]
+            try:
+                preset = get_style(style_name)
+            except KeyError:
+                die(f"Default style '{style_name}' not found",
+                    code=2,
+                    hint="Check ~/.imgen/config.toml [defaults] style, "
+                         "or run: imgen --list-styles")
+        else:
+            style_name = args.style
+        if not preset.get("prompt"):
+            die(f"Style '{style_name}' has no prompt — pass --custom-prompt "
+                "to supply one.",
+                code=2,
+                hint="Param-only styles in ~/.imgen/styles.d/ need a "
+                     "CLI-supplied prompt.")
         prompt = preset["prompt"]
         negative = preset.get("negative", "")
 

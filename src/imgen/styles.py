@@ -1,6 +1,12 @@
 """
 Style presets for imgen.
 
+Built-in presets live in BUILTIN_STYLES — modifying that dict needs a
+code change. Users can drop additional `.toml` files into
+`~/.imgen/styles.d/`; load_user_styles_dir() reads them and
+merge_user_styles() folds them into the final dict surfaced via
+list_styles() / get_style() (cached per process).
+
 Each preset is a fully-formed instruction for FLUX Kontext / Qwen Image Edit
 to transform a person photo into a target art style while preserving identity.
 
@@ -9,7 +15,28 @@ work well (e.g. Simpsons needs higher guidance to nail the distinctive look).
 """
 from __future__ import annotations
 
-STYLES: dict[str, dict] = {
+import re
+import tomllib
+from pathlib import Path
+from typing import Any, Callable
+
+# Forward-declared so loader can warn without a circular import on .colors.
+# Resolved below the BUILTIN_STYLES dict.
+
+
+__all__ = [
+    "BUILTIN_STYLES",
+    "STYLES",
+    "UserStyleError",
+    "get_style",
+    "list_styles",
+    "load_user_style_file",
+    "load_user_styles_dir",
+    "merge_user_styles",
+]
+
+
+BUILTIN_STYLES: dict[str, dict] = {
     "pixar": {
         "prompt": (
             "Transform this person into a polished Pixar 3D animation style, "
@@ -103,14 +130,172 @@ STYLES: dict[str, dict] = {
 }
 
 
+# Backwards-compatible alias. Points at the built-in dict only — DO NOT
+# read from this in code that needs to see user styles. Use get_style()
+# / list_styles() instead, which transparently include user TOMLs from
+# ~/.imgen/styles.d/. Kept so the existing test_styles.py and any
+# downstream code expecting `STYLES` keeps working — those callers only
+# care about the built-in set.
+STYLES: dict[str, dict] = BUILTIN_STYLES
+
+
+class UserStyleError(Exception):
+    """Raised when a user TOML in ~/.imgen/styles.d/ has bad shape/values."""
+
+
+# ── Field validators ─────────────────────────────────────────────────────
+
+def _is_number_not_bool(v: Any) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+_USER_STYLE_SCHEMA: dict[str, tuple[str, Callable[[Any], bool]]] = {
+    "prompt": ("string", lambda v: isinstance(v, str) and v.strip() != ""),
+    "negative": ("string", lambda v: isinstance(v, str)),
+    "guidance": (
+        "number 0.5..15.0",
+        lambda v: _is_number_not_bool(v) and 0.5 <= v <= 15.0,
+    ),
+    "strength": (
+        "number 0.0..1.0",
+        lambda v: _is_number_not_bool(v) and 0.0 <= v <= 1.0,
+    ),
+}
+
+
+def load_user_style_file(path: Path) -> dict[str, Any]:
+    """Parse one .toml file into a preset dict.
+
+    All fields are OPTIONAL — a TOML with only `guidance = 4.0` is a valid
+    "param-only" preset. cmd_generate checks at use time whether the
+    selected style has a prompt or whether the user supplied
+    --custom-prompt to fill the gap.
+
+    Unknown fields are dropped with a warn (forward-compat with future
+    schema additions). Known fields with bad values raise UserStyleError.
+    """
+    # Local import to avoid the styles → colors → … cycle risk
+    from .colors import warn
+
+    try:
+        with path.open("rb") as f:
+            raw = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        raise UserStyleError(f"{path}: {e}") from e
+
+    validated: dict[str, Any] = {}
+    for key, value in raw.items():
+        if key not in _USER_STYLE_SCHEMA:
+            warn(f"{path}: unknown field '{key}' — ignored")
+            continue
+        expected_desc, predicate = _USER_STYLE_SCHEMA[key]
+        if not predicate(value):
+            raise UserStyleError(
+                f"{path}: {key}: expected {expected_desc}, got {value!r}"
+            )
+        validated[key] = value
+    return validated
+
+
+def load_user_styles_dir(dir_path: Path) -> dict[str, dict]:
+    """Scan a directory for `*.toml` files; return {filename_stem: preset}.
+
+    Files are processed in alphabetical filename order so the conflict-
+    resolution suffixes are deterministic. A single bad file warns but
+    doesn't kill the rest of the load.
+    """
+    from .colors import warn
+
+    if not dir_path.exists() or not dir_path.is_dir():
+        return {}
+    result: dict[str, dict] = {}
+    for path in sorted(dir_path.iterdir()):
+        if path.suffix != ".toml" or not path.is_file():
+            continue
+        try:
+            result[path.stem] = load_user_style_file(path)
+        except UserStyleError as e:
+            warn(f"Skipping {path.name}: {e}")
+            continue
+    return result
+
+
+_SUFFIX_RE = re.compile(r"_\d{4}$")
+
+
+def _strip_auto_suffix(name: str) -> str:
+    """Drop a trailing `_NNNN` (4-digit) so re-suffixing produces clean
+    `anime_0002` rather than `anime_0001_0001` when a user file already
+    happens to be named `anime_0001`."""
+    return _SUFFIX_RE.sub("", name)
+
+
+def _find_free_suffix(base: str, taken: dict) -> str:
+    """Return base + `_NNNN` for smallest N >= 1 such that the result is
+    not already a key in `taken`."""
+    n = 1
+    while f"{base}_{n:04d}" in taken:
+        n += 1
+    return f"{base}_{n:04d}"
+
+
+def merge_user_styles(
+    builtins: dict[str, dict],
+    user: dict[str, dict],
+) -> dict[str, dict]:
+    """Combine built-in styles with user styles. Built-in names always win.
+
+    A user-style whose desired name clashes with an existing entry gets
+    renamed to `<name>_NNNN` (4-digit zero-padded counter). The built-in
+    or earlier user style with that name stays accessible under its
+    original name.
+
+    Does NOT mutate either input.
+    """
+    from .colors import warn
+
+    merged: dict[str, dict] = dict(builtins)
+    for name, preset in user.items():
+        if name not in merged:
+            merged[name] = preset
+            continue
+        # Strip any existing _NNNN before re-suffixing so we don't stack:
+        # anime_0001 → anime_0002, not anime_0001_0001.
+        base = _strip_auto_suffix(name)
+        new_name = _find_free_suffix(base, merged)
+        warn(
+            f"styles.d: '{name}' already taken (built-in or earlier user file), "
+            f"registered as '{new_name}'"
+        )
+        merged[new_name] = preset
+    return merged
+
+
+# ── Public accessors (cached merge of built-ins + user styles) ───────────
+
+_cached_merged: dict[str, dict] | None = None
+
+
+def _load_merged_styles() -> dict[str, dict]:
+    """Lazy-merge built-ins + ~/.imgen/styles.d/. Cached per process."""
+    global _cached_merged
+    if _cached_merged is None:
+        # Local import to avoid module-load circularity with paths.py
+        from .paths import STATE_DIR
+        user = load_user_styles_dir(STATE_DIR / "styles.d")
+        _cached_merged = merge_user_styles(BUILTIN_STYLES, user)
+    return _cached_merged
+
+
 def list_styles() -> list[str]:
-    """Return sorted list of available style keys."""
-    return sorted(STYLES.keys())
+    """Return sorted list of available style keys (built-in + user)."""
+    return sorted(_load_merged_styles().keys())
 
 
 def get_style(name: str) -> dict:
     """Return preset dict by name. Raises KeyError if unknown."""
-    if name not in STYLES:
-        available = ", ".join(list_styles())
+    merged = _load_merged_styles()
+    if name not in merged:
+        available = ", ".join(sorted(merged.keys()))
         raise KeyError(f"Unknown style '{name}'. Available: {available}")
-    return STYLES[name]
+    return merged[name]

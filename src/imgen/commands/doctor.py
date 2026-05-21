@@ -15,8 +15,15 @@ from ..checks import (
 from ..colors import C, dim, err, info, ok, step, warn
 from ..config import ConfigError, load_validated_config
 from ..defaults import MIN_BATTERY_PCT, MIN_DISK_GB, RAM_REQUIRED_GB
-from ..paths import CONFIG_FILE, HF_CACHE, IMGEN_HOME, TOKEN_FILE, VENV_BIN
-from ..styles import STYLES, list_styles
+from ..paths import (
+    CONFIG_FILE,
+    HF_CACHE,
+    IMGEN_HOME,
+    STATE_DIR,
+    TOKEN_FILE,
+    VENV_BIN,
+)
+from ..styles import BUILTIN_STYLES, list_styles, load_user_styles_dir
 from ..tokens import check_token_perms, load_token
 
 
@@ -57,12 +64,19 @@ def cmd_doctor(_args) -> int:
     elif venv_ok:
         warn("Pillow not installed (auto-aspect-ratio will fail)")
 
-    # styles
-    if STYLES:
-        ok(f"Styles loaded: {', '.join(list_styles())}")
+    # styles (built-in + user-supplied TOMLs)
+    if BUILTIN_STYLES:
+        ok(f"Built-in styles: {', '.join(sorted(BUILTIN_STYLES.keys()))}")
     else:
-        err("styles registry is empty")
+        err("Built-in styles registry is empty")
         issues += 1
+    user_styles_dir = STATE_DIR / "styles.d"
+    user_styles = load_user_styles_dir(user_styles_dir)
+    if user_styles:
+        ok(f"User styles ({user_styles_dir}): "
+           f"{', '.join(sorted(user_styles.keys()))}")
+    else:
+        dim(f"   (no user styles in {user_styles_dir})")
 
     # disk
     free_gb = check_disk_gb()

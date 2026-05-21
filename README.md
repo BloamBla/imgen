@@ -67,6 +67,28 @@ imgen photo.jpg --preview                    # first run downloads FLUX (~24 GB,
 
 See full prompts with `imgen --list-styles`.
 
+### User-defined styles
+
+Drop `*.toml` files into `~/.imgen/styles.d/` (auto-created by `imgen setup`). Filename becomes the style name:
+
+```toml
+# ~/.imgen/styles.d/noir.toml — full style
+prompt = "film noir, black and white, dramatic shadows, 1940s detective"
+negative = "color, daylight, modern"
+guidance = 4.5
+strength = 0.65
+```
+
+```toml
+# ~/.imgen/styles.d/punchy.toml — param-only preset (no prompt)
+guidance = 5.5
+strength = 0.7
+```
+
+Use a full style with `-s noir`. Use a param-only style by combining with `--custom-prompt`: `imgen photo.jpg -s punchy --custom-prompt "..."` — the style supplies the tuning, the CLI supplies the prompt.
+
+If a user style's filename clashes with a built-in (e.g. `styles.d/anime.toml`), it gets registered as `anime_0001` (`_0002`, `_0003`, …) with a warning, and the built-in stays accessible as `anime`. Built-ins always win on name; the suffix mechanism makes overrides explicit.
+
 ## All commands
 
 ```bash
@@ -150,6 +172,7 @@ For `output_dir` specifically, `$IMGEN_OUTPUT_DIR` env var still wins over confi
 | `$HF_TOKEN`            | Overrides `~/.hf_token` |
 | `$IMGEN_OUTPUT_DIR`    | One-off override of output dir (beats config.toml) |
 | `~/.imgen/config.toml` | Persistent defaults — see [Persistent config](#persistent-config) |
+| `~/.imgen/styles.d/*.toml` | User-defined style presets — see [User-defined styles](#user-defined-styles) |
 | `~/.imgen/history.jsonl` | Generation history (JSONL, schema-versioned) |
 | `~/imgen/.venv/`       | bootstrap install — mflux + imgen venv |
 | `~/.local/pipx/venvs/imgen/` | pipx install — mflux + imgen venv |

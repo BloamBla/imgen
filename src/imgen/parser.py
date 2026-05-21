@@ -15,7 +15,7 @@ from .backends import BACKENDS
 from .colors import C, step
 from .defaults import DEFAULTS, MFLUX_PIN, PREVIEW_OVERRIDES
 from .paths import DEFAULT_OUTPUT_DIR, SAFE_OUTPUT_EXTS
-from .styles import STYLES, list_styles
+from .styles import get_style, list_styles
 
 
 # ── Argparse validators ──────────────────────────────────────────────────
@@ -173,9 +173,10 @@ def print_styles() -> int:
     """Handler for the top-level --list-styles flag."""
     step("Available styles")
     for name in list_styles():
-        preset = STYLES[name]
-        print(f"  {C.BOLD}{name:10}{C.END} "
+        preset = get_style(name)
+        prompt = preset.get("prompt") or "(param-only — pass --custom-prompt)"
+        print(f"  {C.BOLD}{name:14}{C.END} "
               f"{C.DIM}(guidance={preset.get('guidance')}, "
               f"strength={preset.get('strength')}){C.END}")
-        print(f"             {preset['prompt'][:80]}...")
+        print(f"             {prompt[:80]}...")
     return 0
