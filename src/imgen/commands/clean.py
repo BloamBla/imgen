@@ -7,7 +7,33 @@ import datetime
 import shutil
 
 from ..colors import C, dim, info, ok, step, warn
-from ..paths import HF_CACHE
+from ..paths import HF_CACHE, LOG_RETENTION_DAYS, LOGS_DIR
+
+
+def _prune_old_batch_logs(args) -> None:
+    """Delete ~/.imgen/logs/*.log older than LOG_RETENTION_DAYS.
+
+    Quiet when there's nothing to do (matches the .incomplete pattern).
+    Respects --dry-run (only counts, doesn't delete).
+    """
+    if not LOGS_DIR.exists():
+        return
+    cutoff = datetime.datetime.now().timestamp() - LOG_RETENTION_DAYS * 86400
+    removed = 0
+    removed_size = 0
+    for log in LOGS_DIR.glob("*.log"):
+        try:
+            if log.stat().st_mtime < cutoff:
+                removed_size += log.stat().st_size
+                if not getattr(args, "dry_run", False):
+                    log.unlink()
+                removed += 1
+        except OSError:
+            pass
+    if removed:
+        verb = "Would remove" if getattr(args, "dry_run", False) else "Removed"
+        ok(f"{verb} {removed} old batch log(s) older than "
+           f"{LOG_RETENTION_DAYS} days ({removed_size / 1024:.1f} KB)")
 
 
 def cmd_clean(args) -> int:
@@ -16,6 +42,8 @@ def cmd_clean(args) -> int:
 
     if not HF_CACHE.exists():
         ok("Cache is empty")
+        # Even if no HF cache, still prune old batch logs.
+        _prune_old_batch_logs(args)
         return 0
 
     # Always: delete .incomplete files older than 24h
@@ -35,6 +63,9 @@ def cmd_clean(args) -> int:
            f"({incomplete_size / (1024**3):.1f} GB)")
     else:
         dim("No stale .incomplete files to remove")
+
+    # Also prune old per-batch log files (~/.imgen/logs/*.log > 30 days).
+    _prune_old_batch_logs(args)
 
     if args.all:
         models = sorted(HF_CACHE.glob("models--*"))

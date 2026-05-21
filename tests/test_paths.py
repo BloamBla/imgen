@@ -15,7 +15,7 @@ import datetime as dt
 
 import pytest
 
-from imgen.paths import auto_run_dirname, next_available_run_dir
+from imgen.paths import auto_run_dirname, ensure_logs_dir, next_available_run_dir
 
 
 # ── auto_run_dirname format ─────────────────────────────────────────────
@@ -83,3 +83,53 @@ def test_next_available_run_dir_does_not_create(tmp_path):
     'this is the path that *would* be used' shouldn't get a side effect."""
     target = next_available_run_dir(tmp_path, "2026-05-21-14-30-12")
     assert not target.exists()
+
+
+# ── ensure_logs_dir ─────────────────────────────────────────────────────
+
+def test_ensure_logs_dir_creates_with_0o700(tmp_path, monkeypatch):
+    """Per-batch logs dir is restrictive — stderr can contain prompts that
+    were redacted-via-substring (not bullet-proof) so don't leak even
+    that to co-tenants."""
+    import imgen.paths as paths_mod
+    monkeypatch.setattr(paths_mod, "STATE_DIR", tmp_path / ".imgen")
+    monkeypatch.setattr(paths_mod, "LOGS_DIR", tmp_path / ".imgen" / "logs")
+
+    ensure_logs_dir()
+
+    state = tmp_path / ".imgen"
+    logs = state / "logs"
+    assert state.is_dir()
+    assert logs.is_dir()
+    assert (state.stat().st_mode & 0o777) == 0o700
+    assert (logs.stat().st_mode & 0o777) == 0o700
+
+
+def test_ensure_logs_dir_idempotent(tmp_path, monkeypatch):
+    import imgen.paths as paths_mod
+    state = tmp_path / ".imgen"
+    state.mkdir(mode=0o700)
+    logs = state / "logs"
+    logs.mkdir(mode=0o700)
+    monkeypatch.setattr(paths_mod, "STATE_DIR", state)
+    monkeypatch.setattr(paths_mod, "LOGS_DIR", logs)
+
+    ensure_logs_dir()  # should not raise on pre-existing dirs
+
+    assert logs.is_dir()
+    assert (logs.stat().st_mode & 0o777) == 0o700
+
+
+def test_ensure_logs_dir_tightens_loose_perms(tmp_path, monkeypatch):
+    """If logs dir somehow exists with 0o755, chmod it back to 0o700."""
+    import imgen.paths as paths_mod
+    state = tmp_path / ".imgen"
+    state.mkdir(mode=0o700)
+    logs = state / "logs"
+    logs.mkdir(mode=0o755)
+    monkeypatch.setattr(paths_mod, "STATE_DIR", state)
+    monkeypatch.setattr(paths_mod, "LOGS_DIR", logs)
+
+    ensure_logs_dir()
+
+    assert (logs.stat().st_mode & 0o777) == 0o700

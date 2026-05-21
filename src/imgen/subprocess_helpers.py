@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 # Minimum 36 chars after `hf_` so a truncated prefix at a buffer boundary
 # (e.g. `hf_AbC\n` flushed via the last-`\r`-or-`\n` rule before the rest
@@ -18,35 +19,51 @@ import sys
 _TOKEN_LEAK_RE = re.compile(rb"hf_[A-Za-z0-9_\-]{36,}")
 
 
-def run_with_stderr_redaction(cmd: list[str], env: dict) -> int:
+def run_with_stderr_redaction(
+    cmd: list[str],
+    env: dict,
+    log_path: Path | None = None,
+) -> int:
     """Run subprocess streaming stderr to terminal with HF token patterns
     redacted on the fly.
 
     Flushes up to the last `\\n` or `\\r` in the chunk, keeping the tail
     buffered so multi-byte UTF-8 sequences (e.g. tqdm's unicode block chars)
     don't get split mid-character.
+
+    log_path (v0.2.3+): if given, the SAME redacted bytes are appended to
+    this file in real time. Same byte stream as the terminal, so the
+    on-disk log is also token-safe. Caller is responsible for creating
+    the parent dir (typically `paths.ensure_logs_dir()`).
     """
     proc = subprocess.Popen(
         cmd, env=env, stderr=subprocess.PIPE, bufsize=0,
     )
     buffer = b""
+    log_file = log_path.open("ab") if log_path is not None else None
     try:
         assert proc.stderr is not None
         while True:
             chunk = proc.stderr.read(256)
             if not chunk:
                 if buffer:
-                    sys.stderr.buffer.write(
-                        _TOKEN_LEAK_RE.sub(b"hf_***REDACTED***", buffer))
+                    redacted = _TOKEN_LEAK_RE.sub(b"hf_***REDACTED***", buffer)
+                    sys.stderr.buffer.write(redacted)
                     sys.stderr.buffer.flush()
+                    if log_file is not None:
+                        log_file.write(redacted)
+                        log_file.flush()
                 break
             buffer += chunk
             last = max(buffer.rfind(b"\n"), buffer.rfind(b"\r"))
             if last >= 0:
                 to_flush, buffer = buffer[:last + 1], buffer[last + 1:]
-                sys.stderr.buffer.write(
-                    _TOKEN_LEAK_RE.sub(b"hf_***REDACTED***", to_flush))
+                redacted = _TOKEN_LEAK_RE.sub(b"hf_***REDACTED***", to_flush)
+                sys.stderr.buffer.write(redacted)
                 sys.stderr.buffer.flush()
+                if log_file is not None:
+                    log_file.write(redacted)
+                    log_file.flush()
         # wait() must be inside the same try so a hang here is still
         # interruptible via Ctrl-C — previously the wait() was outside
         # and a wedged mflux child made the shell unresponsive.
@@ -58,6 +75,9 @@ def run_with_stderr_redaction(cmd: list[str], env: dict) -> int:
         except subprocess.TimeoutExpired:
             proc.kill()
         raise
+    finally:
+        if log_file is not None:
+            log_file.close()
     return proc.returncode
 
 

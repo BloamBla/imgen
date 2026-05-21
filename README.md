@@ -11,6 +11,8 @@ imgen photo.jpg --custom-prompt "Mona Lisa painting style"
 
 Every run creates a timestamped folder under `~/Desktop/imgen/` — e.g. `~/Desktop/imgen/2026-05-21-14-30-12/photo-pixar.png`. The result opens in Preview automatically. Change the parent with `--output-dir PATH` or pin an exact path with `--output FILE`.
 
+**Multi-style** (v0.2.3+): pass `--style anime,ghibli,pixar` to generate N images from one input in a single run — all dropped into the same timestamped folder, named by `<input>-<style>.png`. Confirms with a `[y/N]` summary before starting (skip with `-y/--yes`).
+
 ## Requirements
 
 - **macOS on Apple Silicon** (M1/M2/M3/M4) — MLX does not support Intel
@@ -198,6 +200,7 @@ For `output_dir` specifically the resolution is **`--output-dir` CLI flag > `$IM
 | `~/.imgen/config.toml` | Persistent defaults — see [Persistent config](#persistent-config) |
 | `~/.imgen/styles.d/*.toml` | User-defined style presets — see [User-defined styles](#user-defined-styles) |
 | `~/.imgen/history.jsonl` | Generation history (JSONL, schema-versioned) |
+| `~/.imgen/logs/<batch-id>.log` | Per-batch stderr log (multi-style runs only; mflux output with HF tokens redacted). Auto-pruned by `imgen clean` after 30 days. |
 | `~/imgen/.venv/`       | bootstrap install — mflux + imgen venv |
 | `~/.local/pipx/venvs/imgen/` | pipx install — mflux + imgen venv |
 

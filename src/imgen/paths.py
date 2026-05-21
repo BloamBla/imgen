@@ -34,6 +34,11 @@ VENV_BIN = Path(sys.executable).parent
 STATE_DIR = Path.home() / ".imgen"
 HISTORY_FILE = STATE_DIR / "history.jsonl"
 CONFIG_FILE = STATE_DIR / "config.toml"
+# Per-batch logs (v0.2.3+) — one .log file per multi-style invocation,
+# named after batch_id. Single-style generations don't write here.
+# Retention is enforced by `imgen clean` (30 days).
+LOGS_DIR = STATE_DIR / "logs"
+LOG_RETENTION_DAYS = 30
 # HF token moved under STATE_DIR in v0.2.2 — `~/.hf_token` was a generic
 # name other HF tooling might claim. Legacy path is still read as a
 # fallback and auto-migrated to TOKEN_FILE on first load. See tokens.py.
@@ -91,5 +96,21 @@ def ensure_state_dir() -> None:
     elif (STATE_DIR.stat().st_mode & 0o777) != 0o700:
         try:
             STATE_DIR.chmod(0o700)
+        except OSError:
+            pass
+
+
+def ensure_logs_dir() -> None:
+    """Create LOGS_DIR (0o700) under STATE_DIR.
+
+    Used by cmd_generate when it opens a per-batch log for multi-style
+    runs. STATE_DIR is created first so a fresh user never hits ENOENT.
+    """
+    ensure_state_dir()
+    if not LOGS_DIR.exists():
+        LOGS_DIR.mkdir(mode=0o700)
+    elif (LOGS_DIR.stat().st_mode & 0o777) != 0o700:
+        try:
+            LOGS_DIR.chmod(0o700)
         except OSError:
             pass

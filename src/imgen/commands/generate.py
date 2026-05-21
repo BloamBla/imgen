@@ -24,9 +24,11 @@ from ..history import append_history, load_history
 from ..images import apply_scope, detect_resolution
 from ..paths import (
     DEFAULT_OUTPUT_DIR,
+    LOGS_DIR,
     SAFE_OUTPUT_EXTS,
     VENV_BIN,
     auto_run_dirname,
+    ensure_logs_dir,
     next_available_run_dir,
 )
 from ..prompt_input import PromptInputError, resolve_prompt
@@ -381,6 +383,25 @@ def cmd_generate(args) -> int:
     else:
         explicit_output.parent.mkdir(parents=True, exist_ok=True)
 
+    # 12a) Per-batch log file (multi-style only). One log per invocation,
+    # named after batch_id. mflux stderr (after token redaction) is
+    # appended; cmd_generate writes per-image markers below for grep-
+    # ability. Retention (30 days) is enforced by `imgen clean`.
+    log_path: Path | None = None
+    if multi:
+        ensure_logs_dir()
+        log_path = LOGS_DIR / f"{batch_id}.log"
+        with log_path.open("a") as f:
+            f.write(
+                f"# imgen batch {batch_id}\n"
+                f"# started:  {datetime.datetime.now().isoformat(timespec='seconds')}\n"
+                f"# input:    {input_path}\n"
+                f"# styles:   {', '.join(it['style_name'] for it in iterations)}\n"
+                f"# output:   {run_dir}\n"
+                f"# backend:  {backend} q{heaviest_quant}  "
+                f"preview={args.preview}  scope={args.scope}  seed={seed}\n"
+            )
+
     # 12) Minimal env (don't forward random secrets from parent shell).
     env: dict[str, str] = {}
     for key in ("PATH", "HOME", "USER", "LANG", "LC_ALL", "TMPDIR",
@@ -444,20 +465,36 @@ def cmd_generate(args) -> int:
             "batch_index": f"{idx}/{total}" if multi else None,
         }
 
+        if log_path is not None:
+            with log_path.open("a") as f:
+                f.write(f"\n=== [{idx}/{total}] {style_name} → "
+                        f"{started.isoformat(timespec='seconds')} ===\n")
         try:
-            returncode = run_with_stderr_redaction(cmd, env=env)
+            returncode = run_with_stderr_redaction(cmd, env=env, log_path=log_path)
         except KeyboardInterrupt:
             warn("Cancelled by user")
-            history_entry["status"] = "cancelled"
-            history_entry["duration_sec"] = int(
+            cancel_duration = int(
                 (datetime.datetime.now() - started).total_seconds())
+            history_entry["status"] = "cancelled"
+            history_entry["duration_sec"] = cancel_duration
             append_history(history_entry)
+            if log_path is not None:
+                with log_path.open("a") as f:
+                    f.write(f"\n=== [{idx}/{total}] {style_name} → "
+                            f"CANCELLED in {cancel_duration}s ===\n")
             return 130
 
         duration = int((datetime.datetime.now() - started).total_seconds())
         history_entry["duration_sec"] = duration
         history_entry["status"] = "success" if returncode == 0 else "failed"
         append_history(history_entry)
+
+        if log_path is not None:
+            with log_path.open("a") as f:
+                marker = ("ok" if returncode == 0
+                          else f"FAILED exit={returncode}")
+                f.write(f"\n=== [{idx}/{total}] {style_name} → {marker} "
+                        f"in {duration}s ===\n")
 
         if returncode != 0:
             err(f"mflux exited with code {returncode} after {duration}s "
