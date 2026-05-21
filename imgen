@@ -28,9 +28,11 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import fcntl
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -127,6 +129,11 @@ RAM_REQUIRED_GB = {
 MIN_DISK_GB = 5             # minimum free disk to attempt
 MIN_BATTERY_PCT = 30        # below this on battery → warn (not block)
 
+# Output extensions allowed for --output and auto-`open`. macOS `open`
+# delegates to the registered app for the extension, so .terminal / .command /
+# .sh etc would auto-execute. Restrict to known-safe image suffixes.
+SAFE_OUTPUT_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
+
 # ── Colors ───────────────────────────────────────────────────────────────
 USE_COLOR = sys.stdout.isatty()
 
@@ -185,11 +192,13 @@ def check_mflux() -> str | None:
             [str(VENV_DIR / "bin" / "pip"), "show", "mflux"],
             stderr=subprocess.DEVNULL,
             text=True,
+            timeout=10,
         )
         for line in out.splitlines():
             if line.startswith("Version:"):
                 return line.split(":", 1)[1].strip()
-    except (subprocess.CalledProcessError, FileNotFoundError):
+    except (subprocess.CalledProcessError, FileNotFoundError,
+            subprocess.TimeoutExpired):
         return None
     return None
 
@@ -203,9 +212,10 @@ def check_pillow() -> str | None:
              "import PIL; print(PIL.__version__)"],
             stderr=subprocess.DEVNULL,
             text=True,
+            timeout=10,
         )
         return out.strip()
-    except subprocess.CalledProcessError:
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return None
 
 
@@ -222,13 +232,14 @@ def get_memory_gb() -> tuple[float, float]:
     """
     try:
         total = int(subprocess.check_output(
-            ["sysctl", "-n", "hw.memsize"]
+            ["sysctl", "-n", "hw.memsize"], timeout=5
         ).decode().strip())
         pagesize = int(subprocess.check_output(
-            ["sysctl", "-n", "hw.pagesize"]
+            ["sysctl", "-n", "hw.pagesize"], timeout=5
         ).decode().strip())
-        vm_out = subprocess.check_output(["vm_stat"]).decode()
-    except (subprocess.CalledProcessError, FileNotFoundError, ValueError):
+        vm_out = subprocess.check_output(["vm_stat"], timeout=5).decode()
+    except (subprocess.CalledProcessError, FileNotFoundError, ValueError,
+            subprocess.TimeoutExpired):
         return 0.0, 0.0
 
     pages = {}
@@ -248,9 +259,10 @@ def get_battery() -> tuple[int | None, bool]:
     """Return (percent, on_ac). For desktop Macs returns (None, True)."""
     try:
         out = subprocess.check_output(
-            ["pmset", "-g", "batt"], stderr=subprocess.DEVNULL
+            ["pmset", "-g", "batt"], stderr=subprocess.DEVNULL, timeout=5
         ).decode()
-    except (subprocess.CalledProcessError, FileNotFoundError):
+    except (subprocess.CalledProcessError, FileNotFoundError,
+            subprocess.TimeoutExpired):
         return None, True
     pct_match = re.search(r"(\d+)%", out)
     pct = int(pct_match.group(1)) if pct_match else None
@@ -263,9 +275,11 @@ def find_running_mflux() -> int | None:
     """Return PID of another running mflux-generate-* process, or None."""
     try:
         out = subprocess.check_output(
-            ["pgrep", "-f", "mflux-generate"], stderr=subprocess.DEVNULL
+            ["pgrep", "-f", "mflux-generate"], stderr=subprocess.DEVNULL,
+            timeout=5
         ).decode().strip()
-    except (subprocess.CalledProcessError, FileNotFoundError):
+    except (subprocess.CalledProcessError, FileNotFoundError,
+            subprocess.TimeoutExpired):
         return None
     our_pid = os.getpid()
     for line in out.splitlines():
@@ -326,7 +340,12 @@ def validate_token(token: str) -> str | None:
             headers={"Authorization": f"Bearer {token}"},
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read())
+            # Cap response size — defends against DNS hijack / captive portal
+            # serving arbitrary bytes
+            raw = resp.read(64_000)
+            if len(raw) >= 64_000:
+                return None  # suspiciously large; bail
+            data = json.loads(raw)
             return data.get("name") or data.get("fullname")
     except (urllib.error.URLError, json.JSONDecodeError, TimeoutError, OSError):
         return None
@@ -358,7 +377,64 @@ def _float_range(lo: float, hi: float):
     return validator
 
 
+def _safe_output_path(s: str) -> str:
+    """argparse validator: reject output paths with non-image extensions."""
+    ext = Path(s).suffix.lower()
+    if ext not in SAFE_OUTPUT_EXTS:
+        raise argparse.ArgumentTypeError(
+            f"output extension must be one of "
+            f"{sorted(SAFE_OUTPUT_EXTS)}, got '{ext or '(none)'}'")
+    return s
+
+
 # ── Image utilities ──────────────────────────────────────────────────────
+
+_TOKEN_LEAK_RE = re.compile(rb"hf_[A-Za-z0-9_\-]{8,}")
+
+
+def run_with_stderr_redaction(cmd: list[str], env: dict) -> int:
+    """Run subprocess streaming stderr to terminal with HF token patterns
+    redacted on the fly.
+
+    Why this exists: mflux / huggingface_hub can include Authorization
+    headers (`Bearer hf_xxx`) in HTTP error tracebacks written to stderr.
+    Without filtering, the token would print to the user's terminal on any
+    download failure. We stream line-by-line so tqdm progress bars (which
+    use `\r`) still appear in real time.
+    """
+    proc = subprocess.Popen(
+        cmd, env=env, stderr=subprocess.PIPE, bufsize=0,
+    )
+    buffer = b""
+    try:
+        assert proc.stderr is not None
+        while True:
+            chunk = proc.stderr.read(256)
+            if not chunk:
+                if buffer:
+                    sys.stderr.buffer.write(
+                        _TOKEN_LEAK_RE.sub(b"hf_***REDACTED***", buffer))
+                    sys.stderr.buffer.flush()
+                break
+            buffer += chunk
+            # Flush up to and including the last line boundary, keep tail.
+            # Tokens never span \n or \r in real-world tracebacks/progress.
+            last = max(buffer.rfind(b"\n"), buffer.rfind(b"\r"))
+            if last >= 0:
+                to_flush, buffer = buffer[:last + 1], buffer[last + 1:]
+                sys.stderr.buffer.write(
+                    _TOKEN_LEAK_RE.sub(b"hf_***REDACTED***", to_flush))
+                sys.stderr.buffer.flush()
+        proc.wait()
+    except KeyboardInterrupt:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        raise
+    return proc.returncode
+
 
 def _format_cmd(cmd: list[str]) -> str:
     """Pretty-print a command, keeping --flag value pairs on the same line."""
@@ -396,10 +472,11 @@ def detect_resolution(image_path: Path, preview: bool = False) -> tuple[int, int
              "i = ImageOps.exif_transpose(Image.open(sys.argv[1])); "
              "print(i.size[0], i.size[1])",
              str(image_path)],
-            stderr=subprocess.DEVNULL, text=True,
+            stderr=subprocess.DEVNULL, text=True, timeout=15,
         )
         w, h = map(int, out.split())
-    except (subprocess.CalledProcessError, ValueError) as e:
+    except (subprocess.CalledProcessError, ValueError,
+            subprocess.TimeoutExpired) as e:
         warn(f"Couldn't read image dimensions ({e}); defaulting to "
              f"{fallback[0]}x{fallback[1]}")
         return fallback
@@ -425,6 +502,7 @@ def apply_scope(prompt: str, scope: str | None) -> str:
 # ── Subcommand: doctor ───────────────────────────────────────────────────
 
 def cmd_doctor(_args):
+    issues = 0  # count blocking problems; return non-zero if any
     step("Checking environment")
     print()
 
@@ -436,27 +514,28 @@ def cmd_doctor(_args):
         warn(f"Python {py_version} (3.12+ recommended)")
 
     # venv
-    if check_venv():
+    venv_ok = check_venv()
+    if venv_ok:
         ok(f"venv at {VENV_DIR}")
     else:
         err(f"venv missing at {VENV_DIR}")
         print(f"   {C.DIM}Run: imgen setup{C.END}")
-        return 3
+        issues += 1
 
-    # mflux
-    mflux_ver = check_mflux()
+    # mflux (only if venv exists, otherwise can't even check)
+    mflux_ver = check_mflux() if venv_ok else None
     if mflux_ver:
         ok(f"mflux {mflux_ver}")
-    else:
+    elif venv_ok:
         err("mflux not installed")
         print(f"   {C.DIM}Run: imgen setup  (or: imgen upgrade){C.END}")
-        return 3
+        issues += 1
 
     # pillow
-    pil_ver = check_pillow()
+    pil_ver = check_pillow() if venv_ok else None
     if pil_ver:
         ok(f"Pillow {pil_ver}")
-    else:
+    elif venv_ok:
         warn("Pillow not installed (auto-aspect-ratio will fail)")
 
     # styles
@@ -464,7 +543,7 @@ def cmd_doctor(_args):
         ok(f"Styles loaded: {', '.join(list_styles())}")
     else:
         err("styles.py not found or empty")
-        return 3
+        issues += 1
 
     # disk
     free_gb = check_disk_gb()
@@ -554,7 +633,13 @@ def cmd_doctor(_args):
         dim("   (no models cached yet — first run will download)")
 
     print()
-    step("Everything ready" if mflux_ver and tok else "Some setup needed")
+    if issues == 0 and mflux_ver and tok:
+        step("Everything ready")
+        return 0
+    if issues > 0:
+        step(f"{issues} issue(s) found — see ❌ above")
+        return 1
+    step("Some setup needed (see ⚠️  above)")
     return 0
 
 
@@ -633,8 +718,16 @@ def cmd_setup(_args):
         if tok:
             if not tok.startswith("hf_"):
                 warn("Token doesn't start with 'hf_' — saving anyway")
-            TOKEN_FILE.write_text(tok)
-            TOKEN_FILE.chmod(0o600)
+            # Atomic write with restrictive perms from the start (no chmod race)
+            try:
+                if TOKEN_FILE.exists():
+                    TOKEN_FILE.unlink()
+                fd = os.open(str(TOKEN_FILE),
+                             os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "w") as f:
+                    f.write(tok)
+            except OSError as e:
+                die(f"Couldn't write {TOKEN_FILE}: {e}", code=3)
             ok(f"Token saved to {TOKEN_FILE} (chmod 600)")
             # Quick validation: HF whoami
             user = validate_token(tok)
@@ -662,7 +755,9 @@ def cmd_setup(_args):
         "fish": Path.home() / ".config" / "fish" / "config.fish",
     }
     rc_file = rc_files.get(shell_name)
-    alias_line = f'alias imgen="{IMGEN_HOME / "imgen"}"'
+    # shlex.quote() safely escapes paths containing quotes, spaces, $, ;, etc.
+    # so a repo cloned into a weird directory can't inject shell code.
+    alias_line = f"alias imgen={shlex.quote(str(IMGEN_HOME / 'imgen'))}"
 
     if rc_file is None:
         warn(f"Unknown shell '{shell_name}' — skipping alias setup")
@@ -790,22 +885,64 @@ def cmd_upgrade(args):
 # ── Subcommand: history / last / replay ──────────────────────────────────
 
 def load_history() -> list[dict]:
+    """Read history line-by-line so a massive file doesn't blow up RAM."""
     if not HISTORY_FILE.exists():
         return []
     entries = []
-    for line in HISTORY_FILE.read_text().splitlines():
-        if line.strip():
-            try:
-                entries.append(json.loads(line))
-            except json.JSONDecodeError:
-                pass
+    try:
+        with HISTORY_FILE.open("r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass  # tolerate corrupted lines
+    except OSError:
+        return []
     return entries
 
 
-def append_history(entry: dict):
-    STATE_DIR.mkdir(exist_ok=True)
-    with HISTORY_FILE.open("a") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+def _ensure_state_dir():
+    """Create STATE_DIR with restrictive perms (history may contain prompts)."""
+    if not STATE_DIR.exists():
+        STATE_DIR.mkdir(mode=0o700)
+    elif (STATE_DIR.stat().st_mode & 0o777) != 0o700:
+        # Best-effort tighten on legacy installs
+        try:
+            STATE_DIR.chmod(0o700)
+        except OSError:
+            pass
+
+
+def append_history(entry: dict) -> int:
+    """Assign id and append entry atomically under an exclusive flock.
+
+    Returns the assigned id. Locking ensures parallel runs don't collide
+    on the id counter, and POSIX append-mode + flock prevents interleaving
+    of long lines that exceed PIPE_BUF.
+    """
+    _ensure_state_dir()
+    # Open with mode 0600 if creating fresh
+    fd = os.open(str(HISTORY_FILE),
+                 os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        with os.fdopen(fd, "a") as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            try:
+                # Re-read under lock so two parallel writers don't collide
+                existing = load_history()
+                entry["id"] = max(
+                    (e.get("id", 0) for e in existing), default=0
+                ) + 1
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                return entry["id"]
+            finally:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+    except OSError as e:
+        err(f"Failed to write history: {e}")
+        return entry.get("id", 0)
 
 
 def cmd_history(args):
@@ -1054,16 +1191,19 @@ def cmd_generate(args):
           f"input: {input_path.name} → output: {output_path}{C.END}")
     print()
 
-    # 10) Run
-    env = os.environ.copy()
+    # 10) Run — minimal env (don't forward random secrets from parent shell)
+    env = {}
+    for key in ("PATH", "HOME", "USER", "LANG", "LC_ALL", "TMPDIR",
+                "HF_HOME", "HF_HUB_CACHE", "TRANSFORMERS_CACHE",
+                "MLX_METAL_PRECOMPILE_PATH"):
+        if key in os.environ:
+            env[key] = os.environ[key]
     if token:
         env["HF_TOKEN"] = token
 
     started = datetime.datetime.now()
-    existing = load_history()
-    history_id = max((e.get("id", 0) for e in existing), default=0) + 1
+    # Id is assigned by append_history() under flock to avoid parallel collisions
     history_entry = {
-        "id": history_id,
         "ts": started.isoformat(timespec="seconds"),
         "input": str(input_path),
         "output": str(output_path),
@@ -1084,7 +1224,7 @@ def cmd_generate(args):
     }
 
     try:
-        result = subprocess.run(cmd, env=env)
+        returncode = run_with_stderr_redaction(cmd, env=env)
     except KeyboardInterrupt:
         warn("Cancelled by user")
         history_entry["status"] = "cancelled"
@@ -1095,22 +1235,26 @@ def cmd_generate(args):
 
     duration = int((datetime.datetime.now() - started).total_seconds())
     history_entry["duration_sec"] = duration
-    history_entry["status"] = "success" if result.returncode == 0 else "failed"
+    history_entry["status"] = "success" if returncode == 0 else "failed"
     append_history(history_entry)
 
-    if result.returncode != 0:
-        err(f"mflux exited with code {result.returncode} after {duration}s")
-        return result.returncode
+    if returncode != 0:
+        err(f"mflux exited with code {returncode} after {duration}s")
+        return returncode
 
     print()
     ok(f"Done in {duration // 60}m {duration % 60}s — {output_path}")
 
-    # 11) Open in Preview
+    # 11) Open in Preview (defence-in-depth: re-check ext before `open`,
+    # since macOS `open` would auto-launch the registered app for the suffix)
     if not args.no_open:
-        try:
-            subprocess.run(["open", str(output_path)], check=False)
-        except FileNotFoundError:
-            pass
+        if output_path.suffix.lower() not in SAFE_OUTPUT_EXTS:
+            warn(f"Skipping auto-open: unsafe extension {output_path.suffix}")
+        else:
+            try:
+                subprocess.run(["open", str(output_path)], check=False)
+            except FileNotFoundError:
+                pass
 
     return 0
 
@@ -1128,7 +1272,7 @@ def build_parser():
     # Top-level utility flags
     p.add_argument("--list-styles", action="store_true",
                    help="List style presets and exit")
-    p.add_argument("--version", action="version", version="imgen 0.1.0")
+    p.add_argument("--version", action="version", version="imgen 0.1.1")
 
     sub = p.add_subparsers(dest="command", metavar="COMMAND")
 
@@ -1169,8 +1313,9 @@ def _add_generate_args(p):
                    help=f"Style preset (default: {DEFAULTS['style']})")
     p.add_argument("--custom-prompt",
                    help="Custom prompt (overrides --style)")
-    p.add_argument("-o", "--output",
-                   help=f"Output path (default: {DEFAULT_OUTPUT_DIR}/<auto>.png)")
+    p.add_argument("-o", "--output", type=_safe_output_path,
+                   help=f"Output path with .png/.jpg/.jpeg/.webp suffix "
+                        f"(default: {DEFAULT_OUTPUT_DIR}/<auto>.png)")
     # Override args use default=None so we can tell "user set" from "use default"
     p.add_argument("--steps", type=_int_range(1, 200), default=None,
                    help=f"Inference steps 1..200 (default {DEFAULTS['steps']}, "
@@ -1208,33 +1353,36 @@ def _add_generate_args(p):
                         "and try anyway. Use at your own risk.")
 
 
-def main():
-    # Special case: --list-styles before subcommand parsing
-    # Only match when it's the first user arg, so it can't fire from
-    # inside --custom-prompt text or other values.
-    if len(sys.argv) >= 2 and sys.argv[1] == "--list-styles":
-        step("Available styles")
-        for name in list_styles():
-            preset = STYLES[name]
-            print(f"  {C.BOLD}{name:10}{C.END} "
-                  f"{C.DIM}(guidance={preset.get('guidance')}, "
-                  f"strength={preset.get('strength')}){C.END}")
-            print(f"             {preset['prompt'][:80]}...")
-        return 0
+def _print_styles() -> int:
+    step("Available styles")
+    for name in list_styles():
+        preset = STYLES[name]
+        print(f"  {C.BOLD}{name:10}{C.END} "
+              f"{C.DIM}(guidance={preset.get('guidance')}, "
+              f"strength={preset.get('strength')}){C.END}")
+        print(f"             {preset['prompt'][:80]}...")
+    return 0
 
-    # If user passed a positional photo arg without a subcommand, default
-    # to "generate". This lets `imgen photo.jpg` and `imgen --dry-run
-    # photo.jpg ...` both work, while keeping `imgen --help` showing
-    # top-level help.
+
+def main():
+    # If the FIRST non-flag arg isn't a known subcommand, prepend "generate".
+    # Only checking the first positional avoids two prior pitfalls:
+    #   - a path like "last.jpg" being mistaken for the "last" subcommand
+    #   - an --option value that happens to match a subcommand name
+    #     blocking the shorthand dispatch
     argv = sys.argv[1:]
     known = {"setup", "doctor", "upgrade", "clean",
              "history", "last", "replay", "generate"}
-    has_positional = any(not a.startswith("-") for a in argv)
-    if has_positional and not any(a in known for a in argv):
+    first_positional = next((a for a in argv if not a.startswith("-")), None)
+    if first_positional and first_positional not in known:
         argv = ["generate"] + argv
 
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    # Top-level info actions: handled before subcommand dispatch
+    if getattr(args, "list_styles", False):
+        return _print_styles()
 
     handlers = {
         "setup": cmd_setup,
