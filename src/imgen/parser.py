@@ -127,7 +127,13 @@ def _add_generate_args(
     p.add_argument("-s", "--style", choices=list_styles(),
                    help=f"Style preset (default: {defaults['style']})")
     p.add_argument("--custom-prompt",
-                   help="Custom prompt (overrides --style)")
+                   help="Custom prompt text (overrides --style's prompt). "
+                        "Pass '-' to read from stdin — useful when the prompt "
+                        "shouldn't appear in `ps auxww`.")
+    p.add_argument("--prompt-file", type=Path, default=None,
+                   help="Read prompt from PATH instead of an argv string. "
+                        "Mutually exclusive with --custom-prompt. Keeps "
+                        "sensitive prompts out of process arguments.")
     p.add_argument("-o", "--output", type=_safe_output_path,
                    help=f"Output path with .png/.jpg/.jpeg/.webp suffix "
                         f"(default: {DEFAULT_OUTPUT_DIR}/<auto>.png)")

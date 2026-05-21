@@ -22,6 +22,7 @@ from ..defaults import DEFAULTS, PREVIEW_OVERRIDES
 from ..history import append_history
 from ..images import apply_scope, detect_resolution
 from ..paths import DEFAULT_OUTPUT_DIR, SAFE_OUTPUT_EXTS, VENV_BIN
+from ..prompt_input import PromptInputError, resolve_prompt
 from ..styles import get_style
 from ..subprocess_helpers import format_cmd, run_with_stderr_redaction
 from ..tokens import load_token
@@ -52,22 +53,33 @@ def cmd_generate(args) -> int:
             die(f"Unknown style: {args.style}",
                 code=2, hint="See: imgen --list-styles")
 
+    # 2a) Resolve effective custom prompt — could be argv text, stdin
+    # (--custom-prompt -), or a file (--prompt-file). Both file/stdin
+    # paths keep prompt text out of `ps auxww`.
+    try:
+        effective_custom_prompt = resolve_prompt(
+            custom_prompt=args.custom_prompt,
+            prompt_file=getattr(args, "prompt_file", None),
+        )
+    except PromptInputError as e:
+        die(str(e), code=2)
+
     # 3) Determine prompt source. Four valid combos + two errors:
     #    a. --style (w/ prompt)            → use style.prompt
-    #    b. --style (param-only, no prompt) + --custom-prompt → use both
-    #    c. --custom-prompt (no --style)   → use custom, no preset params
-    #    d. no --style and no --custom-prompt → use default style
-    #    ERR: --style (w/ prompt) AND --custom-prompt   → mutex
-    #    ERR: --style (param-only) AND no --custom-prompt → no prompt anywhere
-    if args.custom_prompt:
+    #    b. --style (param-only, no prompt) + custom-prompt → use both
+    #    c. custom-prompt (no --style)     → use custom, no preset params
+    #    d. no --style and no custom-prompt → use default style
+    #    ERR: --style (w/ prompt) AND custom-prompt → mutex
+    #    ERR: --style (param-only) AND no custom-prompt → no prompt anywhere
+    if effective_custom_prompt:
         if preset and preset.get("prompt"):
-            die("--style (which has a prompt) and --custom-prompt are "
-                "mutually exclusive.",
+            die("--style (which has a prompt) and a custom prompt "
+                "(--custom-prompt / --prompt-file) are mutually exclusive.",
                 code=2,
                 hint="To use only a style's parameters with your own prompt, "
                      "create a param-only TOML (no `prompt` field) in "
                      "~/.imgen/styles.d/.")
-        prompt = args.custom_prompt
+        prompt = effective_custom_prompt
         negative = preset.get("negative", "") if preset else ""
         style_name = args.style or "custom"
     else:
@@ -92,10 +104,13 @@ def cmd_generate(args) -> int:
         prompt = preset["prompt"]
         negative = preset.get("negative", "")
 
-    # 3a) Apply --scope (warn if combined with --custom-prompt)
+    # 3a) Apply --scope (warn if combined with a custom prompt — scope
+    # works by string-replacing tokens in built-in preset prompts and
+    # can't reliably apply to arbitrary user text).
     if args.scope:
-        if args.custom_prompt:
-            warn(f"--scope={args.scope} ignored when using --custom-prompt")
+        if effective_custom_prompt:
+            warn(f"--scope={args.scope} ignored when using a custom prompt "
+                 "(--custom-prompt / --prompt-file)")
         else:
             prompt = apply_scope(prompt, args.scope)
 
@@ -264,8 +279,11 @@ def cmd_generate(args) -> int:
         "ts": started.isoformat(timespec="seconds"),
         "input": str(input_path),
         "output": str(output_path),
-        "style": style_name if not args.custom_prompt else None,
-        "custom_prompt": args.custom_prompt,
+        # Store the EFFECTIVE prompt (resolved from --custom-prompt /
+        # --prompt-file / stdin) so `imgen replay` reproduces the actual
+        # text rather than re-reading stdin or a file that may have moved.
+        "style": style_name if not effective_custom_prompt else None,
+        "custom_prompt": effective_custom_prompt,
         "scope": args.scope,
         "preview": args.preview,
         "prompt": prompt,

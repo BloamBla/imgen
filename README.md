@@ -95,7 +95,9 @@ If a user style's filename clashes with a built-in (e.g. `styles.d/anime.toml`),
 # Generation
 imgen <photo>                                  # default style (pixar)
 imgen <photo> --style anime                    # preset
-imgen <photo> --custom-prompt "..."            # free-form
+imgen <photo> --custom-prompt "..."            # free-form (visible in `ps auxww` — see below)
+imgen <photo> --custom-prompt -                # ← read prompt from stdin (hidden from ps)
+imgen <photo> --prompt-file ~/prompts/x.txt    # ← read prompt from file (hidden from ps)
 imgen <photo> -s anime --preview               # fast mode (~3-10 min)
 imgen <photo> -s anime --scope person          # only restyle person, keep bg photorealistic
 imgen <photo> -s anime --scope scene           # restyle whole image
@@ -121,6 +123,22 @@ imgen history --last 50                        # more
 imgen last                                     # repeat last with new seed
 imgen replay 42                                # repeat #42
 ```
+
+## Keeping prompts out of `ps`
+
+Anything passed as `--custom-prompt "<text>"` lands in your shell's process arguments and is visible to other local users via `ps auxww`. For prompts you don't want exposed, use either:
+
+```bash
+# From a file (chmod 600 the file if it has secrets)
+imgen photo.jpg --prompt-file ~/.imgen/private-prompt.txt -s anime --scope person
+
+# From stdin — works with pipes, heredocs, pbpaste
+echo "private prompt" | imgen photo.jpg --custom-prompt - -s anime
+imgen photo.jpg --custom-prompt - <<< "$PROMPT"
+pbpaste | imgen photo.jpg --custom-prompt -
+```
+
+Both paths cap at 64 KB; missing file, empty content, or specifying both `--custom-prompt` and `--prompt-file` fail early with a clear message. The effective prompt (not the source file path or "-") is what gets stored in `~/.imgen/history.jsonl` so `imgen replay <id>` reproduces the actual text.
 
 ## Tuning
 
