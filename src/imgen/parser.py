@@ -15,7 +15,25 @@ from .backends import BACKENDS
 from .colors import C, step
 from .defaults import DEFAULTS, MFLUX_PIN, PREVIEW_OVERRIDES
 from .paths import DEFAULT_OUTPUT_DIR, SAFE_OUTPUT_EXTS
-from .styles import get_style, list_styles
+from .styles import get_style, list_styles, parse_style_list
+
+
+def _style_list_type(value: str) -> list[str]:
+    """argparse adapter for parse_style_list.
+
+    argparse swallows ValueError messages and re-wraps them as the
+    unhelpful `invalid X value: 'Y'`. Catching here and re-raising as
+    ArgumentTypeError surfaces our detailed error (which names the
+    offending styles plus the known set) directly to the user.
+
+    parse_style_list itself stays pure (no argparse import), so future
+    non-argparse callers — config validation, replay path, future
+    `imgen batch` — can use it without dragging argparse along.
+    """
+    try:
+        return parse_style_list(value)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e)) from e
 
 
 # ── Argparse validators ──────────────────────────────────────────────────
@@ -128,8 +146,18 @@ def _add_generate_args(
     defaults: dict[str, Any],
 ) -> None:
     p.add_argument("image", help="Path to input photo")
-    p.add_argument("-s", "--style", choices=list_styles(),
-                   help=f"Style preset (default: {defaults['style']})")
+    # --style accepts a comma-list. `--style anime` → 1 generation,
+    # `--style anime,ghibli,pixar` → 3 generations into the same run
+    # folder. parse_style_list validates each name, dedupes (stable,
+    # first occurrence wins, warn on dups). `choices=` is intentionally
+    # NOT used — argparse compares the whole token against the list
+    # which would reject the comma form.
+    p.add_argument(
+        "-s", "--style", type=_style_list_type, default=None,
+        metavar="STYLE[,STYLE,...]",
+        help=f"Style preset(s), comma-separated for multi-style "
+             f"(default: {defaults['style']}). See: imgen --list-styles",
+    )
     p.add_argument("--custom-prompt",
                    help="Custom prompt text (overrides --style's prompt). "
                         "Pass '-' to read from stdin — useful when the prompt "

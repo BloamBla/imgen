@@ -18,6 +18,7 @@ from .generate import cmd_generate
 # "user didn't pass this flag" semantics.
 _REPLAY_DEFAULTS = {
     "prompt_file": None,
+    "output_dir": None,
     "imgen_merged_defaults": DEFAULTS,
     "imgen_config_output_dir": None,
 }
@@ -69,9 +70,14 @@ def replay_entry(entry: dict) -> int:
             f"cannot replay.", code=1)
     info(f"Replaying #{entry.get('id')}: {entry.get('style')} on "
          f"{Path(image).name}")
+    # cmd_generate's args.style is list[str] | None as of v0.2.3 — history
+    # entries store a single string per generation (one entry per style in
+    # a multi-style invocation), so wrap into a 1-element list for replay.
+    saved_style = entry.get("style", "pixar")
+    style_list = [saved_style] if (saved_style and not entry.get("custom_prompt")) else None
     args = argparse.Namespace(
         image=image,
-        style=entry.get("style", "pixar") if not entry.get("custom_prompt") else None,
+        style=style_list,
         custom_prompt=entry.get("custom_prompt"),
         scope=entry.get("scope"),
         preview=entry.get("preview", False),
