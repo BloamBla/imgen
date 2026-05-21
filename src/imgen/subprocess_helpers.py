@@ -39,10 +39,29 @@ def run_with_stderr_redaction(
     proc = subprocess.Popen(
         cmd, env=env, stderr=subprocess.PIPE, bufsize=0,
     )
+    # Open via os.open with explicit 0o600 mode so logs survive a hostile
+    # umask on shared Macs — Path.open("ab") would inherit 0o644 from
+    # default umask, making the file world-readable inside LOGS_DIR's
+    # 0o700 wrapper. (security I1 from v0.2.3 review)
+    if log_path is not None:
+        # Lazy import to avoid the paths → subprocess_helpers → paths cycle
+        # for callers that don't pass log_path.
+        from .paths import open_log_file_append
+        log_file = open_log_file_append(log_path)
+    else:
+        log_file = None
     buffer = b""
-    log_file = log_path.open("ab") if log_path is not None else None
     try:
-        assert proc.stderr is not None
+        # Explicit guard rather than `assert`: asserts are stripped under
+        # `python -O` / PYTHONOPTIMIZE=1, and a None.read(...) call eight
+        # lines down would otherwise crash with an opaque AttributeError.
+        # (python C3 from v0.2.3 review)
+        if proc.stderr is None:
+            proc.kill()
+            raise RuntimeError(
+                "subprocess_helpers: stderr pipe missing — "
+                "this is a bug (stderr=PIPE not honoured)"
+            )
         while True:
             chunk = proc.stderr.read(256)
             if not chunk:

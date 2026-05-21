@@ -1,4 +1,4 @@
-"""All filesystem paths used by imgen + state-dir setup.
+"""Filesystem paths + small run/log helpers used by imgen.
 
 Two install modes:
   - Bootstrap mode: user cloned the repo to ~/imgen (or anywhere), runs
@@ -17,6 +17,27 @@ import datetime as _dt
 import os
 import sys
 from pathlib import Path
+from typing import BinaryIO
+
+__all__ = [
+    "CONFIG_FILE",
+    "DEFAULT_OUTPUT_DIR",
+    "HF_CACHE",
+    "HISTORY_FILE",
+    "IMGEN_HOME",
+    "LEGACY_TOKEN_FILE",
+    "LOG_RETENTION_DAYS",
+    "LOGS_DIR",
+    "SAFE_OUTPUT_EXTS",
+    "STATE_DIR",
+    "TOKEN_FILE",
+    "VENV_BIN",
+    "auto_run_dirname",
+    "ensure_logs_dir",
+    "ensure_state_dir",
+    "next_available_run_dir",
+    "open_log_file_append",
+]
 
 # IMGEN_HOME: repo checkout dir. Set by the bash shim at ~/imgen/imgen
 # before exec'ing the venv entry point. None for pipx-installed users —
@@ -77,8 +98,20 @@ def auto_run_dirname(now: _dt.datetime | None = None) -> str:
 def next_available_run_dir(parent: Path, dirname: str) -> Path:
     """Return parent/dirname, suffixing `_2`, `_3` if it already exists.
 
-    Pure: does not create the directory. Caller is responsible for
-    `mkdir(parents=True, exist_ok=True)` on the returned path.
+    Pure: does NOT create the directory. Caller mkdir's the returned
+    path after the user passes any confirm gates (so a cancel doesn't
+    orphan an empty dir).
+
+    Probe-then-caller-mkdir has a tiny race window between this call
+    and the eventual `mkdir(parents=True, exist_ok=True)`. For
+    single-user serial CLI usage two `imgen` invocations would have to
+    start within the same second AND target the same auto_run_dirname()
+    to collide — and even then `mkdir(exist_ok=True)` makes both
+    succeed and share the run folder (files inside still collide on
+    `<basename>-<style>.png` only if both use the same input + style).
+    Documented limitation, not a target for atomic-claim today; an
+    atomic refactor is queued for v0.2.4 alongside the cmd_generate
+    extraction that moves this call site after the confirm gate.
     """
     target = parent / dirname
     if not target.exists():
@@ -87,6 +120,24 @@ def next_available_run_dir(parent: Path, dirname: str) -> Path:
     while (parent / f"{dirname}_{i}").exists():
         i += 1
     return parent / f"{dirname}_{i}"
+
+
+def open_log_file_append(path: Path) -> BinaryIO:
+    """Open a log file for binary append with 0o600 perms from creation.
+
+    Used by per-batch logs (multi-style runs). Default umask on macOS
+    would give 0o644 — world-readable by other users on a shared Mac.
+    LOGS_DIR is already 0o700, but defence-in-depth: keep the files
+    themselves restrictive too, matching how ~/.imgen/hf_token is
+    handled. Token redaction in subprocess_helpers covers HF tokens
+    in the content; this guards against everything else in mflux's
+    stderr (paths, model traces, scope hints).
+
+    Returns a buffered binary file-like object — callers must encode()
+    any strings they want to write.
+    """
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    return os.fdopen(fd, "ab")
 
 
 def ensure_state_dir() -> None:

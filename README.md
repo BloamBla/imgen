@@ -96,7 +96,11 @@ If a user style's filename clashes with a built-in (e.g. `styles.d/anime.toml`),
 ```bash
 # Generation
 imgen <photo>                                  # default style (pixar)
-imgen <photo> --style anime                    # preset
+imgen <photo> --style anime                    # one preset
+imgen <photo> --style anime,ghibli,pixar       # multi-style — M images into one timestamped folder (asks [y/N])
+imgen <photo> --style anime,ghibli --yes       # multi-style, skip the confirm gate
+imgen <photo> --output-dir ~/Pictures/runs     # change parent of the timestamped run folder
+imgen <photo> -o explicit.png                  # bypass run-folder layout (mutex with --output-dir)
 imgen <photo> --custom-prompt "..."            # free-form (visible in `ps auxww` — see below)
 imgen <photo> --custom-prompt -                # ← read prompt from stdin (hidden from ps)
 imgen <photo> --prompt-file ~/prompts/x.txt    # ← read prompt from file (hidden from ps)

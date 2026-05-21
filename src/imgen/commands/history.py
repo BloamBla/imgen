@@ -19,6 +19,12 @@ from .generate import cmd_generate
 _REPLAY_DEFAULTS = {
     "prompt_file": None,
     "output_dir": None,
+    # `yes` skips the multi-style confirm gate. Replay always replays a
+    # single entry → cmd_generate's multi=False, gate never fires.
+    # Pinning it here means any future code that pushes replay through
+    # a multi=True path fails loudly instead of AttributeError'ing on
+    # `args.yes`. (python C1 from v0.2.3 review)
+    "yes": False,
     "imgen_merged_defaults": DEFAULTS,
     "imgen_config_output_dir": None,
 }
@@ -73,7 +79,10 @@ def replay_entry(entry: dict) -> int:
     # cmd_generate's args.style is list[str] | None as of v0.2.3 — history
     # entries store a single string per generation (one entry per style in
     # a multi-style invocation), so wrap into a 1-element list for replay.
-    saved_style = entry.get("style", "pixar")
+    # Default falls through to DEFAULTS["style"], not a hardcoded "pixar",
+    # so a future default-style change doesn't silently divert old replay.
+    # (python I2 from v0.2.3 review)
+    saved_style = entry.get("style") or DEFAULTS["style"]
     style_list = [saved_style] if (saved_style and not entry.get("custom_prompt")) else None
     args = argparse.Namespace(
         image=image,

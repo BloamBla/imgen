@@ -30,6 +30,7 @@ from ..paths import (
     auto_run_dirname,
     ensure_logs_dir,
     next_available_run_dir,
+    open_log_file_append,
 )
 from ..prompt_input import PromptInputError, resolve_prompt
 from ..styles import get_style
@@ -56,6 +57,10 @@ def _estimate_one_seconds(
         and e.get("quantize") == quantize
         and e.get("preview") == preview
         and isinstance(e.get("duration_sec"), int)
+        # > 0 so a freak `duration_sec = 0` entry (cancelled-in-same-
+        # second, or weird mflux exit) can't pull the average toward
+        # zero. (python I4 from v0.2.3 review)
+        and e["duration_sec"] > 0
     ]
     if not matching:
         return None
@@ -314,6 +319,12 @@ def cmd_generate(args) -> int:
     # batch_id stamps every history entry from this invocation when M >= 2,
     # making `imgen history --batch <id>` (v0.3.0+) trivial. Null for
     # single-style runs to preserve v0.2.x history shape.
+    # 12 hex chars = 48 bits — collision probability is astronomical at
+    # single-user scale (one Mac, one human). Keeps log filenames short
+    # and readable vs the 32-char full uuid4. ULID would give lex-
+    # sortable IDs, but auto_run_dirname() already provides the
+    # chronological sort via run-folder names; batch_id only needs to
+    # be unique. (architect F4 from v0.2.3 review)
     batch_id: str | None = uuid.uuid4().hex[:12] if multi else None
 
     # 9) Dry run — show every M cmd, skip resource checks + history.
@@ -383,26 +394,29 @@ def cmd_generate(args) -> int:
     else:
         explicit_output.parent.mkdir(parents=True, exist_ok=True)
 
-    # 12a) Per-batch log file (multi-style only). One log per invocation,
+    # 13) Per-batch log file (multi-style only). One log per invocation,
     # named after batch_id. mflux stderr (after token redaction) is
     # appended; cmd_generate writes per-image markers below for grep-
-    # ability. Retention (30 days) is enforced by `imgen clean`.
+    # ability. Retention (30 days) is enforced by `imgen clean`. All
+    # writes go through open_log_file_append (binary mode, 0o600 from
+    # creation — see paths.py for the umask rationale).
     log_path: Path | None = None
     if multi:
         ensure_logs_dir()
         log_path = LOGS_DIR / f"{batch_id}.log"
-        with log_path.open("a") as f:
-            f.write(
-                f"# imgen batch {batch_id}\n"
-                f"# started:  {datetime.datetime.now().isoformat(timespec='seconds')}\n"
-                f"# input:    {input_path}\n"
-                f"# styles:   {', '.join(it['style_name'] for it in iterations)}\n"
-                f"# output:   {run_dir}\n"
-                f"# backend:  {backend} q{heaviest_quant}  "
-                f"preview={args.preview}  scope={args.scope}  seed={seed}\n"
-            )
+        header = (
+            f"# imgen batch {batch_id}\n"
+            f"# started:  {datetime.datetime.now().isoformat(timespec='seconds')}\n"
+            f"# input:    {input_path}\n"
+            f"# styles:   {', '.join(it['style_name'] for it in iterations)}\n"
+            f"# output:   {run_dir}\n"
+            f"# backend:  {backend} q{heaviest_quant}  "
+            f"preview={args.preview}  scope={args.scope}  seed={seed}\n"
+        )
+        with open_log_file_append(log_path) as f:
+            f.write(header.encode())
 
-    # 12) Minimal env (don't forward random secrets from parent shell).
+    # 14) Minimal env (don't forward random secrets from parent shell).
     env: dict[str, str] = {}
     for key in ("PATH", "HOME", "USER", "LANG", "LC_ALL", "TMPDIR",
                 "HF_HOME", "HF_HUB_CACHE", "TRANSFORMERS_CACHE",
@@ -415,7 +429,7 @@ def cmd_generate(args) -> int:
     env["COLUMNS"] = str(term.columns)
     env["LINES"] = str(term.lines)
 
-    # 13) The loop. Failures don't break the batch — log + continue,
+    # 15) The loop. Failures don't break the batch — log + continue,
     # surface the summary at the end. Single-style retains v0.2.x exit
     # semantics (mflux return code passes through).
     succeeded: list[tuple[str, Path, int]] = []
@@ -466,9 +480,10 @@ def cmd_generate(args) -> int:
         }
 
         if log_path is not None:
-            with log_path.open("a") as f:
-                f.write(f"\n=== [{idx}/{total}] {style_name} → "
-                        f"{started.isoformat(timespec='seconds')} ===\n")
+            marker = (f"\n=== [{idx}/{total}] {style_name} → "
+                      f"{started.isoformat(timespec='seconds')} ===\n")
+            with open_log_file_append(log_path) as f:
+                f.write(marker.encode())
         try:
             returncode = run_with_stderr_redaction(cmd, env=env, log_path=log_path)
         except KeyboardInterrupt:
@@ -479,9 +494,10 @@ def cmd_generate(args) -> int:
             history_entry["duration_sec"] = cancel_duration
             append_history(history_entry)
             if log_path is not None:
-                with log_path.open("a") as f:
-                    f.write(f"\n=== [{idx}/{total}] {style_name} → "
-                            f"CANCELLED in {cancel_duration}s ===\n")
+                marker = (f"\n=== [{idx}/{total}] {style_name} → "
+                          f"CANCELLED in {cancel_duration}s ===\n")
+                with open_log_file_append(log_path) as f:
+                    f.write(marker.encode())
             return 130
 
         duration = int((datetime.datetime.now() - started).total_seconds())
@@ -490,11 +506,12 @@ def cmd_generate(args) -> int:
         append_history(history_entry)
 
         if log_path is not None:
-            with log_path.open("a") as f:
-                marker = ("ok" if returncode == 0
-                          else f"FAILED exit={returncode}")
-                f.write(f"\n=== [{idx}/{total}] {style_name} → {marker} "
-                        f"in {duration}s ===\n")
+            status = ("ok" if returncode == 0
+                      else f"FAILED exit={returncode}")
+            marker = (f"\n=== [{idx}/{total}] {style_name} → {status} "
+                      f"in {duration}s ===\n")
+            with open_log_file_append(log_path) as f:
+                f.write(marker.encode())
 
         if returncode != 0:
             err(f"mflux exited with code {returncode} after {duration}s "
@@ -509,17 +526,24 @@ def cmd_generate(args) -> int:
         ok(f"Done in {duration // 60}m {duration % 60}s — {output_path}")
         print()
 
-    # 11) Open in Preview (defence-in-depth: re-check ext before `open`,
+    # 16) Open in Preview (defence-in-depth: re-check ext before `open`,
     # since macOS `open` would auto-launch the registered app for the suffix).
     # For multi-style we open the run folder so the user sees all results
     # in Finder at once; for single-style keep v0.2.x behaviour (open the
     # one file in Preview).
     if not args.no_open and succeeded:
         if multi and run_dir is not None:
-            try:
-                subprocess.run(["open", str(run_dir)], check=False)
-            except FileNotFoundError:
-                pass
+            # Belt-and-braces: only open if it's actually a directory.
+            # `open <file>` would auto-launch the registered app for the
+            # extension, which the SAFE_OUTPUT_EXTS guard below
+            # protects against for the single-file branch. Symbolic
+            # link or other exotic path → skip the open. (security I3
+            # from v0.2.3 review)
+            if run_dir.is_dir():
+                try:
+                    subprocess.run(["open", str(run_dir)], check=False)
+                except FileNotFoundError:
+                    pass
         else:
             last_path = succeeded[-1][1]
             if last_path.suffix.lower() not in SAFE_OUTPUT_EXTS:
@@ -530,7 +554,7 @@ def cmd_generate(args) -> int:
                 except FileNotFoundError:
                     pass
 
-    # 14) End-of-batch summary (only for multi-style — single-style keeps
+    # 17) End-of-batch summary (only for multi-style — single-style keeps
     # the v0.2.x lean output).
     if multi:
         print()
@@ -542,7 +566,7 @@ def cmd_generate(args) -> int:
             for sn, rc, _ in failed:
                 print(f"   {C.DIM}• {sn}: exit {rc}{C.END}")
 
-    # 15) Exit code. Single-style: mflux's returncode passes through
+    # 18) Exit code. Single-style: mflux's returncode passes through
     # (preserves v0.2.x scripted-usage). Multi-style:
     #   - all ok → 0
     #   - all failed → 1

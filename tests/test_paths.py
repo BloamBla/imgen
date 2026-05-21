@@ -15,7 +15,12 @@ import datetime as dt
 
 import pytest
 
-from imgen.paths import auto_run_dirname, ensure_logs_dir, next_available_run_dir
+from imgen.paths import (
+    auto_run_dirname,
+    ensure_logs_dir,
+    next_available_run_dir,
+    open_log_file_append,
+)
 
 
 # ── auto_run_dirname format ─────────────────────────────────────────────
@@ -133,3 +138,49 @@ def test_ensure_logs_dir_tightens_loose_perms(tmp_path, monkeypatch):
     ensure_logs_dir()
 
     assert (logs.stat().st_mode & 0o777) == 0o700
+
+
+# ── open_log_file_append (v0.2.3 review fix: security I1) ───────────────
+
+def test_open_log_file_append_creates_with_0o600(tmp_path):
+    """Default umask on macOS gives 0o644 — world-readable. Force 0o600
+    from the syscall so batch logs aren't readable by co-tenants on a
+    shared Mac, matching how ~/.imgen/hf_token is handled."""
+    log = tmp_path / "batch.log"
+
+    with open_log_file_append(log) as f:
+        f.write(b"hello\n")
+
+    assert log.exists()
+    assert (log.stat().st_mode & 0o777) == 0o600
+    assert log.read_bytes() == b"hello\n"
+
+
+def test_open_log_file_append_appends_not_truncates(tmp_path):
+    """Re-opening the same path must not wipe earlier content. The whole
+    point of per-batch logs is that each iteration appends — truncation
+    on re-open would lose markers."""
+    log = tmp_path / "batch.log"
+    with open_log_file_append(log) as f:
+        f.write(b"first\n")
+    with open_log_file_append(log) as f:
+        f.write(b"second\n")
+
+    assert log.read_bytes() == b"first\nsecond\n"
+
+
+def test_open_log_file_append_preserves_existing_perms(tmp_path):
+    """If a log already exists with 0o600, a re-open does not clobber
+    the mode. (Re-open uses O_CREAT but the file is already there;
+    POSIX semantics keep the existing perms.)"""
+    log = tmp_path / "batch.log"
+    with open_log_file_append(log) as f:
+        f.write(b"first\n")
+    # User loosened perms manually — re-open should not silently fix it,
+    # but also shouldn't break.
+    log.chmod(0o644)
+    with open_log_file_append(log) as f:
+        f.write(b"second\n")
+    # We don't FIX wider perms on existing files — that would surprise
+    # the user. The 0o600 invariant only applies at creation.
+    assert (log.stat().st_mode & 0o777) == 0o644

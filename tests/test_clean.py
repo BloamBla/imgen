@@ -39,8 +39,9 @@ def test_prune_no_logs_dir_is_noop(tmp_path, monkeypatch, capsys):
 
     _prune_old_batch_logs(SimpleNamespace(dry_run=False))
 
-    captured = capsys.readouterr().out + capsys.readouterr().err
-    assert captured == "" or "removed" not in captured.lower()
+    captured = capsys.readouterr()
+    out = captured.out + captured.err
+    assert "removed" not in out.lower()
 
 
 def test_prune_empty_logs_dir_quiet(tmp_logs, capsys):
@@ -99,3 +100,18 @@ def test_prune_only_targets_log_extension(tmp_logs, capsys):
 
     assert not old_log.exists()
     assert old_txt.exists(), "non-.log files must not be touched"
+
+
+def test_prune_size_uses_same_stat_snapshot(tmp_logs, capsys):
+    """Two stat() calls would let st_size raise after st_mtime succeeded,
+    desyncing the counter from the size. Use one stat snapshot for both
+    fields. (python C2 from v0.2.3 review)"""
+    old_log = tmp_logs / "old_batch.log"
+    _make_log(old_log, days_ago=LOG_RETENTION_DAYS + 5, content="abc" * 100)
+    expected_size = old_log.stat().st_size
+
+    _prune_old_batch_logs(SimpleNamespace(dry_run=True))
+
+    out = capsys.readouterr().out
+    # Size printed in KB with 1 decimal — for 300 bytes that's "0.3 KB".
+    assert f"{expected_size / 1024:.1f} KB" in out

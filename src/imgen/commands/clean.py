@@ -18,20 +18,25 @@ def _prune_old_batch_logs(args) -> None:
     """
     if not LOGS_DIR.exists():
         return
+    dry_run: bool = getattr(args, "dry_run", False)
     cutoff = datetime.datetime.now().timestamp() - LOG_RETENTION_DAYS * 86400
     removed = 0
     removed_size = 0
     for log in LOGS_DIR.glob("*.log"):
         try:
-            if log.stat().st_mtime < cutoff:
-                removed_size += log.stat().st_size
-                if not getattr(args, "dry_run", False):
+            # Snapshot stat() once — separate calls would let st_size
+            # raise OSError after st_mtime succeeded, leaving `removed`
+            # and `removed_size` out of sync (python C2 from v0.2.3 review).
+            st = log.stat()
+            if st.st_mtime < cutoff:
+                removed_size += st.st_size
+                if not dry_run:
                     log.unlink()
                 removed += 1
         except OSError:
             pass
     if removed:
-        verb = "Would remove" if getattr(args, "dry_run", False) else "Removed"
+        verb = "Would remove" if dry_run else "Removed"
         ok(f"{verb} {removed} old batch log(s) older than "
            f"{LOG_RETENTION_DAYS} days ({removed_size / 1024:.1f} KB)")
 

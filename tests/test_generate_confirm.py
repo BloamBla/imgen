@@ -88,6 +88,27 @@ def test_estimate_one_seconds_distinguishes_preview_mode():
     assert _estimate_one_seconds(entries, "flux", 4, False) == 1800
 
 
+def test_estimate_one_seconds_ignores_zero_duration_runs():
+    """A `duration_sec=0` entry (cancelled-in-same-second, or weird
+    mflux instant-exit) must not pull the average to zero — ETA would
+    print '0s per image' nonsense.
+    (python I4 from v0.2.3 review)"""
+    entries = [
+        _ok_entry("flux", 4, False, 0),    # 0-duration garbage
+        _ok_entry("flux", 4, False, 300),
+        _ok_entry("flux", 4, False, 360),
+    ]
+    # avg(300, 360) = 330, not avg(0, 300, 360) = 220
+    assert _estimate_one_seconds(entries, "flux", 4, False) == 330
+
+
+def test_estimate_one_seconds_returns_none_when_all_zero():
+    """If the only successes are 0-duration, treat as 'no data' — don't
+    show a misleading 0s/image ETA."""
+    entries = [_ok_entry("flux", 4, False, 0)] * 3
+    assert _estimate_one_seconds(entries, "flux", 4, False) is None
+
+
 # ── _format_duration ────────────────────────────────────────────────────
 
 def test_format_duration_short_uses_seconds():
