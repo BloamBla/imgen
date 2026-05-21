@@ -272,23 +272,28 @@ def get_battery() -> tuple[int | None, bool]:
 
 
 def find_running_mflux() -> int | None:
-    """Return PID of another running mflux-generate-* process, or None."""
-    try:
-        out = subprocess.check_output(
-            ["pgrep", "-f", "mflux-generate"], stderr=subprocess.DEVNULL,
-            timeout=5
-        ).decode().strip()
-    except (subprocess.CalledProcessError, FileNotFoundError,
-            subprocess.TimeoutExpired):
-        return None
-    our_pid = os.getpid()
-    for line in out.splitlines():
+    """Return PID of another running mflux-generate-* process, or None.
+
+    Uses `pgrep -x` (exact match on process basename) for each known backend
+    binary. Avoids the false positives of the old `pgrep -f mflux-generate`:
+    cmdlines like `vim mflux-generate.txt` no longer block runs, and a custom
+    prompt containing the literal "mflux-generate" can't trip the check on
+    its own re-run.
+    """
+    for binary in BACKENDS.values():
         try:
-            pid = int(line.strip())
-            if pid != our_pid:
-                return pid
-        except ValueError:
-            pass
+            out = subprocess.check_output(
+                ["pgrep", "-x", binary], stderr=subprocess.DEVNULL,
+                timeout=5
+            ).decode().strip()
+        except (subprocess.CalledProcessError, FileNotFoundError,
+                subprocess.TimeoutExpired):
+            continue
+        for line in out.splitlines():
+            try:
+                return int(line.strip())
+            except ValueError:
+                pass
     return None
 
 
