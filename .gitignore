@@ -1,0 +1,30 @@
+# venv (recreated by bootstrap)
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# imgen runtime artifacts
+outputs/
+*.log
+
+# Secrets (extra safety — actual location is ~/.hf_token)
+.hf_token
+*.token
+.env

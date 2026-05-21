@@ -1,0 +1,1270 @@
+#!/usr/bin/env python3
+"""
+imgen — Photo style-transfer CLI for Apple Silicon Macs.
+
+Uses mflux (MLX-native) under the hood. Default backend is FLUX Kontext Dev
+(gated, requires HF token + license). Qwen-Image-Edit available as fallback.
+
+Usage:
+    imgen photo.jpg                              # default: pixar style
+    imgen photo.jpg --style anime
+    imgen photo.jpg --custom-prompt "..."
+    imgen photo.jpg -s simpsons --steps 30 --strength 0.7
+    imgen photo.jpg --backend qwen               # use Qwen Edit instead of FLUX
+
+    imgen --list-styles
+    imgen --dry-run photo.jpg --style anime
+
+    imgen setup                                  # first-time install / token
+    imgen doctor                                 # check environment
+    imgen upgrade                                # update mflux
+    imgen clean [--all]                          # cleanup HF cache
+    imgen history [--last N]                     # show generation history
+    imgen last                                   # repeat last generation
+    imgen replay <id>                            # repeat generation by id
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime
+import json
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+# ── Paths ────────────────────────────────────────────────────────────────
+IMGEN_HOME = Path(__file__).parent.resolve()
+VENV_DIR = IMGEN_HOME / ".venv"
+STATE_DIR = Path.home() / ".imgen"
+HISTORY_FILE = STATE_DIR / "history.jsonl"
+TOKEN_FILE = Path.home() / ".hf_token"
+DEFAULT_OUTPUT_DIR = Path(
+    os.environ.get("IMGEN_OUTPUT_DIR", Path.home() / "Desktop" / "imgen")
+)
+HF_CACHE = Path.home() / ".cache" / "huggingface" / "hub"
+
+# ── Defaults ─────────────────────────────────────────────────────────────
+DEFAULTS = {
+    "style": "pixar",
+    "backend": "flux",   # flux | qwen
+    "quantize": 8,       # 3 4 5 6 8
+    "steps": 20,
+    "guidance": 3.5,
+    "strength": 0.55,
+    "mlx_cache_gb": 12,
+    "battery_stop": 20,  # %
+}
+
+BACKENDS = {
+    "flux": "mflux-generate-kontext",
+    "qwen": "mflux-generate-qwen-edit",
+}
+
+# Pin to known-working mflux version. Bump after manual verification.
+MFLUX_PIN = "mflux==0.17.5"
+
+# FLUX-friendly resolutions (close to 1024² total pixels, aspect-aware)
+RESOLUTIONS = [
+    # (w, h, aspect)
+    (1024, 1024, 1.00),
+    (1152, 896, 1.29),
+    (896, 1152, 0.78),
+    (1216, 832, 1.46),
+    (832, 1216, 0.68),
+    (1280, 768, 1.67),
+    (768, 1280, 0.60),
+    (1344, 704, 1.91),
+    (704, 1344, 0.52),
+]
+
+# Smaller resolutions for --preview mode (~768² pixels, multiples of 64)
+PREVIEW_RESOLUTIONS = [
+    (768, 768, 1.00),
+    (896, 640, 1.40),
+    (640, 896, 0.71),
+    (960, 576, 1.67),
+    (576, 960, 0.60),
+]
+
+# --preview overrides (only applied if user didn't explicitly set the flag)
+PREVIEW_OVERRIDES = {
+    "quantize": 4,
+    "steps": 8,
+}
+
+# --scope: how to modify the prompt
+SCOPE_PERSON_SUFFIX = ", keep the background photorealistic and unchanged"
+SCOPE_SCENE_REPLACEMENTS = [
+    ("this person", "this entire scene"),
+    ("the person", "the whole scene"),
+    ("keep face identity", "keep all subjects recognizable"),
+    ("keep pose and composition", "keep overall composition"),
+    ("keep pose", "keep composition"),
+]
+
+# Peak RAM (GB) required during inference: UNet weights + text encoders
+# + activations + MLX cache headroom. Conservative estimates.
+RAM_REQUIRED_GB = {
+    ("flux", 3): 8,
+    ("flux", 4): 9,
+    ("flux", 5): 12,
+    ("flux", 6): 14,
+    ("flux", 8): 18,
+    ("qwen", 3): 10,
+    ("qwen", 4): 12,
+    ("qwen", 5): 16,
+    ("qwen", 6): 18,
+    ("qwen", 8): 25,
+}
+
+MIN_DISK_GB = 5             # minimum free disk to attempt
+MIN_BATTERY_PCT = 30        # below this on battery → warn (not block)
+
+# ── Colors ───────────────────────────────────────────────────────────────
+USE_COLOR = sys.stdout.isatty()
+
+
+class C:
+    OK = "\033[92m" if USE_COLOR else ""
+    WARN = "\033[93m" if USE_COLOR else ""
+    ERR = "\033[91m" if USE_COLOR else ""
+    INFO = "\033[94m" if USE_COLOR else ""
+    BOLD = "\033[1m" if USE_COLOR else ""
+    DIM = "\033[2m" if USE_COLOR else ""
+    END = "\033[0m" if USE_COLOR else ""
+
+
+def ok(msg): print(f"{C.OK}✅{C.END} {msg}")
+def warn(msg): print(f"{C.WARN}⚠️ {C.END} {msg}")
+def err(msg): print(f"{C.ERR}❌{C.END} {msg}", file=sys.stderr)
+def info(msg): print(f"{C.INFO}🔍{C.END} {msg}")
+def step(msg): print(f"{C.BOLD}{C.INFO}🚀 {msg}{C.END}")
+def dim(msg): print(f"{C.DIM}{msg}{C.END}")
+
+
+def die(msg: str, code: int = 1, hint: str | None = None):
+    err(msg)
+    if hint:
+        print(f"   {C.DIM}{hint}{C.END}", file=sys.stderr)
+    sys.exit(code)
+
+
+# ── Import styles ────────────────────────────────────────────────────────
+sys.path.insert(0, str(IMGEN_HOME))
+try:
+    from styles import STYLES, list_styles, get_style
+except ImportError:
+    STYLES = {}
+
+    def list_styles():
+        return []
+
+    def get_style(_name):
+        raise KeyError("styles.py not found")
+
+
+# ── Environment checks ───────────────────────────────────────────────────
+
+def check_venv() -> bool:
+    return VENV_DIR.exists() and (VENV_DIR / "bin" / "python").exists()
+
+
+def check_mflux() -> str | None:
+    """Return mflux version string or None if missing."""
+    if not check_venv():
+        return None
+    try:
+        out = subprocess.check_output(
+            [str(VENV_DIR / "bin" / "pip"), "show", "mflux"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        for line in out.splitlines():
+            if line.startswith("Version:"):
+                return line.split(":", 1)[1].strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+    return None
+
+
+def check_pillow() -> str | None:
+    if not check_venv():
+        return None
+    try:
+        out = subprocess.check_output(
+            [str(VENV_DIR / "bin" / "python"), "-c",
+             "import PIL; print(PIL.__version__)"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        return out.strip()
+    except subprocess.CalledProcessError:
+        return None
+
+
+def check_disk_gb() -> float:
+    stat = shutil.disk_usage(Path.home())
+    return stat.free / (1024 ** 3)
+
+
+def get_memory_gb() -> tuple[float, float]:
+    """Return (total_gb, available_gb) for the macOS host.
+
+    Uses vm_stat + sysctl — no extra Python deps required. Returns (0, 0)
+    on non-Darwin or parse failure (caller should treat as 'unknown').
+    """
+    try:
+        total = int(subprocess.check_output(
+            ["sysctl", "-n", "hw.memsize"]
+        ).decode().strip())
+        pagesize = int(subprocess.check_output(
+            ["sysctl", "-n", "hw.pagesize"]
+        ).decode().strip())
+        vm_out = subprocess.check_output(["vm_stat"]).decode()
+    except (subprocess.CalledProcessError, FileNotFoundError, ValueError):
+        return 0.0, 0.0
+
+    pages = {}
+    for line in vm_out.splitlines():
+        m = re.match(r'"?([A-Za-z][^"]*?)"?:\s+(\d+)', line)
+        if m:
+            pages[m.group(1).strip()] = int(m.group(2))
+    free = pages.get("Pages free", 0)
+    inactive = pages.get("Pages inactive", 0)
+    purgeable = pages.get("Pages purgeable", 0)
+    speculative = pages.get("Pages speculative", 0)
+    available_bytes = (free + inactive + purgeable + speculative) * pagesize
+    return total / (1024 ** 3), available_bytes / (1024 ** 3)
+
+
+def get_battery() -> tuple[int | None, bool]:
+    """Return (percent, on_ac). For desktop Macs returns (None, True)."""
+    try:
+        out = subprocess.check_output(
+            ["pmset", "-g", "batt"], stderr=subprocess.DEVNULL
+        ).decode()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None, True
+    pct_match = re.search(r"(\d+)%", out)
+    pct = int(pct_match.group(1)) if pct_match else None
+    on_ac = ("AC Power" in out) or ("charged" in out.lower()) \
+        or ("charging" in out.lower())
+    return pct, on_ac
+
+
+def find_running_mflux() -> int | None:
+    """Return PID of another running mflux-generate-* process, or None."""
+    try:
+        out = subprocess.check_output(
+            ["pgrep", "-f", "mflux-generate"], stderr=subprocess.DEVNULL
+        ).decode().strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+    our_pid = os.getpid()
+    for line in out.splitlines():
+        try:
+            pid = int(line.strip())
+            if pid != our_pid:
+                return pid
+        except ValueError:
+            pass
+    return None
+
+
+def check_resources(backend: str, quantize: int) -> dict:
+    """Snapshot system resources vs requirements for this run."""
+    required = RAM_REQUIRED_GB.get((backend, quantize), 16)
+    total, available = get_memory_gb()
+    disk_free = check_disk_gb()
+    battery_pct, on_ac = get_battery()
+    return {
+        "ram_required_gb": required,
+        "ram_total_gb": total,
+        "ram_available_gb": available,
+        # If we can't read memory (total=0), don't block — assume OK
+        "ram_ok": total == 0 or available >= required,
+        "disk_free_gb": disk_free,
+        "disk_ok": disk_free >= MIN_DISK_GB,
+        "battery_pct": battery_pct,
+        "on_ac": on_ac,
+        "battery_ok": on_ac or battery_pct is None
+        or battery_pct >= MIN_BATTERY_PCT,
+        "other_mflux_pid": find_running_mflux(),
+    }
+
+
+def load_token() -> str | None:
+    """Load HF token from $HF_TOKEN or ~/.hf_token."""
+    tok = os.environ.get("HF_TOKEN")
+    if tok:
+        return tok.strip()
+    if TOKEN_FILE.exists():
+        return TOKEN_FILE.read_text().strip()
+    return None
+
+
+def check_token_perms() -> bool:
+    """Return True if token file has safe permissions (600)."""
+    if not TOKEN_FILE.exists():
+        return True
+    mode = TOKEN_FILE.stat().st_mode & 0o777
+    return mode == 0o600
+
+
+def validate_token(token: str) -> str | None:
+    """Hit HF whoami; return username on success, None on failure."""
+    try:
+        req = urllib.request.Request(
+            "https://huggingface.co/api/whoami-v2",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+            return data.get("name") or data.get("fullname")
+    except (urllib.error.URLError, json.JSONDecodeError, TimeoutError, OSError):
+        return None
+
+
+# ── Validators for argparse ──────────────────────────────────────────────
+
+def _int_range(lo: int, hi: int):
+    def validator(s: str) -> int:
+        try:
+            v = int(s)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"must be an integer, got '{s}'")
+        if not (lo <= v <= hi):
+            raise argparse.ArgumentTypeError(f"must be {lo}..{hi}, got {v}")
+        return v
+    return validator
+
+
+def _float_range(lo: float, hi: float):
+    def validator(s: str) -> float:
+        try:
+            v = float(s)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"must be a number, got '{s}'")
+        if not (lo <= v <= hi):
+            raise argparse.ArgumentTypeError(f"must be {lo}..{hi}, got {v}")
+        return v
+    return validator
+
+
+# ── Image utilities ──────────────────────────────────────────────────────
+
+def _format_cmd(cmd: list[str]) -> str:
+    """Pretty-print a command, keeping --flag value pairs on the same line."""
+    parts = []
+    i = 0
+    while i < len(cmd):
+        token = cmd[i]
+        if token.startswith("--") and i + 1 < len(cmd) and not cmd[i + 1].startswith("--"):
+            value = cmd[i + 1]
+            if " " in value or any(c in value for c in '"\''):
+                value = '"' + value.replace('"', '\\"') + '"'
+            parts.append(f"{token} {value}")
+            i += 2
+        else:
+            parts.append(token)
+            i += 1
+    return " \\\n  ".join(parts)
+
+
+def detect_resolution(image_path: Path, preview: bool = False) -> tuple[int, int]:
+    """Return best (width, height) matching source aspect ratio.
+
+    Uses venv's Python (which has Pillow via mflux deps) so the script
+    doesn't require system-Python Pillow.
+    """
+    fallback = (768, 768) if preview else (1024, 1024)
+    if not check_venv():
+        warn(f"venv missing — defaulting to {fallback[0]}x{fallback[1]} "
+             "(run: imgen setup)")
+        return fallback
+    try:
+        out = subprocess.check_output(
+            [str(VENV_DIR / "bin" / "python"), "-c",
+             "import sys; from PIL import Image, ImageOps; "
+             "i = ImageOps.exif_transpose(Image.open(sys.argv[1])); "
+             "print(i.size[0], i.size[1])",
+             str(image_path)],
+            stderr=subprocess.DEVNULL, text=True,
+        )
+        w, h = map(int, out.split())
+    except (subprocess.CalledProcessError, ValueError) as e:
+        warn(f"Couldn't read image dimensions ({e}); defaulting to "
+             f"{fallback[0]}x{fallback[1]}")
+        return fallback
+
+    aspect = w / h
+    table = PREVIEW_RESOLUTIONS if preview else RESOLUTIONS
+    best = min(table, key=lambda r: abs(r[2] - aspect))
+    return best[0], best[1]
+
+
+def apply_scope(prompt: str, scope: str | None) -> str:
+    """Modify prompt based on scope: person-only, full scene, or unchanged."""
+    if scope == "person":
+        return prompt + SCOPE_PERSON_SUFFIX
+    if scope == "scene":
+        modified = prompt
+        for old, new in SCOPE_SCENE_REPLACEMENTS:
+            modified = modified.replace(old, new)
+        return modified
+    return prompt
+
+
+# ── Subcommand: doctor ───────────────────────────────────────────────────
+
+def cmd_doctor(_args):
+    step("Checking environment")
+    print()
+
+    # Python
+    py_version = sys.version.split()[0]
+    if sys.version_info >= (3, 12):
+        ok(f"Python {py_version}")
+    else:
+        warn(f"Python {py_version} (3.12+ recommended)")
+
+    # venv
+    if check_venv():
+        ok(f"venv at {VENV_DIR}")
+    else:
+        err(f"venv missing at {VENV_DIR}")
+        print(f"   {C.DIM}Run: imgen setup{C.END}")
+        return 3
+
+    # mflux
+    mflux_ver = check_mflux()
+    if mflux_ver:
+        ok(f"mflux {mflux_ver}")
+    else:
+        err("mflux not installed")
+        print(f"   {C.DIM}Run: imgen setup  (or: imgen upgrade){C.END}")
+        return 3
+
+    # pillow
+    pil_ver = check_pillow()
+    if pil_ver:
+        ok(f"Pillow {pil_ver}")
+    else:
+        warn("Pillow not installed (auto-aspect-ratio will fail)")
+
+    # styles
+    if STYLES:
+        ok(f"Styles loaded: {', '.join(list_styles())}")
+    else:
+        err("styles.py not found or empty")
+        return 3
+
+    # disk
+    free_gb = check_disk_gb()
+    if free_gb >= 20:
+        ok(f"Disk: {free_gb:.1f} GB free")
+    elif free_gb >= MIN_DISK_GB:
+        warn(f"Disk: {free_gb:.1f} GB free — low (need 20+ GB for FLUX download)")
+    else:
+        err(f"Disk: {free_gb:.1f} GB free — critically low")
+
+    # System resources
+    print()
+    info("System resources right now")
+    total_ram, available_ram = get_memory_gb()
+    if total_ram:
+        ok(f"RAM: {available_ram:.1f} GB available of {total_ram:.0f} GB")
+    else:
+        warn("RAM: couldn't read system memory info")
+
+    battery_pct, on_ac = get_battery()
+    if battery_pct is None:
+        ok("Power: desktop / AC (no battery)")
+    elif on_ac:
+        ok(f"Battery: {battery_pct}% (plugged in)")
+    elif battery_pct >= MIN_BATTERY_PCT:
+        ok(f"Battery: {battery_pct}% (on battery)")
+    else:
+        warn(f"Battery: {battery_pct}% (on battery, low — plug in)")
+
+    running_pid = find_running_mflux()
+    if running_pid:
+        warn(f"Another mflux is running (PID {running_pid}) — "
+             "new runs will be blocked")
+    else:
+        ok("No other mflux process running")
+
+    # RAM forecast per backend/quant
+    print()
+    info("Will this fit in RAM?")
+    headers = ["backend × quant", "needs", "have", "verdict"]
+    print(f"   {C.DIM}{headers[0]:<18} {headers[1]:>6}  "
+          f"{headers[2]:>6}  {headers[3]}{C.END}")
+    if total_ram:
+        for (backend, q), need in sorted(RAM_REQUIRED_GB.items()):
+            verdict = (f"{C.OK}✅ fits{C.END}" if available_ram >= need
+                       else f"{C.ERR}❌ no{C.END}")
+            label = f"{backend} q{q}"
+            print(f"   {label:<18} {need:>4} GB  "
+                  f"{available_ram:>4.1f} GB  {verdict}")
+
+    # HF token
+    print()
+    info("Checking HuggingFace access")
+    tok = load_token()
+    if tok:
+        ok(f"HF_TOKEN found ({tok[:8]}...{tok[-4:]})")
+        if not check_token_perms():
+            warn(f"~/.hf_token permissions not 600 — run: chmod 600 {TOKEN_FILE}")
+    else:
+        warn("No HF token found")
+        print(f"   {C.DIM}FLUX backend won't work without token.{C.END}")
+        print(f"   {C.DIM}Run: imgen setup  to configure.{C.END}")
+
+    # HF cache models
+    print()
+    info("Cached models")
+    cached_any = False
+    if HF_CACHE.exists():
+        for model_dir in sorted(HF_CACHE.glob("models--*")):
+            try:
+                # Count only blobs/ — snapshots/ are symlinks pointing here
+                blobs = model_dir / "blobs"
+                if blobs.exists():
+                    size = sum(p.stat().st_size for p in blobs.iterdir()
+                               if p.is_file() and not p.is_symlink())
+                else:
+                    size = sum(p.lstat().st_size for p in model_dir.rglob("*")
+                               if p.is_file() and not p.is_symlink())
+                size_gb = size / (1024 ** 3)
+                if size_gb > 0.1:
+                    name = model_dir.name.replace("models--", "").replace("--", "/")
+                    ok(f"{name}: {size_gb:.1f} GB")
+                    cached_any = True
+            except OSError:
+                pass
+    if not cached_any:
+        dim("   (no models cached yet — first run will download)")
+
+    print()
+    step("Everything ready" if mflux_ver and tok else "Some setup needed")
+    return 0
+
+
+# ── Subcommand: setup ────────────────────────────────────────────────────
+
+def cmd_setup(_args):
+    step("imgen auto-setup")
+    print()
+
+    # Apple Silicon check (MLX requires arm64)
+    import platform
+    if platform.system() != "Darwin":
+        die(f"macOS only — detected {platform.system()}",
+            code=3,
+            hint="MLX (mflux backend) is Apple-only.")
+    if platform.machine() != "arm64":
+        die(f"Apple Silicon required — detected {platform.machine()}",
+            code=3,
+            hint="MLX does not support Intel Macs.")
+    ok(f"macOS {platform.mac_ver()[0]} on {platform.machine()}")
+
+    # venv
+    if not check_venv():
+        info(f"Creating venv at {VENV_DIR}")
+        try:
+            subprocess.check_call(
+                ["python3.12", "-m", "venv", str(VENV_DIR)],
+                stderr=subprocess.STDOUT,
+            )
+            ok("venv created")
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            die(f"Failed to create venv: {e}",
+                code=3,
+                hint="Install Python 3.12: brew install python@3.12")
+    else:
+        ok("venv exists")
+
+    # mflux (pinned version)
+    if not check_mflux():
+        info(f"Installing {MFLUX_PIN} (this takes a couple minutes)")
+        try:
+            subprocess.check_call(
+                [str(VENV_DIR / "bin" / "pip"), "install", "--upgrade", "pip"],
+                stdout=subprocess.DEVNULL,
+            )
+            subprocess.check_call(
+                [str(VENV_DIR / "bin" / "pip"), "install", MFLUX_PIN],
+            )
+            ok(f"mflux {check_mflux()} installed")
+        except subprocess.CalledProcessError as e:
+            die(f"Failed to install mflux: {e}", code=3)
+    else:
+        ok(f"mflux {check_mflux()} already installed")
+
+    # HF token
+    print()
+    if load_token():
+        ok("HF token already configured")
+    else:
+        info("HuggingFace token setup (optional)")
+        print(f"   {C.DIM}Token enables FLUX Kontext (best quality).{C.END}")
+        print(f"   {C.DIM}Without token, only Qwen Edit backend works.{C.END}")
+        print()
+        print(f"   {C.BOLD}Get token:{C.END}")
+        print(f"     1. https://huggingface.co/settings/tokens")
+        print(f"        Create classic 'Read' token (NOT fine-grained).")
+        print(f"     2. Accept FLUX license:")
+        print(f"        https://huggingface.co/black-forest-labs/FLUX.1-Kontext-dev")
+        print()
+        try:
+            tok = input("   Paste token (or Enter to skip): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            tok = ""
+
+        if tok:
+            if not tok.startswith("hf_"):
+                warn("Token doesn't start with 'hf_' — saving anyway")
+            TOKEN_FILE.write_text(tok)
+            TOKEN_FILE.chmod(0o600)
+            ok(f"Token saved to {TOKEN_FILE} (chmod 600)")
+            # Quick validation: HF whoami
+            user = validate_token(tok)
+            if user:
+                ok(f"Token valid (HF user: {user})")
+            else:
+                warn("Token saved but couldn't validate — could be invalid, "
+                     "expired, or network issue. Check at: "
+                     "https://huggingface.co/settings/tokens")
+        else:
+            dim("   Skipped. Run `imgen setup` later to add token.")
+
+    # State dir
+    STATE_DIR.mkdir(exist_ok=True)
+    DEFAULT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Shell alias — detect user's shell from $SHELL
+    print()
+    info("Shell alias")
+    shell_path = os.environ.get("SHELL", "")
+    shell_name = Path(shell_path).name if shell_path else ""
+    rc_files = {
+        "zsh": Path.home() / ".zshrc",
+        "bash": Path.home() / ".bash_profile",
+        "fish": Path.home() / ".config" / "fish" / "config.fish",
+    }
+    rc_file = rc_files.get(shell_name)
+    alias_line = f'alias imgen="{IMGEN_HOME / "imgen"}"'
+
+    if rc_file is None:
+        warn(f"Unknown shell '{shell_name}' — skipping alias setup")
+        print(f"   {C.DIM}Add manually to your shell rc: {alias_line}{C.END}")
+    else:
+        try:
+            existing = rc_file.read_text() if rc_file.exists() else ""
+        except OSError:
+            existing = ""
+        if alias_line in existing:
+            ok(f"Alias already in {rc_file}")
+        else:
+            try:
+                rc_file.parent.mkdir(parents=True, exist_ok=True)
+                with rc_file.open("a") as f:
+                    f.write(f"\n# imgen — photo style transfer\n{alias_line}\n")
+                ok(f"Added alias to {rc_file}")
+                print(f"   {C.DIM}Restart terminal or: source {rc_file}{C.END}")
+            except OSError as e:
+                warn(f"Couldn't write {rc_file}: {e}")
+                print(f"   {C.DIM}Add manually: {alias_line}{C.END}")
+
+    print()
+    step("Setup complete!")
+    print(f"   {C.DIM}Try: imgen photo.jpg{C.END}")
+    return 0
+
+
+# ── Subcommand: clean ────────────────────────────────────────────────────
+
+def cmd_clean(args):
+    step("Cleaning HuggingFace cache")
+    print()
+
+    if not HF_CACHE.exists():
+        ok("Cache is empty")
+        return 0
+
+    # Always: delete .incomplete files older than 24h
+    cutoff = datetime.datetime.now().timestamp() - 24 * 3600
+    incomplete_removed = 0
+    incomplete_size = 0
+    for blob in HF_CACHE.rglob("*.incomplete"):
+        try:
+            if blob.stat().st_mtime < cutoff:
+                incomplete_size += blob.stat().st_size
+                blob.unlink()
+                incomplete_removed += 1
+        except OSError:
+            pass
+    if incomplete_removed:
+        ok(f"Removed {incomplete_removed} stale .incomplete files "
+           f"({incomplete_size / (1024**3):.1f} GB)")
+    else:
+        dim("No stale .incomplete files to remove")
+
+    if args.all:
+        # List models to delete
+        models = sorted(HF_CACHE.glob("models--*"))
+        if not models:
+            ok("No cached models to remove")
+            return 0
+        print()
+        info("Cached models to be deleted:")
+        total = 0
+        for m in models:
+            try:
+                blobs = m / "blobs"
+                if blobs.exists():
+                    size = sum(p.stat().st_size for p in blobs.iterdir()
+                               if p.is_file() and not p.is_symlink())
+                else:
+                    size = sum(p.lstat().st_size for p in m.rglob("*")
+                               if p.is_file() and not p.is_symlink())
+                total += size
+                name = m.name.replace("models--", "").replace("--", "/")
+                print(f"   • {name}: {size / (1024**3):.1f} GB")
+            except OSError:
+                pass
+        print(f"   {C.BOLD}Total: {total / (1024**3):.1f} GB{C.END}")
+        print()
+        if args.dry_run:
+            warn("Dry run — nothing deleted")
+            return 0
+        try:
+            confirm = input(f"   Delete all? [y/N]: ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            confirm = ""
+        if confirm != "y":
+            dim("   Cancelled")
+            return 0
+        for m in models:
+            shutil.rmtree(m, ignore_errors=True)
+        ok(f"Deleted {len(models)} models ({total / (1024**3):.1f} GB freed)")
+
+    return 0
+
+
+# ── Subcommand: upgrade ──────────────────────────────────────────────────
+
+def cmd_upgrade(args):
+    step("Upgrading mflux")
+    if not check_venv():
+        die("venv missing — run: imgen setup", code=3)
+
+    if args.latest:
+        target = "mflux"
+        warn("--latest: installing newest mflux — may have breaking changes "
+             f"vs pinned {MFLUX_PIN}")
+    else:
+        target = MFLUX_PIN
+        info(f"Installing pinned {MFLUX_PIN} (use --latest to skip pin)")
+
+    try:
+        subprocess.check_call(
+            [str(VENV_DIR / "bin" / "pip"), "install", "--upgrade", target]
+        )
+        ok(f"mflux is now {check_mflux()}")
+    except subprocess.CalledProcessError as e:
+        die(f"Upgrade failed: {e}", code=3)
+    return 0
+
+
+# ── Subcommand: history / last / replay ──────────────────────────────────
+
+def load_history() -> list[dict]:
+    if not HISTORY_FILE.exists():
+        return []
+    entries = []
+    for line in HISTORY_FILE.read_text().splitlines():
+        if line.strip():
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+    return entries
+
+
+def append_history(entry: dict):
+    STATE_DIR.mkdir(exist_ok=True)
+    with HISTORY_FILE.open("a") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def cmd_history(args):
+    entries = load_history()
+    if not entries:
+        dim("No history yet")
+        return 0
+    n = max(1, args.last or 20)
+    for entry in entries[-n:]:
+        status_icon = "✅" if entry.get("status") == "success" else "❌"
+        ts = entry.get("ts", "?")[:16].replace("T", " ")
+        eid = str(entry.get("id", "?"))
+        style = entry.get("style") or "custom"
+        print(f"{C.DIM}#{eid:<4}{C.END} {status_icon} "
+              f"{C.BOLD}{ts}{C.END}  "
+              f"{C.INFO}{style:10}{C.END}  "
+              f"{Path(entry.get('input', '?')).name:30}  "
+              f"→ {Path(entry.get('output', '?')).name}")
+    return 0
+
+
+def cmd_last(_args):
+    entries = load_history()
+    if not entries:
+        die("No history yet", code=1)
+    last = entries[-1]
+    return replay_entry(last)
+
+
+def cmd_replay(args):
+    entries = load_history()
+    target = next((e for e in entries if e.get("id") == args.id), None)
+    if not target:
+        die(f"No entry with id {args.id}", code=1)
+    return replay_entry(target)
+
+
+def replay_entry(entry: dict) -> int:
+    info(f"Replaying #{entry.get('id')}: {entry.get('style')} on "
+         f"{Path(entry.get('input', '?')).name}")
+    args = argparse.Namespace(
+        image=entry["input"],
+        style=entry.get("style", "pixar") if not entry.get("custom_prompt") else None,
+        custom_prompt=entry.get("custom_prompt"),
+        scope=entry.get("scope"),
+        preview=entry.get("preview", False),
+        output=None,  # auto-generate new output name
+        steps=entry.get("steps", DEFAULTS["steps"]),
+        guidance=entry.get("guidance", DEFAULTS["guidance"]),
+        strength=entry.get("strength", DEFAULTS["strength"]),
+        seed=None,  # new random seed
+        backend=entry.get("backend", DEFAULTS["backend"]),
+        quantize=entry.get("quantize", DEFAULTS["quantize"]),
+        width=entry.get("width"),
+        height=entry.get("height"),
+        no_open=False,
+        dry_run=False,
+        force=False,
+    )
+    return cmd_generate(args)
+
+
+# ── Subcommand: generate (main) ──────────────────────────────────────────
+
+def cmd_generate(args):
+    # 1) Validate input
+    input_path = Path(args.image).expanduser().resolve()
+    if not input_path.exists():
+        die(f"Image not found: {input_path}",
+            code=2,
+            hint="Check the path. Use absolute path if unsure.")
+    if not input_path.is_file():
+        die(f"Not a file: {input_path}", code=2)
+
+    # 2) Validate style vs custom-prompt
+    if args.style and args.custom_prompt:
+        die("Cannot use both --style and --custom-prompt; pick one",
+            code=2)
+
+    # 3) Build prompt
+    preset: dict | None = None
+    if args.custom_prompt:
+        prompt = args.custom_prompt
+        negative = ""
+        style_name = "custom"
+    else:
+        style_name = args.style or DEFAULTS["style"]
+        try:
+            preset = get_style(style_name)
+        except KeyError as e:
+            name = e.args[0] if e.args else str(e)
+            die(f"Unknown style: {name}",
+                code=2, hint="See: imgen --list-styles")
+        prompt = preset["prompt"]
+        negative = preset.get("negative", "")
+
+    # 3a) Apply --scope (warn if combined with --custom-prompt)
+    if args.scope:
+        if args.custom_prompt:
+            warn(f"--scope={args.scope} ignored when using --custom-prompt")
+        else:
+            prompt = apply_scope(prompt, args.scope)
+
+    # 3b) Resolve final parameter values:
+    #   CLI flag (if set) > style preset > preview override > global default
+    if args.steps is not None:
+        final_steps = args.steps
+    elif args.preview:
+        final_steps = PREVIEW_OVERRIDES["steps"]
+    else:
+        final_steps = DEFAULTS["steps"]
+
+    if args.quantize is not None:
+        final_quantize = args.quantize
+    elif args.preview:
+        final_quantize = PREVIEW_OVERRIDES["quantize"]
+    else:
+        final_quantize = DEFAULTS["quantize"]
+
+    if args.guidance is not None:
+        final_guidance = args.guidance
+    elif preset and "guidance" in preset:
+        final_guidance = preset["guidance"]
+    else:
+        final_guidance = DEFAULTS["guidance"]
+
+    if args.strength is not None:
+        final_strength = args.strength
+    elif preset and "strength" in preset:
+        final_strength = preset["strength"]
+    else:
+        final_strength = DEFAULTS["strength"]
+
+    # 4) Resolution
+    if args.width and args.height:
+        width, height = args.width, args.height
+    else:
+        width, height = detect_resolution(input_path, preview=args.preview)
+
+    # 5) Output path
+    if args.output:
+        output_path = Path(args.output).expanduser().resolve()
+    else:
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        DEFAULT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        output_path = DEFAULT_OUTPUT_DIR / f"{input_path.stem}_{style_name}_{ts}.png"
+
+    # 6) Backend & token
+    backend = args.backend
+    if backend == "flux":
+        token = load_token()
+        if not token:
+            die("FLUX backend requires HuggingFace token",
+                code=3,
+                hint="Run: imgen setup   (or use --backend qwen)")
+    else:
+        token = None  # qwen-image-edit is open
+
+    # 7) Build mflux command
+    if not check_venv() or not check_mflux():
+        die("mflux not installed",
+            code=3,
+            hint="Run: imgen setup")
+
+    binary = VENV_DIR / "bin" / BACKENDS[backend]
+    if not binary.exists():
+        die(f"Backend binary not found: {binary}",
+            code=3,
+            hint="Run: imgen upgrade")
+
+    seed = args.seed if args.seed is not None \
+        else int.from_bytes(os.urandom(4), "big")
+
+    cmd = [
+        str(binary),
+        "--quantize", str(final_quantize),
+        ("--image-path" if backend == "flux" else "--image-paths"), str(input_path),
+        "--prompt", prompt,
+        "--steps", str(final_steps),
+        "--guidance", str(final_guidance),
+        "--seed", str(seed),
+        "--width", str(width),
+        "--height", str(height),
+        "--mlx-cache-limit-gb", str(DEFAULTS["mlx_cache_gb"]),
+        "--battery-percentage-stop-limit", str(DEFAULTS["battery_stop"]),
+        "--metadata",
+        "--output", str(output_path),
+    ]
+    # FLUX supports --image-strength and --negative-prompt; qwen-edit doesn't
+    if backend == "flux":
+        cmd += ["--image-strength", str(final_strength), "--model", "dev"]
+        if negative:
+            cmd += ["--negative-prompt", negative]
+    else:
+        cmd += ["--model", "qwen"]
+
+    # 8) Dry run (skip resource checks — just show what would run)
+    if args.dry_run:
+        step("Dry run — would execute:")
+        print()
+        print(_format_cmd(cmd))
+        print()
+        return 0
+
+    # 8a) Resource preflight — block runs that can't reasonably finish
+    if not args.force:
+        res = check_resources(backend, final_quantize)
+
+        # HARD: another mflux is already crunching — would compete for GPU+RAM
+        if res["other_mflux_pid"] is not None:
+            die(f"Another mflux process is already running (PID "
+                f"{res['other_mflux_pid']}). Two parallel runs will OOM and "
+                "trash each other.",
+                code=4,
+                hint="Wait for it to finish (check with: ps -p "
+                     f"{res['other_mflux_pid']}), or pass --force.")
+
+        # HARD: not enough RAM for chosen backend+quant
+        if not res["ram_ok"]:
+            die(f"Not enough RAM: need ~{res['ram_required_gb']} GB peak "
+                f"for {backend} q{final_quantize}, only "
+                f"{res['ram_available_gb']:.1f} GB available "
+                f"(of {res['ram_total_gb']:.0f} GB total).",
+                code=4,
+                hint=("How to fix:\n"
+                      "     • Close other apps (Chrome often eats 5+ GB)\n"
+                      "     • Drop quant: --quantize 4 (needs ~9 GB for flux)\n"
+                      "     • Or --preview (uses --quantize 4 automatically)\n"
+                      "     • Or --force (swaps to disk, very slow, may freeze)"))
+
+        # SOFT: disk low — might fail mid-run if download needed
+        if not res["disk_ok"]:
+            warn(f"Only {res['disk_free_gb']:.1f} GB disk free — risky if "
+                 "model needs download. Consider: imgen clean")
+        # SOFT: low battery
+        if not res["battery_ok"]:
+            warn(f"Battery {res['battery_pct']}% on battery — long runs may "
+                 "not finish. Plug in for safety.")
+
+    # 9) Pre-flight info
+    step(f"Generating {style_name} → {output_path.name}")
+    print(f"   {C.DIM}backend: {backend} q{final_quantize}  "
+          f"steps: {final_steps}  guidance: {final_guidance}  "
+          f"strength: {final_strength}  seed: {seed}{C.END}")
+    print(f"   {C.DIM}size: {width}x{height}  "
+          f"input: {input_path.name} → output: {output_path}{C.END}")
+    print()
+
+    # 10) Run
+    env = os.environ.copy()
+    if token:
+        env["HF_TOKEN"] = token
+
+    started = datetime.datetime.now()
+    existing = load_history()
+    history_id = max((e.get("id", 0) for e in existing), default=0) + 1
+    history_entry = {
+        "id": history_id,
+        "ts": started.isoformat(timespec="seconds"),
+        "input": str(input_path),
+        "output": str(output_path),
+        "style": style_name if not args.custom_prompt else None,
+        "custom_prompt": args.custom_prompt,
+        "scope": args.scope,
+        "preview": args.preview,
+        "prompt": prompt,
+        "negative": negative,
+        "seed": seed,
+        "steps": final_steps,
+        "guidance": final_guidance,
+        "strength": final_strength,
+        "backend": backend,
+        "quantize": final_quantize,
+        "width": width,
+        "height": height,
+    }
+
+    try:
+        result = subprocess.run(cmd, env=env)
+    except KeyboardInterrupt:
+        warn("Cancelled by user")
+        history_entry["status"] = "cancelled"
+        history_entry["duration_sec"] = int(
+            (datetime.datetime.now() - started).total_seconds())
+        append_history(history_entry)
+        return 130
+
+    duration = int((datetime.datetime.now() - started).total_seconds())
+    history_entry["duration_sec"] = duration
+    history_entry["status"] = "success" if result.returncode == 0 else "failed"
+    append_history(history_entry)
+
+    if result.returncode != 0:
+        err(f"mflux exited with code {result.returncode} after {duration}s")
+        return result.returncode
+
+    print()
+    ok(f"Done in {duration // 60}m {duration % 60}s — {output_path}")
+
+    # 11) Open in Preview
+    if not args.no_open:
+        try:
+            subprocess.run(["open", str(output_path)], check=False)
+        except FileNotFoundError:
+            pass
+
+    return 0
+
+
+# ── CLI parser ───────────────────────────────────────────────────────────
+
+def build_parser():
+    p = argparse.ArgumentParser(
+        prog="imgen",
+        description="Photo style transfer for Apple Silicon Macs.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__.split("Usage:", 1)[1] if __doc__ else None,
+    )
+
+    # Top-level utility flags
+    p.add_argument("--list-styles", action="store_true",
+                   help="List style presets and exit")
+    p.add_argument("--version", action="version", version="imgen 0.1.0")
+
+    sub = p.add_subparsers(dest="command", metavar="COMMAND")
+
+    # setup / doctor / upgrade
+    sub.add_parser("setup", help="First-time install & token setup")
+    sub.add_parser("doctor", help="Check environment & cached models")
+    u = sub.add_parser("upgrade", help=f"Upgrade mflux to pinned {MFLUX_PIN}")
+    u.add_argument("--latest", action="store_true",
+                   help="Install newest mflux instead of pinned version "
+                        "(may have breaking changes)")
+
+    # clean
+    c = sub.add_parser("clean", help="Cleanup HuggingFace cache")
+    c.add_argument("--all", action="store_true",
+                   help="Also delete cached models (with confirmation)")
+    c.add_argument("--dry-run", action="store_true",
+                   help="Show what would be deleted without deleting")
+
+    # history / last / replay
+    h = sub.add_parser("history", help="Show generation history")
+    h.add_argument("--last", type=int, default=20,
+                   help="Show last N entries (default 20)")
+    sub.add_parser("last", help="Repeat last generation with new seed")
+    r = sub.add_parser("replay", help="Repeat generation by id")
+    r.add_argument("id", type=int)
+
+    # generate (default — no subcommand, positional image)
+    g = sub.add_parser("generate",
+                       help="Generate styled image (default command)")
+    _add_generate_args(g)
+
+    return p
+
+
+def _add_generate_args(p):
+    p.add_argument("image", help="Path to input photo")
+    p.add_argument("-s", "--style", choices=list_styles(),
+                   help=f"Style preset (default: {DEFAULTS['style']})")
+    p.add_argument("--custom-prompt",
+                   help="Custom prompt (overrides --style)")
+    p.add_argument("-o", "--output",
+                   help=f"Output path (default: {DEFAULT_OUTPUT_DIR}/<auto>.png)")
+    # Override args use default=None so we can tell "user set" from "use default"
+    p.add_argument("--steps", type=_int_range(1, 200), default=None,
+                   help=f"Inference steps 1..200 (default {DEFAULTS['steps']}, "
+                        f"preview {PREVIEW_OVERRIDES['steps']})")
+    p.add_argument("-g", "--guidance", type=_float_range(0.5, 15.0), default=None,
+                   help=f"Guidance scale 0.5..15 (default {DEFAULTS['guidance']}, "
+                        "style preset may override)")
+    p.add_argument("--strength", type=_float_range(0.0, 1.0), default=None,
+                   help=f"Image strength 0..1 (default {DEFAULTS['strength']}, "
+                        "style preset may override)")
+    p.add_argument("--seed", type=_int_range(0, 2**32 - 1),
+                   help="Seed (default: random)")
+    p.add_argument("--backend", choices=list(BACKENDS), default=DEFAULTS["backend"],
+                   help=f"Backend (default {DEFAULTS['backend']})")
+    p.add_argument("-q", "--quantize", type=int, choices=[3, 4, 5, 6, 8],
+                   default=None,
+                   help=f"Quantization (default {DEFAULTS['quantize']}, "
+                        f"preview {PREVIEW_OVERRIDES['quantize']})")
+    p.add_argument("--scope", choices=["person", "scene"],
+                   help="person=transform person only (keep background); "
+                        "scene=transform whole image; default=balanced subject focus")
+    p.add_argument("-p", "--preview", action="store_true",
+                   help="Fast preview mode: smaller resolution, fewer steps, "
+                        "lower quantization (~5x faster, lower quality)")
+    p.add_argument("--width", type=_int_range(64, 4096),
+                   help="Override output width (64..4096)")
+    p.add_argument("--height", type=_int_range(64, 4096),
+                   help="Override output height (64..4096)")
+    p.add_argument("--no-open", action="store_true",
+                   help="Don't open result in Preview")
+    p.add_argument("--dry-run", action="store_true",
+                   help="Show mflux command without running")
+    p.add_argument("--force", action="store_true",
+                   help="Skip resource checks (RAM, parallel mflux, etc.) "
+                        "and try anyway. Use at your own risk.")
+
+
+def main():
+    # Special case: --list-styles before subcommand parsing
+    # Only match when it's the first user arg, so it can't fire from
+    # inside --custom-prompt text or other values.
+    if len(sys.argv) >= 2 and sys.argv[1] == "--list-styles":
+        step("Available styles")
+        for name in list_styles():
+            preset = STYLES[name]
+            print(f"  {C.BOLD}{name:10}{C.END} "
+                  f"{C.DIM}(guidance={preset.get('guidance')}, "
+                  f"strength={preset.get('strength')}){C.END}")
+            print(f"             {preset['prompt'][:80]}...")
+        return 0
+
+    # If user passed a positional photo arg without a subcommand, default
+    # to "generate". This lets `imgen photo.jpg` and `imgen --dry-run
+    # photo.jpg ...` both work, while keeping `imgen --help` showing
+    # top-level help.
+    argv = sys.argv[1:]
+    known = {"setup", "doctor", "upgrade", "clean",
+             "history", "last", "replay", "generate"}
+    has_positional = any(not a.startswith("-") for a in argv)
+    if has_positional and not any(a in known for a in argv):
+        argv = ["generate"] + argv
+
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    handlers = {
+        "setup": cmd_setup,
+        "doctor": cmd_doctor,
+        "upgrade": cmd_upgrade,
+        "clean": cmd_clean,
+        "history": cmd_history,
+        "last": cmd_last,
+        "replay": cmd_replay,
+        "generate": cmd_generate,
+    }
+
+    if not args.command:
+        parser.print_help()
+        return 0
+
+    handler = handlers.get(args.command)
+    if not handler:
+        parser.print_help()
+        return 2
+
+    try:
+        return handler(args) or 0
+    except KeyboardInterrupt:
+        print()
+        warn("Cancelled by user")
+        return 130
+
+
+if __name__ == "__main__":
+    # Graceful SIGINT
+    signal.signal(signal.SIGINT, signal.default_int_handler)
+    sys.exit(main())
