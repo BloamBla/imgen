@@ -859,7 +859,63 @@ def cmd_clean(args):
 
 # ── Subcommand: upgrade ──────────────────────────────────────────────────
 
+def _self_update() -> None:
+    """git pull --ff-only in IMGEN_HOME. Warn (don't fail) on any issue."""
+    if not (IMGEN_HOME / ".git").exists():
+        warn(f"{IMGEN_HOME} is not a git checkout — self-update unavailable")
+        print(f"   {C.DIM}For auto-updates, reinstall via:{C.END}")
+        print(f"   {C.DIM}  rm -rf {IMGEN_HOME} && "
+              f"git clone https://github.com/BloamBla/imgen "
+              f"{IMGEN_HOME}{C.END}")
+        return
+
+    info(f"Pulling latest from {IMGEN_HOME}")
+    try:
+        before = subprocess.check_output(
+            ["git", "-C", str(IMGEN_HOME), "rev-parse", "HEAD"],
+            text=True, timeout=10,
+        ).strip()[:7]
+        result = subprocess.run(
+            ["git", "-C", str(IMGEN_HOME), "pull", "--ff-only"],
+            capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode != 0:
+            warn(f"git pull failed: {result.stderr.strip().splitlines()[-1]}")
+            print(f"   {C.DIM}Resolve manually: "
+                  f"cd {IMGEN_HOME} && git status{C.END}")
+            print(f"   {C.DIM}Continuing with mflux upgrade.{C.END}")
+            return
+        after = subprocess.check_output(
+            ["git", "-C", str(IMGEN_HOME), "rev-parse", "HEAD"],
+            text=True, timeout=10,
+        ).strip()[:7]
+        if before == after:
+            ok("imgen already up to date")
+        else:
+            ok(f"imgen updated: {before} → {after}")
+            try:
+                log = subprocess.check_output(
+                    ["git", "-C", str(IMGEN_HOME), "log",
+                     f"{before}..{after}", "--oneline", "--no-decorate"],
+                    text=True, timeout=10,
+                ).strip()
+                if log:
+                    print(f"   {C.DIM}New commits:{C.END}")
+                    for line in log.splitlines()[:10]:
+                        print(f"   {C.DIM}  • {line}{C.END}")
+            except (subprocess.CalledProcessError,
+                    subprocess.TimeoutExpired):
+                pass
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
+            FileNotFoundError) as e:
+        warn(f"git operation failed: {e}")
+
+
 def cmd_upgrade(args):
+    step("Upgrading imgen (self-update)")
+    _self_update()
+    print()
+
     step("Upgrading mflux")
     if not check_venv():
         die("venv missing — run: imgen setup", code=3)
@@ -878,7 +934,7 @@ def cmd_upgrade(args):
         )
         ok(f"mflux is now {check_mflux()}")
     except subprocess.CalledProcessError as e:
-        die(f"Upgrade failed: {e}", code=3)
+        die(f"mflux upgrade failed: {e}", code=3)
     return 0
 
 
@@ -1272,7 +1328,7 @@ def build_parser():
     # Top-level utility flags
     p.add_argument("--list-styles", action="store_true",
                    help="List style presets and exit")
-    p.add_argument("--version", action="version", version="imgen 0.1.1")
+    p.add_argument("--version", action="version", version="imgen 0.1.2")
 
     sub = p.add_subparsers(dest="command", metavar="COMMAND")
 
