@@ -21,6 +21,10 @@ Output lands in `~/Desktop/imgen/<basename>_<style>_<timestamp>.png` and opens i
 
 ## Install
 
+Two ways — pick one.
+
+### Option A: `bootstrap.sh` (recommended for first-time users)
+
 ```bash
 git clone https://github.com/BloamBla/imgen ~/imgen
 cd ~/imgen
@@ -30,11 +34,20 @@ cd ~/imgen
 The bootstrap script:
 1. Verifies macOS + Apple Silicon + Python 3.12
 2. Creates venv at `.venv/`
-3. Installs pinned mflux (`==0.17.5`)
+3. Installs the `imgen` package + dependencies (pinned mflux 0.17.5)
 4. Adds shell alias (`zsh` / `bash` / `fish` auto-detected)
 5. Prompts for HuggingFace token (optional — only needed for FLUX)
 
-After bootstrap, restart your terminal (or `source ~/.zshrc`), then:
+### Option B: `pipx install` (for those who already use pipx)
+
+```bash
+pipx install git+https://github.com/BloamBla/imgen
+imgen setup     # interactive: HF token + state dirs
+```
+
+`pipx` manages the venv for you and puts `imgen` directly in your PATH — no shell alias needed.
+
+### After install (either option)
 
 ```bash
 imgen doctor                                 # verify everything's wired
@@ -74,7 +87,8 @@ imgen --dry-run <photo> -s anime               # show mflux command, don't run
 
 # Maintenance
 imgen setup                                    # rerun setup (e.g. fix token)
-imgen upgrade                                  # mflux to pinned version
+imgen upgrade                                  # bootstrap: git pull + pip install -e . + mflux refresh
+                                               # pipx: prints `pipx upgrade imgen` hint
 imgen upgrade --latest                         # newest mflux (risky)
 imgen clean                                    # delete stale partial downloads
 imgen clean --all                              # delete cached models (with confirmation)
@@ -113,8 +127,9 @@ For 32 GB Macs, **Q8** is recommended for FLUX Kontext.
 | `~/.hf_token`          | HuggingFace token (chmod 600) |
 | `$HF_TOKEN`            | Overrides `~/.hf_token` |
 | `$IMGEN_OUTPUT_DIR`    | Override default output dir |
-| `~/.imgen/history.jsonl` | Generation history (JSONL) |
-| `~/imgen/.venv/`       | mflux venv (created by setup) |
+| `~/.imgen/history.jsonl` | Generation history (JSONL, schema-versioned) |
+| `~/imgen/.venv/`       | bootstrap install — mflux + imgen venv |
+| `~/.local/pipx/venvs/imgen/` | pipx install — mflux + imgen venv |
 
 ## Performance (M2 Pro 32 GB)
 

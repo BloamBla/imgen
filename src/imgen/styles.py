@@ -7,8 +7,9 @@ to transform a person photo into a target art style while preserving identity.
 Per-style tuning of `guidance` and `strength` is allowed when defaults don't
 work well (e.g. Simpsons needs higher guidance to nail the distinctive look).
 """
+from __future__ import annotations
 
-STYLES = {
+STYLES: dict[str, dict] = {
     "pixar": {
         "prompt": (
             "Transform this person into a polished Pixar 3D animation style, "

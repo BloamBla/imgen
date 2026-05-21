@@ -61,21 +61,18 @@ else
   ok "venv created"
 fi
 
-# ── 4. Install mflux ──────────────────────────────────────────────────────
-MFLUX_PIN="mflux==0.17.5"
-if .venv/bin/python -c "import mflux" 2>/dev/null; then
-  CURRENT_VERSION=$(.venv/bin/pip show mflux | awk '/^Version:/ {print $2}')
-  ok "mflux ${CURRENT_VERSION} already installed"
-else
-  step "Installing ${MFLUX_PIN} (this can take 3-5 minutes)"
-  .venv/bin/pip install --quiet --upgrade pip
-  .venv/bin/pip install "${MFLUX_PIN}"
-  ok "mflux installed"
-fi
+# ── 4. Install imgen package (also pulls mflux as a declared dep) ────────
+# Editable install (-e) so `imgen upgrade` -> `git pull` picks up new code
+# without needing a reinstall. mflux is declared in pyproject.toml deps.
+step "Installing imgen package + dependencies (this can take 3-5 minutes)"
+.venv/bin/pip install --quiet --upgrade pip
+.venv/bin/pip install --quiet -e .
+MFLUX_VERSION=$(.venv/bin/pip show mflux | awk '/^Version:/ {print $2}')
+ok "imgen package installed (mflux ${MFLUX_VERSION})"
 
-# ── 5. Make imgen executable ──────────────────────────────────────────────
+# ── 5. Make imgen launcher executable ─────────────────────────────────────
 chmod +x ./imgen
-ok "imgen script is executable"
+ok "imgen launcher is executable"
 
 # ── 6. Hand off to imgen setup (alias + token) ────────────────────────────
 echo

@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "imgen"
+dynamic = ["version"]
+description = "Photo style-transfer CLI for Apple Silicon Macs (FLUX Kontext / Qwen Image Edit via mflux)"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { file = "LICENSE" }
+authors = [{ name = "BloamBla" }]
+keywords = ["flux", "mflux", "mlx", "image-generation", "cli", "apple-silicon"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Graphics",
+]
+dependencies = [
+    "mflux==0.17.5",
+]
+
+[project.scripts]
+imgen = "imgen.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/BloamBla/imgen"
+Issues = "https://github.com/BloamBla/imgen/issues"
+
+[tool.hatch.version]
+path = "src/imgen/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/imgen"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/imgen",
+    "bootstrap.sh",
+    "imgen",
+    "README.md",
+    "LICENSE",
+]
