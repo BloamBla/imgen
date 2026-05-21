@@ -34,6 +34,7 @@ __all__ = [
     "load_user_style_file",
     "load_user_styles_dir",
     "merge_user_styles",
+    "parse_style_list",
     "reset_styles_cache",
 ]
 
@@ -316,6 +317,61 @@ def get_style(name: str) -> dict:
         available = ", ".join(sorted(merged.keys()))
         raise KeyError(f"Unknown style '{name}'. Available: {available}")
     return merged[name]
+
+
+def parse_style_list(value: str) -> list[str]:
+    """Parse the `--style anime,ghibli,pixar` argument into a deduped list.
+
+    Behaviour (locked by tests):
+      - Comma is the separator. Whitespace around items is stripped.
+      - Empty items (`",,"`, trailing comma, all-whitespace) raise ValueError.
+      - Each item must match a known style — unknown names raise ValueError
+        listing the offending names plus the known set (so the user can
+        fix the typo without re-running with `--list-styles`).
+      - Duplicates are silently dropped, **stable** (first occurrence wins),
+        with a one-line warn. `anime,ghibli,anime` → `["anime","ghibli"]`.
+      - Order is preserved — `--style ghibli,anime` runs ghibli first.
+
+    Raises ValueError on any bad input. argparse `type=` converts that
+    to a user-facing error; direct callers can `die()` on it.
+    """
+    if not isinstance(value, str):
+        raise ValueError(f"--style: expected string, got {type(value).__name__}")
+
+    items = [item.strip() for item in value.split(",")]
+    if any(item == "" for item in items):
+        raise ValueError(
+            "--style: empty name (check for stray commas or whitespace-only items)"
+        )
+
+    known = list_styles()
+    unknown = [item for item in items if item not in known]
+    if unknown:
+        plural = "s" if len(unknown) > 1 else ""
+        raise ValueError(
+            f"--style: unknown name{plural}: {', '.join(unknown)}. "
+            f"Known: {', '.join(known)}"
+        )
+
+    seen: set[str] = set()
+    deduped: list[str] = []
+    dropped: list[str] = []
+    for item in items:
+        if item in seen:
+            dropped.append(item)
+            continue
+        seen.add(item)
+        deduped.append(item)
+
+    if dropped:
+        # Local import dodges the styles → colors → config → styles cycle —
+        # config validation calls list_styles() during load.
+        from .colors import warn
+        plural = "s" if len(set(dropped)) > 1 else ""
+        warn(f"--style: duplicate name{plural} dropped: "
+             f"{', '.join(sorted(set(dropped)))}")
+
+    return deduped
 
 
 def reset_styles_cache() -> None:
