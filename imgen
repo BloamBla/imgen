@@ -1257,6 +1257,13 @@ def cmd_generate(args):
     if token:
         env["HF_TOKEN"] = token
 
+    # tqdm sees stderr=PIPE as non-tty and falls back to a narrow default
+    # width. Forward the real terminal size so the progress bar fills the
+    # window like it did before stderr redaction was added in v0.1.1.
+    term = shutil.get_terminal_size(fallback=(80, 24))
+    env["COLUMNS"] = str(term.columns)
+    env["LINES"] = str(term.lines)
+
     started = datetime.datetime.now()
     # Id is assigned by append_history() under flock to avoid parallel collisions
     history_entry = {
