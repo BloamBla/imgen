@@ -20,6 +20,10 @@ __pycache__/
 *.swp
 *.swo
 
+# Claude (local-only, not shipped to colleagues)
+CLAUDE.md
+.claude/
+
 # imgen runtime artifacts
 outputs/
 *.log
