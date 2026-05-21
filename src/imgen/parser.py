@@ -213,6 +213,9 @@ def _add_generate_args(
                    help="Override output height (64..4096)")
     p.add_argument("--no-open", action="store_true",
                    help="Don't open result in Preview")
+    p.add_argument("-y", "--yes", action="store_true",
+                   help="Skip the [y/N] confirm gate that fires when generating "
+                        "multiple images (M ≥ 2 styles).")
     p.add_argument("--dry-run", action="store_true",
                    help="Show mflux command without running")
     p.add_argument("--force", action="store_true",

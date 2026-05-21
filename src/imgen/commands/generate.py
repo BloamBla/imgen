@@ -17,10 +17,10 @@ from pathlib import Path
 
 from ..backends import BACKENDS, build_mflux_cmd
 from ..checks import check_mflux, check_resources, check_venv
-from ..colors import C, die, err, ok, step, warn
+from ..colors import C, die, err, info, ok, step, warn
 from ..config import effective_output_dir
 from ..defaults import DEFAULTS, PREVIEW_OVERRIDES
-from ..history import append_history
+from ..history import append_history, load_history
 from ..images import apply_scope, detect_resolution
 from ..paths import (
     DEFAULT_OUTPUT_DIR,
@@ -33,6 +33,71 @@ from ..prompt_input import PromptInputError, resolve_prompt
 from ..styles import get_style
 from ..subprocess_helpers import format_cmd, run_with_stderr_redaction
 from ..tokens import load_token
+
+
+def _estimate_one_seconds(
+    history_entries: list[dict],
+    backend: str,
+    quantize: int,
+    preview: bool,
+) -> int | None:
+    """Average duration of recent successful generations matching params.
+
+    Returns None when no matching successes — caller suppresses ETA display
+    rather than guessing from a coarse fallback table that would be wildly
+    off across M1/M2/M3/M4 hardware variance.
+    """
+    matching = [
+        e for e in history_entries
+        if e.get("status") == "success"
+        and e.get("backend") == backend
+        and e.get("quantize") == quantize
+        and e.get("preview") == preview
+        and isinstance(e.get("duration_sec"), int)
+    ]
+    if not matching:
+        return None
+    recent = matching[-5:]
+    return sum(e["duration_sec"] for e in recent) // len(recent)
+
+
+def _format_duration(seconds: int) -> str:
+    if seconds < 60:
+        return f"{seconds}s"
+    return f"~{seconds // 60} min"
+
+
+def _confirm_batch(
+    iterations: list[dict],
+    input_name: str,
+    output_root: Path,
+    one_eta_seconds: int | None,
+) -> bool:
+    """Print summary + interactive y/N gate. Returns True to proceed.
+
+    EOF (piped stdin closed), Ctrl-C, and any answer other than `y`/`yes`
+    return False. Caller is responsible for printing a 'cancelled' line
+    and exiting clean (no folder created, no history entries written).
+    """
+    n = len(iterations)
+    style_names = [it["style_name"] for it in iterations]
+    print()
+    info(f"About to generate {n} images:")
+    print(f"   {C.DIM}input:{C.END}   {input_name}")
+    print(f"   {C.DIM}styles:{C.END}  {', '.join(style_names)}")
+    print(f"   {C.DIM}output:{C.END}  {output_root}")
+    if one_eta_seconds is not None:
+        total = _format_duration(one_eta_seconds * n)
+        per_image = _format_duration(one_eta_seconds)
+        print(f"   {C.DIM}eta:{C.END}     {total} total "
+              f"({per_image} per image, ±50%)")
+    print()
+    try:
+        ans = input("Continue? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    return ans in ("y", "yes")
 
 
 def cmd_generate(args) -> int:
@@ -293,7 +358,24 @@ def cmd_generate(args) -> int:
             warn(f"Battery {res['battery_pct']}% on battery — long runs may "
                  "not finish. Plug in for safety.")
 
-    # 11) mkdir output dir now that we'll actually run.
+    # 11) Confirm gate (multi-style only — single-style keeps v0.2.x's
+    # zero-prompt UX). --yes skips. Fires AFTER preflight so we never
+    # ask the user to confirm a batch we know we can't run anyway.
+    if multi and not args.yes:
+        one_eta = _estimate_one_seconds(
+            load_history(), backend, heaviest_quant, args.preview
+        )
+        proceed = _confirm_batch(
+            iterations=iterations,
+            input_name=input_path.name,
+            output_root=run_dir if run_dir is not None else explicit_output.parent,
+            one_eta_seconds=one_eta,
+        )
+        if not proceed:
+            warn("Cancelled — nothing generated.")
+            return 0
+
+    # 12) mkdir output dir now that we'll actually run.
     if run_dir is not None:
         run_dir.mkdir(parents=True, exist_ok=True)
     else:
