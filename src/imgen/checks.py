@@ -121,10 +121,10 @@ def find_running_mflux() -> int | None:
     prompt containing the literal "mflux-generate" can't trip the check on
     its own re-run.
     """
-    for binary in BACKENDS.values():
+    for be in BACKENDS.values():
         try:
             out = subprocess.check_output(
-                ["pgrep", "-x", binary], stderr=subprocess.DEVNULL,
+                ["pgrep", "-x", be.binary], stderr=subprocess.DEVNULL,
                 timeout=5
             ).decode().strip()
         except (subprocess.CalledProcessError, FileNotFoundError,

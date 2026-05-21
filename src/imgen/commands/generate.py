@@ -111,14 +111,14 @@ def cmd_generate(args) -> int:
 
     # 6) Backend & token
     backend = args.backend
-    if backend == "flux":
+    be = BACKENDS[backend]
+    token: str | None = None
+    if be.needs_token:
         token = load_token()
         if not token:
             die("FLUX backend requires HuggingFace token",
                 code=3,
                 hint="Run: imgen setup   (or use --backend qwen)")
-    else:
-        token = None  # qwen-image-edit is open
 
     # 7) Build mflux command
     if not check_venv() or not check_mflux():
@@ -126,7 +126,7 @@ def cmd_generate(args) -> int:
             code=3,
             hint="Run: imgen setup")
 
-    binary = VENV_BIN / BACKENDS[backend]
+    binary = VENV_BIN / be.binary
     if not binary.exists():
         die(f"Backend binary not found: {binary}",
             code=3,
@@ -138,7 +138,7 @@ def cmd_generate(args) -> int:
     cmd = [
         str(binary),
         "--quantize", str(final_quantize),
-        ("--image-path" if backend == "flux" else "--image-paths"), str(input_path),
+        be.image_flag, str(input_path),
         "--prompt", prompt,
         "--steps", str(final_steps),
         "--guidance", str(final_guidance),
@@ -150,13 +150,11 @@ def cmd_generate(args) -> int:
         "--metadata",
         "--output", str(output_path),
     ]
-    # FLUX supports --image-strength and --negative-prompt; qwen-edit doesn't
-    if backend == "flux":
-        cmd += ["--image-strength", str(final_strength), "--model", "dev"]
-        if negative:
-            cmd += ["--negative-prompt", negative]
-    else:
-        cmd += ["--model", "qwen"]
+    if be.supports_strength:
+        cmd += ["--image-strength", str(final_strength)]
+    cmd += list(be.extra_args)
+    if be.supports_negative and negative:
+        cmd += ["--negative-prompt", negative]
 
     # 8) Dry run (skip resource checks — just show what would run)
     if args.dry_run:
