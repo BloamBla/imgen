@@ -694,6 +694,13 @@ def load_backend_and_token(
     backend_secret: tuple[str, str] | None = None
     if be.secret_env_var is not None:
         value = os.environ.get(be.secret_env_var)
+        # Falsy check (not `is not None`): an env var explicitly set to
+        # empty string (`export MYBACK_API_KEY=`) is treated as missing.
+        # An empty token is useless — forwarding it would produce a
+        # confusing auth failure from the backend's binary. Same
+        # contract as load_token() for the FLUX path. Locked by
+        # test_load_custom_backend_dies_when_secret_env_var_set_to_empty
+        # (v0.4 python-reviewer IMP-2.)
         if value:
             backend_secret = (be.secret_env_var, value)
         elif be.secret_required:

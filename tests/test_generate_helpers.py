@@ -666,6 +666,32 @@ def test_load_custom_backend_dies_when_required_secret_missing(
     assert "export" in err  # hint
 
 
+def test_load_custom_backend_dies_when_secret_env_var_set_to_empty(
+    fake_venv, passing_checks, monkeypatch, tmp_path, capsys
+):
+    """v0.4 python-reviewer IMP-2 contract: env var explicitly set to
+    empty string (`export MYBACK_API_KEY=`) is treated as missing.
+    Falsy `if value:` check at the resolution site is intentional —
+    forwarding an empty token to the backend would produce a confusing
+    auth failure downstream. Lock the contract here so a future
+    refactor doesn't accidentally change `if value:` to `is not None:`."""
+    (fake_venv / "mflux-generate-fake").write_bytes(b"#!/bin/sh\n")
+    _install_custom_backend(
+        monkeypatch, tmp_path, "myback",
+        binary="mflux-generate-fake",
+        image_flag="--image-path",
+        secret_env_var="MYBACK_API_KEY",
+    )
+    monkeypatch.setenv("MYBACK_API_KEY", "")  # explicitly empty
+
+    with pytest.raises(SystemExit) as exc_info:
+        load_backend_and_token(SimpleNamespace(backend="myback"))
+
+    assert exc_info.value.code == 3
+    err = capsys.readouterr().err
+    assert "MYBACK_API_KEY" in err
+
+
 def test_load_custom_backend_silent_skip_when_optional_secret_missing(
     fake_venv, passing_checks, monkeypatch, tmp_path
 ):
