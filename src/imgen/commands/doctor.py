@@ -564,14 +564,14 @@ def cmd_doctor(_args) -> int:
                     "not set — best-effort forward, backend handles "
                     "its own auth")
 
-    # Enhance (v0.5) — LLM prompt enhancer readiness. Reports whether
-    # mlx-lm is importable, whether the configured model is in HF
-    # cache, total cache size for that model, and recent enhance
-    # success-rate from history. Not an issue if disabled — opt-in
-    # surface, so "no enhance attempts in history + model not cached"
-    # is the expected state for users who haven't tried --enhance-prompt.
+    # Enhance — LLM prompt enhancer readiness. Reports whether mlx-lm
+    # is importable, whether the configured model is in HF cache,
+    # total cache size for that model, and recent enhance success-rate
+    # from history. Not an issue if disabled — opt-in surface, so
+    # "no enhance attempts in history + model not cached" is the
+    # expected state for users who haven't tried --enhance-prompt.
     print()
-    info("Enhance (v0.5)")
+    info("Smart prompts")
     enhance_cfg: dict = {}
     if CONFIG_FILE.exists():
         try:

@@ -319,15 +319,15 @@ def _add_batch_args(
 
 
 def _add_enhance_args(p: argparse.ArgumentParser) -> None:
-    """v0.5 LLM prompt enhancer flags. Shared by generate + batch.
+    """LLM prompt enhancer flags. Shared by generate + batch.
 
     The enabled flag is a mutex pair (``--enhance-prompt`` /
     ``--no-enhance``) both writing to ``args.enhance``. ``None`` = no
     CLI override, fall back to ``[enhance] default`` from config.
     """
     group = p.add_argument_group(
-        "Prompt enhancer (v0.5)",
-        "Pipe the constructed prompt through a local LLM "
+        "Smart prompts",
+        "Pipe the constructed prompt through a local AI model "
         "(Qwen2.5-7B-Instruct-4bit by default) to expand it into a "
         "richer, model-tuned version before mflux sees it. Opt-in.",
     )

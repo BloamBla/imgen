@@ -7,16 +7,24 @@ imgen photo.jpg                              # Pixar style (default)
 imgen photo.jpg --style anime
 imgen photo.jpg --style simpsons --preview   # ~3 min fast test
 imgen photo.jpg --custom-prompt "Mona Lisa painting style"
-imgen batch ~/Desktop/holiday --style anime,ghibli   # v0.3.0: every photo in folder × every style
+imgen photo.jpg --style anime --enhance-prompt   # smarter prompts → better results
+imgen batch ~/Desktop/holiday --style anime,ghibli   # every photo in folder × every style
 ```
 
 Every run creates a timestamped folder under `~/Desktop/imgen/` — e.g. `~/Desktop/imgen/2026-05-21-14-30-12/photo-pixar.png`. The result opens in Preview automatically. Change the parent with `--output-dir PATH` or pin an exact path with `--output FILE`.
 
-**Multi-style** (v0.2.3+): pass `--style anime,ghibli,pixar` to generate N images from one input in a single run — all dropped into the same timestamped folder, named by `<input>-<style>.png`. Confirms with a `[y/N]` summary before starting (skip with `-y/--yes`).
+**Multi-style:** pass `--style anime,ghibli,pixar` to generate N images from one input in a single run — all dropped into the same timestamped folder, named by `<input>-<style>.png`. Confirms with a `[y/N]` summary before starting (skip with `-y/--yes`).
 
-**Batch a folder** (v0.3.0+): `imgen batch <dir>` applies M styles to every supported image directly under `<dir>` (non-recursive — `ls <dir>` ≈ what gets batched). Same flat output layout — all N×M results in one timestamped folder, named `<input>-<style>.png`. iPhone HEIC inputs are auto-converted via `sips` before mflux sees them; the same HEIC handling also fixes single-file `imgen generate vacation.heic`. Confirm gate shows N inputs × M styles + ETA; skip with `-y/--yes`.
+**Batch a folder:** `imgen batch <dir>` applies M styles to every supported image directly under `<dir>` (non-recursive — `ls <dir>` ≈ what gets batched). Same flat output layout — all N×M results in one timestamped folder, named `<input>-<style>.png`. iPhone HEIC inputs are auto-converted via `sips` before mflux sees them. Confirm gate shows N inputs × M styles + ETA; skip with `-y/--yes`.
 
-**v0.3.2 defaults:** `--scope` is now `scene` by default (most photos are scenes, not portraits) — pass `--scope person` to focus on the subject and keep the background photorealistic. Also, mflux's `.metadata.json` sidecars are no longer written next to outputs (the data is already embedded in the PNG and stored in `~/.imgen/history.jsonl`), so the gallery folder stays clean.
+### Person or scene?
+
+If your photo has a person in it, `imgen` always preserves their face, hair, body proportions, and pose — that's unconditional, regardless of style or scope. The `--scope` flag only controls what happens to the **background**:
+
+- **`--scope scene`** (default) — restyle the background to match the chosen style. Anime backgrounds become hand-painted anime scenery, Pixar backgrounds become 3D-animated environments with cinematic lighting, Van Gogh backgrounds get impasto brushstrokes, etc. Every built-in style ships with a tuned background directive.
+- **`--scope person`** — keep the background photorealistic and untouched. Useful when you want a stylized person against the real-world setting they were actually in.
+
+Photos without people work fine too — the identity-preserving language doesn't apply to absent faces, and FLUX restyles the whole scene.
 
 ## Requirements
 
@@ -101,7 +109,17 @@ strength = 0.7
 
 Use a full style with `-s noir`. Use a param-only style by combining with `--custom-prompt`: `imgen photo.jpg -s punchy --custom-prompt "..."` — the style supplies the tuning, the CLI supplies the prompt.
 
-**`--custom-prompt` augmentation** (v0.3.5+): with a full style, `--custom-prompt` AUGMENTS the style prompt rather than replacing it — the user's text is appended as a trailing detail. `imgen photo.jpg -s anime,ghibli,pixar --custom-prompt "wearing a red kimono"` runs three generations, each preserving its style's tuned prompt with the kimono detail tacked on. Without an explicit `--style`, `--custom-prompt` is the sole prompt content and the default style only contributes its tuning params (so `imgen photo.jpg --custom-prompt "sepia film still"` works without any style prompt blending in).
+**Adding to a preset with `--custom-prompt`.** With a full style, `--custom-prompt` AUGMENTS the style prompt — your text is appended as a trailing detail. `imgen photo.jpg -s anime,ghibli,pixar --custom-prompt "wearing a red kimono"` runs three generations, each keeping its style's tuned prompt with the kimono detail tacked on. Without an explicit `--style`, `--custom-prompt` is the whole prompt and the default style only contributes its tuning params.
+
+**Background style for user styles.** Add an optional `scene_suffix = "..."` to your TOML to control what `--scope scene` does with the background. Without it, you get a generic "match the same artistic style" directive — fine for most cases but less precise than the built-in styles' tuned suffixes.
+
+```toml
+# ~/.imgen/styles.d/cyberpunk.toml — with a scene-mode background directive
+prompt = "Restyle this person as cyberpunk, while preserving the facial identity, hairstyle, body proportions, and pose, with neon-lit profile and metallic accents"
+scene_suffix = ", and transform the background into a neon-soaked dystopian cityscape with rain reflections and holographic billboards"
+guidance = 4.0
+strength = 0.6
+```
 
 If a user style's filename clashes with a built-in (e.g. `styles.d/anime.toml`), it gets registered as `anime_0001` (`_0002`, `_0003`, …) with a warning, and the built-in stays accessible as `anime`. Built-ins always win on name; the suffix mechanism makes overrides explicit.
 
@@ -115,29 +133,31 @@ imgen <photo> --style anime,ghibli,pixar       # multi-style — M images into o
 imgen <photo> --style anime,ghibli --yes       # multi-style, skip the confirm gate
 imgen <photo> --output-dir ~/Pictures/runs     # change parent of the timestamped run folder
 imgen <photo> -o explicit.png                  # bypass run-folder layout (mutex with --output-dir)
-imgen <photo> --custom-prompt "..."            # v0.3.5+: with --style → augments preset; without --style → sole prompt
+imgen <photo> --custom-prompt "..."            # with --style: augments preset; without --style: sole prompt
 imgen <photo> -s anime,ghibli --custom-prompt "wearing a red kimono"  # shared addition across all styles
 imgen <photo> --custom-prompt -                # ← read prompt from stdin (hidden from ps)
 imgen <photo> --prompt-file ~/prompts/x.txt    # ← read prompt from file (hidden from ps)
 imgen <photo> -s anime --preview               # fast mode (~3-10 min)
-imgen <photo> -s anime                         # v0.3.2: --scope=scene is the default — whole image restyled
-imgen <photo> -s anime --scope person          # opt into person-focus: keep background photorealistic
+imgen <photo> -s anime                         # default --scope=scene — restyle whole image
+imgen <photo> -s anime --scope person          # keep background photorealistic, restyle person only
+imgen <photo> -s anime --enhance-prompt        # smarter prompts via local AI (see "Smart prompts" below)
 imgen <photo> --backend qwen                   # use Qwen Edit (no HF token needed)
 imgen <photo> --force                          # skip resource preflight checks
 
-# Batch a folder (v0.3.0+) — same flags as generate except no -o/--output (always run-folder layout)
+# Batch a folder — same flags as generate except no -o/--output (always run-folder layout)
 imgen batch <dir>                              # every photo × default style → one timestamped folder
 imgen batch <dir> --style anime,ghibli,pixar   # N × M into one folder, named <input>-<style>.png
-imgen batch <dir> -s anime --custom-prompt "..." # v0.3.5+: shared --custom-prompt augmentation across every input
+imgen batch <dir> -s anime --custom-prompt "..." # shared --custom-prompt augmentation across every input
 imgen batch <dir> --style anime --yes          # skip the N×M confirm gate
+imgen batch <dir> --enhance-prompt             # smart-prompt the whole batch (one model load, all images)
 imgen batch <dir> --dry-run                    # show every mflux command without running
 
 # Diagnostics
-imgen doctor                                   # env + RAM forecast + cached models + backend status
+imgen doctor                                   # env + RAM forecast + cached models + backends + enhancer
 imgen --list-styles                            # show presets
-imgen --list-backends                          # v0.4+: show built-in + user backends from ~/.imgen/backends.d/
+imgen --list-backends                          # show built-in + user backends from ~/.imgen/backends.d/
 imgen --dry-run <photo> -s anime               # show mflux command, don't run
-imgen -v   /   imgen --version                 # v0.3.5+: both forms print the version
+imgen -v   /   imgen --version                 # print version
 
 # Maintenance
 imgen setup                                    # rerun setup (e.g. fix token)
@@ -188,9 +208,84 @@ If you want to re-run with the same args, re-invoke `imgen` with the same flags 
 | `--strength`        | 0-1    | How much to keep from original. 0.5-0.7 |
 | `--quantize` / `-q` | 3,4,5,6,8 | Lower = smaller/faster, more artifacts |
 | `--preview` / `-p`  | flag   | Q4, 8 steps, 768x — ~5x faster |
-| `--scope`           | person/scene | v0.3.2+: default `scene` (transforms whole image); pass `person` to keep background photorealistic |
+| `--scope`           | person/scene | default `scene` — restyle whole image with identity preserved; `person` keeps background unchanged |
+| `--enhance-prompt`  | flag         | Expand the prompt via local AI before generating. See "Smart prompts" below |
 
 For 32 GB Macs, **Q8** is recommended for FLUX Kontext.
+
+## Smart prompts (`--enhance-prompt`)
+
+Diffusion models produce noticeably better images when you give them rich, descriptive prompts. Three words like "wearing red kimono" work, but a sentence like "wearing an elegant red silk kimono with traditional floral patterns and an ornate obi sash, soft golden afternoon light" works **much** better.
+
+Writing that level of detail by hand for every generation is tedious. Pass `--enhance-prompt` to let a small local AI model do it for you:
+
+```bash
+imgen photo.jpg --style anime --custom-prompt "wearing red kimono" --enhance-prompt
+```
+
+What happens:
+
+1. `imgen` builds the usual prompt from your style preset + `--custom-prompt` + scope directive.
+2. A local language model (Qwen2.5-7B-Instruct, ~4 GB, MLX-native) takes that prompt and expands it into a richer version — adding stylistic detail, lighting, materials, mood. Your face / identity / pose anchors stay verbatim; only descriptors get embellished.
+3. The expanded prompt goes to FLUX, you get a better image.
+
+**Real example.** With the input above, the unaltered prompt sent to FLUX is:
+
+> *Restyle this person as a Japanese anime character, while preserving the facial identity ..., with cel-shaded illustration, ..., wearing red kimono*
+
+The AI-enhanced version becomes:
+
+> *Restyle this person as a Japanese anime character, while preserving the facial identity, exact facial features, and recognizable expression, with cel-shaded illustration, expressive large eyes, detailed line art, vibrant colors, clean shading, and manga aesthetic, and transform the background and surroundings into a hand-painted anime cel-shaded environment with vibrant skies, soft cloud shapes, and detailed illustrated scenery, **wearing a red kimono with intricate patterns and traditional Japanese motifs**.*
+
+Same intent, much more for FLUX to work with.
+
+### First-run download
+
+The first time you pass `--enhance-prompt`, mlx-lm downloads Qwen2.5-7B-Instruct-4bit from HuggingFace into `~/.cache/huggingface/hub/` (~4 GB, ~5-10 minutes depending on connection). The download is one-time. `imgen doctor` reports whether the model is already cached.
+
+If you've already got an HF token (you should, for FLUX), set `HF_TOKEN` in your shell before the first run for a much faster authenticated download:
+
+```bash
+export HF_TOKEN=$(cat ~/.imgen/hf_token)
+imgen photo.jpg --style anime --enhance-prompt   # first run downloads ~4 GB
+```
+
+### Wall-clock cost
+
+After the one-time download, the AI adds ~3-5 seconds per image to the FLUX wall-clock. Negligible on a 15-minute Q8 generation. For an `imgen batch` of 20 photos × 3 styles = 60 outputs, the AI loads **once** for the whole batch and amortises across all 60 prompts.
+
+### Determinism
+
+At the default `temperature=0.0`, the expansion is deterministic: same input prompt + same AI model → same expanded prompt. This means `imgen replay <id>` reproduces the original image bit-for-bit when both runs use `--enhance-prompt`. If you want creative variation, pass `--enhance-temperature 0.5` (or higher).
+
+### Opt-out
+
+`--enhance-prompt` is opt-in by default. Add `[enhance] default = true` to `~/.imgen/config.toml` to make it default-on, and pass `--no-enhance` to disable for one run.
+
+### When the AI hallucinates
+
+The enhancer's system prompt explicitly forbids dropping identity-anchor language ("preserving the facial identity ..."), and `imgen` validates the AI's output against that anchor. If the AI ignores the instruction and drops it, `imgen` falls back to your original prompt and continues — you always get an image. `imgen doctor` reports the recent success rate.
+
+### Override the AI model
+
+Want to try a smaller / larger / different LLM?
+
+```bash
+imgen photo.jpg -s anime --enhance-prompt --enhance-model "mlx-community/Qwen2.5-3B-Instruct-4bit"
+```
+
+Or persist it in `~/.imgen/config.toml`:
+
+```toml
+[enhance]
+default = false                                       # opt-in per run (default) or true for default-on
+model = "mlx-community/Qwen2.5-7B-Instruct-4bit"
+temperature = 0.0
+max_tokens = 200
+timeout_s = 120
+```
+
+Smaller models (3B) are faster but produce flatter expansions. Larger (14B) won't fit alongside FLUX on 32 GB. The 7B 4-bit default is the sweet spot for M2/M3 Macs.
 
 ## Backends
 
@@ -268,11 +363,11 @@ color = "auto"              # "auto" | "always" | "never"
 
 **Precedence:** CLI flag > `~/.imgen/config.toml` > built-in defaults. Bad value (e.g. `steps = 999`) → `imgen` warns and falls back to built-ins until you fix the file. Unknown keys are dropped with a warning so old `imgen` versions don't break on configs written by newer ones.
 
-For `output_dir` specifically the resolution is **`--output-dir` CLI flag > `$IMGEN_OUTPUT_DIR` env > config > default**. The CLI flag wins (added in v0.2.3 — beats env, which was the v0.1.x one-off channel); env is still the easiest way to redirect without touching config.
+For `output_dir` specifically the resolution is **`--output-dir` CLI flag > `$IMGEN_OUTPUT_DIR` env > config > default**.
 
-**Output layout (v0.2.3+):** every run writes into a fresh timestamped folder under the resolved output root — `~/Desktop/imgen/2026-05-21-14-30-12/photo-pixar.png`. The folder name is `YYYY-MM-DD-HH-MM-SS`, sortable both alphabetically and chronologically. Files inside are named `<input-basename>-<style>.png`; `mtime` in Finder gives completion-time ordering. To bypass the folder entirely and write to one specific file, use `-o`/`--output FILE` (mutex with `--output-dir`).
+**Output layout.** Every run writes into a fresh timestamped folder under the resolved output root — `~/Desktop/imgen/2026-05-21-14-30-12/photo-pixar.png`. The folder name is `YYYY-MM-DD-HH-MM-SS`, sortable both alphabetically and chronologically. Files inside are named `<input-basename>-<style>.png`; `mtime` in Finder gives completion-time ordering. To bypass the folder entirely and write to one specific file, use `-o`/`--output FILE` (mutex with `--output-dir`).
 
-**`imgen batch <dir>`** (v0.3.0+) keeps the same flat folder layout — N inputs × M styles all land in one timestamped folder, named `<input.stem>-<style>.png`. Non-recursive (subdirectories ignored on purpose so `.photoslibrary` packages and mounted volumes can't leak in); dotfiles like `.DS_Store` skipped. Supported input formats: `jpg`/`jpeg`/`png`/`webp`/`heic`/`heif`/`bmp`/`tif`/`tiff`/`gif`. HEIC inputs are auto-converted to JPEG via macOS-native `sips` before mflux sees them — converted files live in a private `0o700` temp dir wiped on exit. Two inputs that would map to the same output stem (e.g. `IMG_1234.heic` + `IMG_1234.jpg`) fail fast with a "rename one" hint instead of silently overwriting.
+**`imgen batch <dir>`** keeps the same flat folder layout — N inputs × M styles all land in one timestamped folder, named `<input.stem>-<style>.png`. Non-recursive (subdirectories ignored on purpose so `.photoslibrary` packages and mounted volumes can't leak in); dotfiles like `.DS_Store` skipped. Supported input formats: `jpg`/`jpeg`/`png`/`webp`/`heic`/`heif`/`bmp`/`tif`/`tiff`/`gif`. HEIC inputs are auto-converted to JPEG via macOS-native `sips` before mflux sees them — converted files live in a private `0o700` temp dir wiped on exit. Two inputs that would map to the same output stem (e.g. `IMG_1234.heic` + `IMG_1234.jpg`) fail fast with a "rename one" hint instead of silently overwriting.
 
 **Color:** `[ui] color = "auto"` (default) emits ANSI only when stdout is a tty; `"always"` forces color (handy for piping into `less -R`); `"never"` disables. The `NO_COLOR` env var (https://no-color.org/) beats both — any non-empty value disables color regardless of config.
 
@@ -280,14 +375,15 @@ For `output_dir` specifically the resolution is **`--output-dir` CLI flag > `$IM
 
 | Variable / file        | Purpose |
 |------------------------|---------|
-| `~/.imgen/hf_token`    | HuggingFace token (chmod 600). v0.2.x used `~/.hf_token`; that path is still read as a fallback and auto-migrated on first run. |
+| `~/.imgen/hf_token`    | HuggingFace token (chmod 600). Older installs at `~/.hf_token` auto-migrate on first run. |
 | `$HF_TOKEN`            | Overrides `~/.imgen/hf_token` |
 | `$IMGEN_OUTPUT_DIR`    | One-off override of output dir parent (beats config.toml; `--output-dir` flag beats env) |
 | `$NO_COLOR`            | Any non-empty value disables ANSI color (https://no-color.org/) |
+| `$HF_HOME` / `$HF_HUB_CACHE` / `$TRANSFORMERS_CACHE` | Override where HuggingFace caches model weights (FLUX, Qwen, and the prompt-enhancer LLM) |
 | `~/.imgen/config.toml` | Persistent defaults — see [Persistent config](#persistent-config) |
 | `~/.imgen/styles.d/*.toml` | User-defined style presets — see [User-defined styles](#user-defined-styles) |
 | `~/.imgen/backends.d/*.toml` | User-defined image-gen backends — see [User-defined backends](#user-defined-backends) |
-| `~/.imgen/history.jsonl` | Generation history (JSONL, schema-versioned) |
+| `~/.imgen/history.jsonl` | Generation history (JSONL, schema-versioned). Includes pre- and post-enhance prompts when `--enhance-prompt` was used. |
 | `~/.imgen/logs/<batch-id>.log` | Per-batch stderr log (multi-style runs only; mflux output with HF tokens redacted). Auto-pruned by `imgen clean` after 30 days. |
 | `~/imgen/.venv/`       | bootstrap install — mflux + imgen venv |
 | `~/.local/pipx/venvs/imgen/` | pipx install — mflux + imgen venv |
@@ -297,11 +393,13 @@ For `output_dir` specifically the resolution is **`--output-dir` CLI flag > `$IM
 | Operation | Time |
 |-----------|------|
 | First-run FLUX download | ~30 min one-time (~24 GB) |
+| First-run prompt-enhancer download | ~5-10 min one-time (~4 GB), only if you use `--enhance-prompt` |
 | FLUX Kontext Q8, 20 steps, 1024px (default) | ~15 min |
 | FLUX Kontext Q4, 8 steps, 768px (`--preview`) | ~3–3.5 min |
 | Qwen Edit Q4, 20 steps, 1024px | ~18 min |
+| `--enhance-prompt` overhead | ~3-5 s per image after warm-up |
 
-Wall-clock figures measured on a quiet machine. First image after launch pays a one-time weight-load cost (~30–60 s of mmap); subsequent images in the same `imgen batch` reuse the loaded weights, so an N-image batch is roughly `30 s + N × 15 min`, not `N × 15.5 min`.
+Wall-clock figures measured on a quiet machine. First image after launch pays a one-time weight-load cost (~30–60 s of mmap); subsequent images in the same `imgen batch` reuse the loaded weights, so an N-image batch is roughly `30 s + N × 15 min`, not `N × 15.5 min`. With `--enhance-prompt`, the enhancer model loads once per `imgen` invocation and amortises across all prompts in a batch.
 
 ## Model cache
 
@@ -389,6 +487,8 @@ imgen doctor                          # always start here
 | `Another mflux running` | Wait for it, or `--force` (will fight for GPU/RAM) |
 | Black image | You're not using `imgen` — that's a ComfyUI/MPS issue. mflux uses MLX, no MPS bugs |
 | Disk full | `imgen clean --all` |
+| `--enhance-prompt` says "runner_error" | Run `imgen doctor` — check that mlx-lm is importable and the enhancer model is cached. First run downloads ~4 GB, can be slow on shared networks. |
+| Enhancer "succeeded" but generation looks the same | Diffusion quality varies seed-to-seed; try a different `--seed`. If it consistently looks identical, your `--custom-prompt` may already be detailed enough that the enhancer has little to add. |
 
 ## Why not ComfyUI?
 
