@@ -58,7 +58,7 @@ from pathlib import Path
 
 from .backends import BACKENDS, Backend, build_mflux_cmd
 from .checks import check_mflux, check_resources, check_venv
-from .colors import C, die, err, info, ok, step, warn
+from .colors import C, die, err, ok, step, warn
 from .config import effective_output_dir
 from .defaults import PREVIEW_OVERRIDES
 from .history import append_history

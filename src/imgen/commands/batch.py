@@ -58,8 +58,6 @@ from ..runs import (
     BatchContext,
     BatchLogger,
     Iteration,
-    auto_run_dirname,
-    next_available_run_dir,
 )
 from ..cmd_helpers import (
     build_iterations,
