@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import shutil
 import sys
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from ..paths import (
     STATE_DIR,
     VENV_BIN,
 )
+from ..backends import BUILTIN_BACKENDS, get_backend, list_backends
 from ..shell_rc import ALL_RC_FILES_REL
 from ..styles import BUILTIN_STYLES, list_styles, load_user_styles_dir
 from ..tokens import active_token_path, check_token_perms, load_token
@@ -318,6 +320,45 @@ def cmd_doctor(_args) -> int:
                  "couldn't be resolved (broken symlink?). "
                  "Run `imgen setup` to refresh.")
             issues += 1
+
+    # Backends (built-in + user TOMLs from ~/.imgen/backends.d/)
+    # v0.4 — surfaces binary-on-disk + secret-env-var status per
+    # backend so the user knows up-front whether `imgen --backend X`
+    # will actually launch. Mirrors the existing per-backend RAM
+    # forecast section earlier, but one rung lower (file resolution +
+    # env, not memory).
+    print()
+    info("Backends")
+    for name in list_backends():
+        be = get_backend(name)
+        origin = "built-in" if name in BUILTIN_BACKENDS else "custom"
+        # Binary resolution — branch on shape matches the actual
+        # resolution in cmd_helpers.load_backend_and_token. Absolute
+        # paths used as-is, bare names live in VENV_BIN (mflux
+        # convention).
+        if be.binary.startswith("/"):
+            binary_path = Path(be.binary)
+        else:
+            binary_path = VENV_BIN / be.binary
+        if binary_path.exists():
+            ok(f"{name} ({origin}): {binary_path}")
+        else:
+            warn(f"{name} ({origin}): binary not found at {binary_path}"
+                 + ("" if origin == "built-in" else " — fix backends.d "
+                    "TOML or install the binary"))
+            issues += 1
+        # Secret env var status (only declared on custom backends).
+        if be.secret_env_var is not None:
+            value = os.environ.get(be.secret_env_var)
+            if value:
+                ok(f"   secret ${be.secret_env_var} set")
+            elif be.secret_required:
+                warn(f"   secret ${be.secret_env_var} (required) NOT set in "
+                     f"environment — `imgen --backend {name}` will die")
+                issues += 1
+            else:
+                dim(f"   secret ${be.secret_env_var} (optional) not set — "
+                    "best-effort forward, backend handles its own auth")
 
     # User config
     print()
