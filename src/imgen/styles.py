@@ -51,7 +51,14 @@ class StyleNotFound(KeyError):
     """
 
     def __str__(self) -> str:
-        return self.args[0] if self.args else ""
+        # str(...) wrap defends against a non-string first arg — CPython's
+        # __str__ contract requires returning str, so a bare `return
+        # self.args[0]` would raise TypeError if a caller constructed
+        # StyleNotFound with a non-string positional. Today's raise site
+        # passes an f-string, but the subclass surface is public and
+        # future callers shouldn't have to read the source to discover
+        # the implicit str-only contract. (v0.3.6 python-reviewer CRITICAL.)
+        return str(self.args[0]) if self.args else ""
 
 # Cap on per-file size for ~/.imgen/styles.d/*.toml. Real style files are
 # under 2 KB (one prompt + a few tunings); 256 KB is way above realistic

@@ -121,6 +121,28 @@ def test_get_style_unknown_raises_stylenotfound_subclass():
     assert not msg.startswith('"'), "StyleNotFound must not inherit KeyError repr-quoting"
 
 
+def test_stylenotfound_str_with_non_string_arg_does_not_raise():
+    """CPython requires __str__ to return str — `return self.args[0]`
+    without wrapping in str() would raise TypeError on a non-string
+    first arg. The wrap guards future callers from that footgun.
+    (v0.3.6 python-reviewer CRITICAL.)"""
+    from imgen.styles import StyleNotFound
+
+    # Pathological construction — not how get_style raises, but the
+    # public class surface must be safe under any positional type.
+    exc = StyleNotFound(42)
+    # Must not raise TypeError under str().
+    msg = str(exc)
+    assert msg == "42"
+
+
+def test_stylenotfound_str_with_no_args_returns_empty():
+    """`raise StyleNotFound()` with no args → empty __str__, never crash.
+    Symmetric with KeyError() which __str__'s to ''."""
+    from imgen.styles import StyleNotFound
+    assert str(StyleNotFound()) == ""
+
+
 # ── parse_style_list (v0.2.3 plumbing for multi-style CLI) ──────────────
 
 def test_parse_style_list_single_style_returns_one_element_list():
