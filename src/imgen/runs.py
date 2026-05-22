@@ -413,11 +413,21 @@ def prune_old_batch_logs(
             # special files — only regular files inside LOGS_DIR are
             # batch logs we own. (security N2 from v0.2.4 review)
             #
+            # st_nlink == 1 additionally skips hardlinks — our own batch
+            # logs always have nlink=1; a hardlink into LOGS_DIR is a
+            # user-intent signal pointing at something they explicitly
+            # want preserved. Unlinking wouldn't escalate (just removes
+            # the dir entry, inode survives via other links), but
+            # respecting the signal matches "only files we created".
+            # (security NIT-3 from v0.2.5 review)
+            #
             # Snapshot once — separate stat calls would let st_size
             # raise OSError after st_mtime succeeded, leaving the two
             # counters out of sync. (python C2 from v0.2.3 review)
             st = log.lstat()
             if not _stat.S_ISREG(st.st_mode):
+                continue
+            if st.st_nlink != 1:
                 continue
             if st.st_mtime < cutoff:
                 removed_size += st.st_size

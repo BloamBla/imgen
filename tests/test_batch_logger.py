@@ -483,6 +483,38 @@ def test_prune_skips_symlinks_pointing_at_recent_target(logs_dir, tmp_path):
     assert removed == 0
 
 
+def test_prune_skips_hardlinks(logs_dir, tmp_path):
+    """A hardlink under LOGS_DIR (`ln /some/file ~/.imgen/logs/x.log`)
+    passes S_ISREG — it IS a regular file (same inode flags as the
+    target). v0.2.6 adds an `st.st_nlink == 1` check matching the
+    intent "only files we created" — our own batch logs always have
+    nlink=1 because nothing else links to them.
+
+    Removing a hardlink doesn't escalate (only removes the dir entry,
+    target inode survives via the other link), but the user's
+    explicit hardlink-into-LOGS_DIR is an intent signal we should
+    respect. (security NIT-3 from v0.2.5 review)"""
+    logs_dir.mkdir(mode=0o700)
+    # Real file elsewhere — we hardlink it into LOGS_DIR.
+    source = tmp_path / "source.log"
+    source.write_bytes(b"hardlinked content")
+    past = source.stat().st_mtime - 60 * 86400
+    os.utime(source, (past, past))
+    hardlink = logs_dir / "linked.log"
+    os.link(source, hardlink)
+
+    # Sanity: it's truly a hardlink (nlink == 2 on both).
+    assert hardlink.stat().st_nlink == 2
+
+    removed, _ = prune_old_batch_logs(days=30)
+
+    # Hardlink survives — neither the LOGS_DIR entry nor the source
+    # file is touched.
+    assert hardlink.exists()
+    assert source.exists()
+    assert removed == 0
+
+
 def test_prune_refuses_when_logs_dir_itself_is_symlink(tmp_path, monkeypatch):
     """The v0.2.5 symlink-as-log-file fix catches symlinks INSIDE
     LOGS_DIR. v0.2.6 closes the next layer: LOGS_DIR itself being a
