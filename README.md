@@ -203,6 +203,12 @@ Built-in:
 
 `imgen --list-backends` shows the full set including any user-defined backends below.
 
+### Why these specific model versions?
+
+**FLUX.1 Kontext, not FLUX.2.** FLUX.2 (released Nov 2025; klein distilled variants Jan 2026) is two different model families: `klein-base` is text-to-image (doesn't take an input photo), and `klein-edit` is *instruction-based editing* ("make the sky blue"), not the dense image-conditioning that drives style transfer. FLUX.1 Kontext was purpose-built for "rewrite this image while preserving identity / pose / composition" — exactly the load this CLI carries. mflux 0.17.5 ships `mflux-generate-flux2-edit` so you can try FLUX.2-klein-edit yourself via a `backends.d/*.toml` (see [Adding a custom model](#adding-a-custom-model-via-backendsd)); the six built-in style presets are prompt-tuned for Kontext's verb conventions ([BFL Kontext prompting guide](https://docs.bfl.ai/guides/prompting_guide_kontext_i2i)), so expect to retune prompts if you swap.
+
+**Qwen-Image-Edit-2509, not 2511.** Qwen-Image-Edit-2511 (released 2025-12-17) is newer and arguably stronger, but mflux 0.17.5 — the only version this CLI is tested against — hardcodes `Qwen/Qwen-Image-Edit-2509` in its qwen-edit entrypoint. Bumping the pin requires upstream mflux support; tracked as a future release candidate.
+
 ### User-defined backends
 
 Drop `*.toml` files into `~/.imgen/backends.d/` (auto-created by `imgen setup`). Filename becomes the `--backend NAME`. Same drop-in pattern as styles.d, applied to the image-gen binaries imgen drives — useful for experimenting with new mflux-shaped models (future SDXL ports, your own wrapper script, etc.) without editing imgen's code.
@@ -291,9 +297,71 @@ For `output_dir` specifically the resolution is **`--output-dir` CLI flag > `$IM
 | Operation | Time |
 |-----------|------|
 | First-run FLUX download | ~30 min one-time (~24 GB) |
-| FLUX Kontext Q8, 20 steps, 1024px | ~50 min |
-| FLUX Kontext Q4, 8 steps, 768px (`--preview`) | ~3 min |
+| FLUX Kontext Q8, 20 steps, 1024px (default) | ~15 min |
+| FLUX Kontext Q4, 8 steps, 768px (`--preview`) | ~3–3.5 min |
 | Qwen Edit Q4, 20 steps, 1024px | ~18 min |
+
+Wall-clock figures measured on a quiet machine. First image after launch pays a one-time weight-load cost (~30–60 s of mmap); subsequent images in the same `imgen batch` reuse the loaded weights, so an N-image batch is roughly `30 s + N × 15 min`, not `N × 15.5 min`.
+
+## Model cache
+
+mflux downloads weights from HuggingFace into the standard `huggingface_hub` cache:
+
+```
+~/.cache/huggingface/hub/
+├── models--black-forest-labs--FLUX.1-Kontext-dev/   # ~31 GB (FLUX, default)
+│   ├── blobs/                                       # actual weight files
+│   ├── snapshots/<commit-sha>/                      # symlinks to blobs
+│   └── refs/main                                    # text file with sha
+└── models--Qwen--Qwen-Image-Edit-2509/              # ~40 GB (Qwen, optional)
+```
+
+`imgen` does not move or duplicate these — it reads `~/.cache/huggingface/hub/` directly, same as anything else that uses `huggingface_hub`. To put the cache on another disk (e.g. external SSD because internal is tight), set `HF_HOME` before first run:
+
+```bash
+export HF_HOME=/Volumes/external-ssd/hf-cache    # subprocess inherits this
+imgen photo.jpg --preview
+```
+
+`imgen` whitelists `HF_HOME`, `HF_HUB_CACHE`, and `TRANSFORMERS_CACHE` when launching mflux, so any of the three works.
+
+### Pre-downloading models manually
+
+Useful when first-run downloads are flaky, when you want to seed the cache from a phone tether, or when adding a new backend (see [User-defined backends](#user-defined-backends)). Two paths:
+
+**`huggingface-cli` (recommended).** Resumable, integrity-checked, lays out the cache correctly:
+
+```bash
+pip install --user "huggingface_hub[cli]"
+huggingface-cli login                                # paste your HF token
+huggingface-cli download black-forest-labs/FLUX.1-Kontext-dev
+# → drops into ~/.cache/huggingface/hub/models--black-forest-labs--FLUX.1-Kontext-dev/
+```
+
+`imgen photo.jpg --preview` after that will skip the download and go straight to generation.
+
+**Browser download.** Go to the HF model page (e.g. https://huggingface.co/black-forest-labs/FLUX.1-Kontext-dev), accept the license once, then "Files and versions" → download every file. Drop them into
+
+```
+~/.cache/huggingface/hub/models--<author>--<repo>/snapshots/<commit-sha>/
+```
+
+…and put the sha string into `refs/main`. Fiddly; the `huggingface-cli` path is much less error-prone for FLUX/Qwen-scale repos (dozens of safetensors shards). The browser route is only worth it for single-file LoRAs or if you cannot install `huggingface-cli`.
+
+### Adding a custom model via backends.d/
+
+Once weights are cached, wire them into `imgen` with a `~/.imgen/backends.d/*.toml` drop-in — no code change. Example for FLUX.1-dev (text-to-image, different from the default Kontext image-to-image):
+
+```toml
+# ~/.imgen/backends.d/flux-dev.toml
+binary = "mflux-generate"            # mflux's text-to-image entrypoint
+image_flag = "--image-path"          # required field, ignored by this binary
+supports_strength = false
+supports_negative = false
+extra_args = ["--model", "dev"]      # tells mflux which HF repo to load
+```
+
+See `mflux-generate-* --help` or `.venv/bin/` (after install) for the full set of available binaries (`mflux-generate-flux2`, `mflux-generate-flux2-edit`, `mflux-generate-qwen`, etc.). Section [User-defined backends](#user-defined-backends) below has the full schema + security model.
 
 ## Resource preflight
 
