@@ -12,6 +12,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+__all__ = ["format_cmd", "run_with_stderr_redaction"]
+
 # Minimum 36 chars after `hf_` so a truncated prefix at a buffer boundary
 # (e.g. `hf_AbC\n` flushed via the last-`\r`-or-`\n` rule before the rest
 # of the token arrives) can't sneak through as plaintext. Real HF tokens

@@ -15,6 +15,8 @@ from .colors import err, warn
 from .defaults import HISTORY_SCHEMA_VERSION
 from .paths import HISTORY_FILE, ensure_state_dir
 
+__all__ = ["append_history", "load_history"]
+
 
 def load_history() -> list[dict]:
     """Read history line-by-line so a massive file doesn't blow up RAM.

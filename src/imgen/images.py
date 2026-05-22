@@ -8,6 +8,15 @@ from pathlib import Path
 from .colors import warn
 from .paths import VENV_BIN
 
+__all__ = [
+    "PREVIEW_RESOLUTIONS",
+    "RESOLUTIONS",
+    "SCOPE_PERSON_SUFFIX",
+    "SCOPE_SCENE_REPLACEMENTS",
+    "apply_scope",
+    "detect_resolution",
+]
+
 # FLUX-friendly resolutions (close to 1024² total pixels, aspect-aware)
 RESOLUTIONS = [
     # (w, h, aspect)
