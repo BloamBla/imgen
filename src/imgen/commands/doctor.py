@@ -340,10 +340,20 @@ def cmd_doctor(_args) -> int:
             binary_path = Path(be.binary)
         else:
             binary_path = VENV_BIN / be.binary
-        if binary_path.exists():
-            ok(f"{name} ({origin}): {binary_path}")
+        # !r-format the path so any C0/DEL/C1 bytes that snuck past
+        # the validator (or that ride along on a path the validator
+        # never saw, e.g. via a symlinked target name) render as
+        # \x1b literals instead of escaping into the terminal.
+        # Mirrors the alias-section defence above. (v0.4 security-
+        # reviewer IMP-2.)
+        binary_safe = repr(str(binary_path))
+        # is_file() rather than exists() — a directory wouldn't be
+        # executable anyway. (v0.4 python-reviewer IMP-1.)
+        if binary_path.is_file():
+            ok(f"{name} ({origin}): {binary_safe}")
         else:
-            warn(f"{name} ({origin}): binary not found at {binary_path}"
+            warn(f"{name} ({origin}): binary not found (or not a regular "
+                 f"file) at {binary_safe}"
                  + ("" if origin == "built-in" else " — fix backends.d "
                     "TOML or install the binary"))
             issues += 1

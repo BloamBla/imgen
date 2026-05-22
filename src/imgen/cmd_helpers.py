@@ -723,8 +723,11 @@ def load_backend_and_token(
     else:
         # Bare name — resolve against VENV_BIN (mflux convention).
         binary = VENV_BIN / be.binary
-    if not binary.exists():
-        die(f"Backend binary not found: {binary}",
+    if not binary.is_file():
+        # is_file() (not exists()) — a directory at the path would
+        # crash subprocess.Popen with IsADirectoryError; reject earlier
+        # with the imgen-flavoured error. (v0.4 python-reviewer IMP-1.)
+        die(f"Backend binary not found (or not a regular file): {binary}",
             code=3,
             hint="Run: imgen upgrade")
 

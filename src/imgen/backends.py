@@ -199,10 +199,20 @@ def _validate_binary_field(value: str, source: Path) -> None:
                 "either a bare command name (PATH-resolvable) or an "
                 "absolute path starting with '/'"
             )
-        if not Path(value).exists():
+        # is_file() (not exists()) so a directory at the path is also
+        # rejected — `binary = "/usr/local/bin"` would otherwise pass
+        # validation and crash at subprocess.Popen with an opaque
+        # IsADirectoryError. (v0.4 python-reviewer IMP-1.)
+        if not Path(value).is_file():
             raise UserBackendError(
-                f"{source}: binary {value!r} doesn't exist on disk"
+                f"{source}: binary {value!r} is not a regular file "
+                "(must be the executable itself, not a directory)"
             )
+        # TOCTOU note: validator checks at parse time, subprocess.Popen
+        # happens later. Same trust boundary as paths.ensure_state_dir:
+        # a same-uid attacker already has direct file access, so racing
+        # the binary path doesn't unlock anything they can't do directly.
+        # (v0.4 security-reviewer NIT-1.)
 
 
 def validate_user_backend_schema(data: dict, source: Path) -> Backend:

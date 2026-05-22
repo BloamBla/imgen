@@ -103,7 +103,18 @@ def test_validator_rejects_nonexistent_absolute_binary():
         "binary": "/totally/not/a/real/path/binary",
         "image_flag": "--image-path",
     }
-    with pytest.raises(UserBackendError, match="doesn't exist"):
+    with pytest.raises(UserBackendError, match="not a regular file"):
+        validate_user_backend_schema(data, Path("test.toml"))
+
+
+def test_validator_rejects_directory_as_binary(tmp_path):
+    """v0.4 python-reviewer IMP-1: `binary = "/usr/local/bin"` (a dir)
+    used to pass `.exists()` and crash at subprocess.Popen with
+    IsADirectoryError. is_file() rejects it at schema time."""
+    a_dir = tmp_path / "iam-a-directory"
+    a_dir.mkdir()
+    data = {"binary": str(a_dir), "image_flag": "--image-path"}
+    with pytest.raises(UserBackendError, match="not a regular file"):
         validate_user_backend_schema(data, Path("test.toml"))
 
 
