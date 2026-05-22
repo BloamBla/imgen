@@ -20,8 +20,13 @@ from ..checks import (
     get_memory_gb,
 )
 from ..colors import C, dim, err, info, ok, step, warn
-from ..config import ConfigError, load_validated_config
+from ..config import (
+    ConfigError,
+    effective_enhance,
+    load_validated_config,
+)
 from ..defaults import MIN_BATTERY_PCT, MIN_DISK_GB, RAM_REQUIRED_GB
+from ..history import load_history
 from ..paths import (
     CONFIG_FILE,
     HF_CACHE,
@@ -178,6 +183,134 @@ def check_backend_health(
             secret_required=be.secret_required,
         ))
     return results
+
+
+@dataclass(frozen=True, slots=True)
+class EnhanceHealth:
+    """v0.5 LLM prompt enhancer status report, for doctor.
+
+    Pure-data result of :func:`check_enhance_health`. ``mlx_lm_importable``
+    is the dependency gate (if mlx-lm isn't installed, the enhancer
+    cannot run at all). ``model_cached`` + ``model_cache_size_bytes``
+    tell the user whether the first-time download is still pending
+    (~4 GB for Qwen2.5-7B-Instruct-4bit, ~7 minutes unauthenticated).
+    ``recent_runs`` / ``recent_runs_succeeded`` summarise the last 10
+    enhancer-aware history entries so a degrading invariant or
+    persistent runner error surfaces in routine `imgen doctor` runs.
+    """
+    mlx_lm_importable: bool
+    enabled_by_default: bool   # config [enhance] default = true
+    model_ref: str             # configured HF repo or local path
+    model_cached: bool         # ``~/.cache/huggingface/hub/`` has it
+    model_cache_size_bytes: int | None
+    recent_runs: int           # enhancer-aware history entries in last 10
+    recent_runs_succeeded: int  # of those, how many enhanced=True
+
+
+def _hf_cache_dir_for(repo: str, hf_cache: Path) -> Path:
+    """Return the ``models--<author>--<name>`` directory for ``repo``
+    under ``hf_cache``. Mirrors huggingface_hub's caching convention.
+
+    Empty or absolute-path ``repo`` (i.e. user pointed --enhance-model
+    at a local checkpoint) returns the path as-is so ``model_cached``
+    just becomes "is that path a directory".
+    """
+    if not repo or repo.startswith("/"):
+        return Path(repo) if repo else hf_cache
+    safe = "models--" + repo.replace("/", "--")
+    return hf_cache / safe
+
+
+def _dir_size_bytes(p: Path) -> int:
+    """Total size of regular files under ``p`` (recursive). Returns 0
+    if ``p`` is missing or not a directory. Symlinks are NOT followed
+    to avoid double-counting HF cache's snapshots/<sha>/* → blobs/*
+    indirection (snapshots are symlinks; blobs are real files)."""
+    if not p.is_dir():
+        return 0
+    total = 0
+    for entry in p.rglob("*"):
+        try:
+            if entry.is_file() and not entry.is_symlink():
+                total += entry.stat().st_size
+        except OSError:
+            continue  # transient race or perms — don't crash doctor
+    return total
+
+
+def check_enhance_health(
+    *,
+    enhance_cfg: dict,
+    hf_cache: Path,
+    history: list[dict] | None = None,
+    importable: bool | None = None,
+) -> EnhanceHealth:
+    """Inspect the v0.5 enhancer's readiness state. Pure-ish (one
+    optional ``import mlx_lm`` attempt; otherwise no I/O beyond
+    stat'ing the HF cache directory) — the doctor printer wraps the
+    result into ok/warn lines.
+
+    Args:
+        enhance_cfg: validated ``[enhance]`` section dict (may be
+                     empty when config.toml is missing; falls back to
+                     module defaults via ``effective_enhance``).
+        hf_cache:    ``HF_CACHE`` in prod, tmp dir in tests.
+        history:     pre-loaded history entries (production calls
+                     ``load_history()``; tests inject canned lists to
+                     verify the recent-success counter).
+        importable:  override for the mlx-lm import probe. None →
+                     attempt ``import mlx_lm`` and set based on success.
+                     Tests pass True/False directly to avoid touching
+                     the real mlx_lm install state.
+    """
+    if importable is None:
+        try:
+            import mlx_lm  # noqa: F401 — import is the probe
+            importable = True
+        except ImportError:
+            importable = False
+
+    eff = effective_enhance(cli_enable=None, config_enhance=enhance_cfg)
+    model_ref = eff["model"]
+    enabled_default = bool(eff["enabled"])  # the [enhance] default key
+
+    cache_dir = _hf_cache_dir_for(model_ref, hf_cache)
+    model_cached = cache_dir.is_dir()
+    cache_size: int | None = None
+    if model_cached:
+        size = _dir_size_bytes(cache_dir)
+        # Threshold: anything under ~1 MB is almost certainly just the
+        # config.json + tokenizer files without the weights blobs (the
+        # download was interrupted before the .safetensors landed). Treat
+        # as not-fully-cached so the doctor surfaces the pending download.
+        if size >= 1_000_000:
+            cache_size = size
+        else:
+            model_cached = False
+
+    # Recent enhance-success-rate. Look at last 10 history entries
+    # where the user actually ATTEMPTED to enhance — exclude entries
+    # whose fallback_reason is ``user_opt_out`` (those are intentional
+    # `--no-enhance` runs, not failed attempts). Without this filter
+    # every run made before --enhance-prompt was first used would drag
+    # the success rate to 0%, which would surface as a misleading
+    # warning for users who simply haven't tried the feature yet.
+    history = history if history is not None else load_history()
+    recent = [
+        e for e in history[-10:]
+        if "enhanced" in e and e.get("enhance_fallback_reason") != "user_opt_out"
+    ]
+    succeeded = sum(1 for e in recent if e.get("enhanced") is True)
+
+    return EnhanceHealth(
+        mlx_lm_importable=importable,
+        enabled_by_default=enabled_default,
+        model_ref=model_ref,
+        model_cached=model_cached,
+        model_cache_size_bytes=cache_size,
+        recent_runs=len(recent),
+        recent_runs_succeeded=succeeded,
+    )
 
 
 def detect_install_collision(
@@ -431,6 +564,46 @@ def cmd_doctor(_args) -> int:
                     "not set — best-effort forward, backend handles "
                     "its own auth")
 
+    # Enhance (v0.5) — LLM prompt enhancer readiness. Reports whether
+    # mlx-lm is importable, whether the configured model is in HF
+    # cache, total cache size for that model, and recent enhance
+    # success-rate from history. Not an issue if disabled — opt-in
+    # surface, so "no enhance attempts in history + model not cached"
+    # is the expected state for users who haven't tried --enhance-prompt.
+    print()
+    info("Enhance (v0.5)")
+    enhance_cfg: dict = {}
+    if CONFIG_FILE.exists():
+        try:
+            enhance_cfg = load_validated_config(CONFIG_FILE).get("enhance", {})
+        except ConfigError:
+            pass  # config errors surfaced in the User config section below
+    eh = check_enhance_health(enhance_cfg=enhance_cfg, hf_cache=HF_CACHE)
+    if not eh.mlx_lm_importable:
+        warn("mlx-lm not importable — `--enhance-prompt` will die. "
+             "Run `imgen upgrade` or `pip install -e .` to install.")
+        issues += 1
+    else:
+        ok(f"mlx-lm importable, model: {eh.model_ref}")
+    if eh.model_cached:
+        gb = (eh.model_cache_size_bytes or 0) / 1e9
+        ok(f"   model cached ({gb:.1f} GB) at {HF_CACHE}")
+    else:
+        dim(f"   model NOT cached — first `--enhance-prompt` run will "
+            f"download ~4 GB from huggingface.co (one-time)")
+    if eh.enabled_by_default:
+        dim("   [enhance] default = true in config — every run enhances "
+            "unless --no-enhance passed")
+    if eh.recent_runs > 0:
+        pct = 100 * eh.recent_runs_succeeded // eh.recent_runs
+        if eh.recent_runs_succeeded == eh.recent_runs:
+            ok(f"   recent: {eh.recent_runs_succeeded}/{eh.recent_runs} "
+               f"enhance attempt(s) succeeded")
+        else:
+            warn(f"   recent: {eh.recent_runs_succeeded}/{eh.recent_runs} "
+                 f"enhance attempt(s) succeeded ({pct}%) — "
+                 "check enhance_fallback_reason in history.jsonl")
+
     # User config
     print()
     info("User config")
@@ -442,11 +615,15 @@ def cmd_doctor(_args) -> int:
             cfg = load_validated_config(CONFIG_FILE)
             n_defaults = len(cfg["defaults"])
             n_ui = len(cfg["ui"])
-            ok(f"{CONFIG_FILE}: {n_defaults} default(s), {n_ui} ui setting(s)")
+            n_enhance = len(cfg.get("enhance", {}))
+            ok(f"{CONFIG_FILE}: {n_defaults} default(s), {n_ui} ui "
+               f"setting(s), {n_enhance} enhance setting(s)")
             for k, v in cfg["defaults"].items():
                 print(f"   {C.DIM}[defaults] {k} = {v!r}{C.END}")
             for k, v in cfg["ui"].items():
                 print(f"   {C.DIM}[ui] {k} = {v!r}{C.END}")
+            for k, v in cfg.get("enhance", {}).items():
+                print(f"   {C.DIM}[enhance] {k} = {v!r}{C.END}")
         except ConfigError as e:
             err(f"{CONFIG_FILE}: {e}")
             issues += 1
