@@ -57,3 +57,50 @@ def test_qwen_backend_config_locked():
     assert qwen.supports_strength is False
     assert qwen.supports_negative is False
     assert qwen.extra_args == ("--model", "qwen")
+
+
+# ── v0.4: secret_env_var / secret_required (custom-backend support) ─────
+
+
+def test_builtin_backends_have_no_custom_secret():
+    """Built-in flux/qwen don't use the custom-backend secret slot.
+    FLUX uses the legacy needs_token + ~/.imgen/hf_token path; qwen
+    needs no secret at all. (v0.4 design decision 2 — schema migration
+    trap deliberately left for v0.5.)"""
+    for be in BACKENDS.values():
+        assert be.secret_env_var is None
+        assert be.secret_required is True  # default; meaningless w/ env_var=None
+
+
+def test_backend_accepts_secret_env_var():
+    """Custom backends can declare a single env var to forward into the
+    subprocess. Tuple type ensures immutability mirrors the rest of the
+    dataclass."""
+    be = Backend(
+        binary="mflux-generate-sdxl",
+        needs_token=False,
+        image_flag="--image-path",
+        supports_strength=True,
+        supports_negative=True,
+        extra_args=("--model", "sdxl"),
+        secret_env_var="REPLICATE_API_TOKEN",
+        secret_required=True,
+    )
+    assert be.secret_env_var == "REPLICATE_API_TOKEN"
+    assert be.secret_required is True
+
+
+def test_backend_secret_required_defaults_to_true():
+    """Default for the required flag — backends with a declared secret
+    want it set or fail loud. False is the explicit opt-in for
+    "best-effort forward, no error if missing"."""
+    be = Backend(
+        binary="thing",
+        needs_token=False,
+        image_flag="--image-path",
+        supports_strength=False,
+        supports_negative=False,
+        extra_args=(),
+        secret_env_var="OPTIONAL_KEY",
+    )
+    assert be.secret_required is True

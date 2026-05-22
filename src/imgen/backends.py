@@ -25,6 +25,19 @@ class Backend:
     supports_strength: bool      # accepts --image-strength
     supports_negative: bool      # accepts --negative-prompt
     extra_args: tuple[str, ...]  # fixed flags appended unconditionally (e.g. --model X)
+    # v0.4: custom backends (registered via ~/.imgen/backends.d/*.toml)
+    # may declare a single env var that imgen forwards from the parent
+    # environment into the subprocess. None on built-ins; FLUX keeps
+    # using the legacy ``needs_token=True`` path with ~/.imgen/hf_token
+    # because that path also owns whoami validation + atomic save —
+    # generalizing those is out of scope for v0.4 (see
+    # project_v040_design.md, decision 2 + schema migration trap).
+    secret_env_var: str | None = None
+    # When ``secret_env_var`` is set: die at command-construction time
+    # if the env var is missing from os.environ. False means "best
+    # effort" — forward if set, silently skip if not, let the backend
+    # binary report its own auth failure.
+    secret_required: bool = True
 
 
 BACKENDS: dict[str, Backend] = {
