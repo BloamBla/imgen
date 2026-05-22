@@ -195,3 +195,31 @@ def test_doctor_reads_exactly_the_files_setup_writes():
     from imgen.shell_rc import ALL_RC_FILES_REL, RC_FILE_BY_SHELL
     # The set of files setup.py CAN write to equals the set doctor reads.
     assert set(ALL_RC_FILES_REL) == set(RC_FILE_BY_SHELL.values())
+
+
+def test_check_alias_preserves_control_bytes_for_warn_caller(tmp_path):
+    """v0.3.6 security NIT: an attacker with write access to a user's
+    shell rc (cross-account on NFS-shared $HOME, etc.) could embed ANSI
+    escape sequences in the aliased path. `check_alias_consistency` is
+    a pure function and returns the raw path — the SANITIZATION
+    responsibility belongs to the doctor printer (`{repr(str(...))}`),
+    which renders the bytes as `\\x1b` literals instead of letting them
+    reach the terminal raw. This test pins the contract: the pure
+    function preserves the bytes; the printer's `repr()` wrapping is
+    what makes the warn line safe."""
+    imgen_home = tmp_path / "imgen"
+    imgen_home.mkdir()
+    (imgen_home / "imgen").touch()
+    # Embed an ESC sequence inside the aliased path. shlex's quoted form
+    # carries the bytes verbatim.
+    rc = tmp_path / ".zshrc"
+    rc.write_text("alias imgen='/tmp/\x1b[2J/evil'\n")
+
+    results = check_alias_consistency(tmp_path, imgen_home)
+    assert len(results) == 1
+    _, aliased, status = results[0]
+    assert status == "mismatch"
+    # Raw bytes preserved on the value — sanitization happens at print.
+    assert "\x1b" in str(aliased)
+    # And the standard repr() rendering (what doctor uses) escapes them.
+    assert "\\x1b" in repr(str(aliased))

@@ -299,15 +299,22 @@ def cmd_doctor(_args) -> int:
     # (architect #1 from v0.1.x review.)
     alias_results = check_alias_consistency(Path.home(), IMGEN_HOME)
     for rc, aliased, status in alias_results:
+        # !r-format the path string so any C0/DEL/C1 control bytes that
+        # rode along from the rc file (e.g. ANSI escapes embedded by a
+        # different account writing to an NFS-shared $HOME) render as
+        # \x1b literals instead of escaping into the terminal. Mirrors
+        # the `_is_safe_stem` defence on style filenames in styles.py.
+        # (v0.3.6 security-reviewer NIT.)
+        aliased_safe = repr(str(aliased))
         if status == "match":
             ok(f"shell alias in {rc.name} matches IMGEN_HOME")
         elif status == "mismatch":
-            warn(f"shell alias in {rc.name} points at {aliased}, but "
+            warn(f"shell alias in {rc.name} points at {aliased_safe}, but "
                  f"IMGEN_HOME is {IMGEN_HOME} — stale alias from a "
                  f"previous install. Run `imgen setup` to refresh.")
             issues += 1
         else:  # "unparsable" — broken symlink in alias path; rare
-            warn(f"shell alias in {rc.name} points at {aliased} which "
+            warn(f"shell alias in {rc.name} points at {aliased_safe} which "
                  "couldn't be resolved (broken symlink?). "
                  "Run `imgen setup` to refresh.")
             issues += 1

@@ -71,7 +71,7 @@ from .runs import (
     auto_run_dirname,
     next_available_run_dir,
 )
-from .styles import get_style
+from .styles import StyleNotFound, get_style
 from .subprocess_helpers import run_with_stderr_redaction
 from .tokens import load_token
 
@@ -707,7 +707,12 @@ def resolve_styles_list(args, merged_defaults: dict) -> list[str]:
     default_name = merged_defaults["style"]
     try:
         get_style(default_name)
-    except KeyError:
+    except StyleNotFound:
+        # Narrowed from `except KeyError` in v0.3.6 — StyleNotFound is
+        # the only thing get_style can raise, and the narrower catch
+        # lets a future generic `except KeyError:` elsewhere flag a
+        # genuine bug instead of silently absorbing this path too.
+        # (architect NIT-2 from v0.3.6 review.)
         die(f"Default style '{default_name}' not found",
             code=2,
             hint="Check ~/.imgen/config.toml [defaults] style, "
