@@ -133,8 +133,9 @@ imgen batch <dir> --style anime --yes          # skip the N×M confirm gate
 imgen batch <dir> --dry-run                    # show every mflux command without running
 
 # Diagnostics
-imgen doctor                                   # env + RAM forecast + cached models
+imgen doctor                                   # env + RAM forecast + cached models + backend status
 imgen --list-styles                            # show presets
+imgen --list-backends                          # v0.4+: show built-in + user backends from ~/.imgen/backends.d/
 imgen --dry-run <photo> -s anime               # show mflux command, don't run
 imgen -v   /   imgen --version                 # v0.3.5+: both forms print the version
 
@@ -193,10 +194,52 @@ For 32 GB Macs, **Q8** is recommended for FLUX Kontext.
 
 ## Backends
 
+Built-in:
+
 - `flux` (default) — **FLUX.1 Kontext Dev** — best quality for style transfer. Gated, requires:
   - HF token (any classic Read token)
   - License acceptance at https://huggingface.co/black-forest-labs/FLUX.1-Kontext-dev
 - `qwen` — **Qwen-Image-Edit-2509** — open model, no token required. Lower quality at low quants.
+
+`imgen --list-backends` shows the full set including any user-defined backends below.
+
+### User-defined backends
+
+Drop `*.toml` files into `~/.imgen/backends.d/` (auto-created by `imgen setup`). Filename becomes the `--backend NAME`. Same drop-in pattern as styles.d, applied to the image-gen binaries imgen drives — useful for experimenting with new mflux-shaped models (future SDXL ports, your own wrapper script, etc.) without editing imgen's code.
+
+```toml
+# ~/.imgen/backends.d/sdxl.toml
+binary = "mflux-generate-sdxl"        # bare name (looked up in imgen's venv) OR absolute path
+image_flag = "--image-path"           # "--image-path" or "--image-paths" (the two mflux shapes)
+supports_strength = true              # backend accepts --image-strength
+supports_negative = false             # backend accepts --negative-prompt
+extra_args = ["--model", "sdxl"]      # appended unconditionally to every invocation
+
+# Optional [secret] section — for backends needing an API key/token
+# in the subprocess env. Value comes from the parent shell's env;
+# imgen forwards but does NOT store it.
+[secret]
+env_var = "MY_BACKEND_API_KEY"        # name imgen looks up in os.environ
+required = true                       # false → best-effort forward, no die on missing
+```
+
+Then:
+
+```bash
+# Verify the registry sees it + binary resolves + secret is set:
+imgen doctor
+
+# Or just list:
+imgen --list-backends
+
+# Use it:
+export MY_BACKEND_API_KEY=...           # (only if [secret] declared with required=true)
+imgen photo.jpg --backend sdxl
+```
+
+> **Security:** `binary = ...` is exec'd as a subprocess by imgen. Treat backends.d/ files like shell scripts — only drop in files you wrote yourself or got from a source you trust. Same risk surface as `styles.d/` (which can already inject argv into mflux), but more direct because the binary is the actual exec target.
+
+Collisions with built-ins (`flux.toml`, `qwen.toml`) get a `_0001` suffix with a warning; built-ins always win on name. Mirrors the styles.d collision policy. Binary paths starting with `/` are used as-is; bare names resolve to `~/imgen/.venv/bin/<name>` (the venv that hosts mflux). Built-in fields you'll never see in a user TOML: `needs_token` (FLUX-specific HF token plumbing) is hard-coded `false` for user backends — use the `[secret]` section above for non-HF tokens.
 
 ## Persistent config
 
@@ -237,6 +280,7 @@ For `output_dir` specifically the resolution is **`--output-dir` CLI flag > `$IM
 | `$NO_COLOR`            | Any non-empty value disables ANSI color (https://no-color.org/) |
 | `~/.imgen/config.toml` | Persistent defaults — see [Persistent config](#persistent-config) |
 | `~/.imgen/styles.d/*.toml` | User-defined style presets — see [User-defined styles](#user-defined-styles) |
+| `~/.imgen/backends.d/*.toml` | User-defined image-gen backends — see [User-defined backends](#user-defined-backends) |
 | `~/.imgen/history.jsonl` | Generation history (JSONL, schema-versioned) |
 | `~/.imgen/logs/<batch-id>.log` | Per-batch stderr log (multi-style runs only; mflux output with HF tokens redacted). Auto-pruned by `imgen clean` after 30 days. |
 | `~/imgen/.venv/`       | bootstrap install — mflux + imgen venv |
