@@ -578,13 +578,20 @@ def _build_args(**overrides) -> SimpleNamespace:
     """argparse Namespace shape that build_iterations reads from.
 
     Default values mirror "no CLI overrides" so each test only sets the
-    one field it cares about."""
+    one field it cares about.
+
+    v0.3.2: ``scope`` defaults to ``"scene"`` here because that's the new
+    parser default — a SimpleNamespace built from a real CLI invocation
+    never reaches the helper with ``scope=None`` anymore. Tests that
+    want to exercise the (no-longer-CLI-reachable) None path opt in
+    explicitly via ``_build_args(scope=None)``.
+    """
     defaults = dict(
         steps=None,
         quantize=None,
         guidance=None,
         strength=None,
-        scope=None,
+        scope="scene",
         preview=False,
     )
     defaults.update(overrides)
@@ -630,9 +637,12 @@ def _build(*, fake_styles, tmp_path, **overrides) -> list[Iteration]:
 
 
 def test_build_iterations_single_style_preset_prompt(fake_styles, tmp_path):
-    """No CLI overrides, no scope → prompt comes verbatim from preset."""
+    """No CLI overrides → preset prompt flows through. The fake preset
+    here has no scope-trigger substrings, so ``args.scope="scene"``
+    (the new v0.3.2 default) is a no-op and the prompt is verbatim.
+    Tests for the scope-trigger substitution chain are below."""
     fake_styles["anime"] = {
-        "prompt": "cinematic anime portrait of this person",
+        "prompt": "cinematic anime style, dramatic lighting",
         "negative": "bad anatomy",
     }
 
@@ -642,8 +652,60 @@ def test_build_iterations_single_style_preset_prompt(fake_styles, tmp_path):
     it = its[0]
     assert isinstance(it, Iteration)
     assert it.style_name == "anime"
-    assert it.prompt == "cinematic anime portrait of this person"
+    assert it.prompt == "cinematic anime style, dramatic lighting"
     assert it.negative == "bad anatomy"
+
+
+def test_build_iterations_default_scope_scene_rewrites_built_in_style(
+    fake_styles, tmp_path,
+):
+    """v0.3.2 user-visible behavior change: with scope defaulting to
+    'scene' at the parser layer, every built-in style prompt (which
+    starts with 'Transform this person ...  keep face identity, keep
+    pose ...') gets the SCOPE_SCENE_REPLACEMENTS chain applied on a
+    plain ``imgen photo.jpg`` invocation. This locks the end-to-end
+    chain — parser default → fixture default → build_iterations →
+    apply_scope → final Iteration.prompt."""
+    fake_styles["anime"] = {
+        "prompt": (
+            "Transform this person into anime, keep face identity, "
+            "keep pose and composition"
+        ),
+    }
+
+    its = _build(fake_styles=fake_styles, tmp_path=tmp_path)
+    prompt = its[0].prompt
+
+    # Every SCOPE_SCENE_REPLACEMENTS rule fired:
+    assert "this person" not in prompt
+    assert "this entire scene" in prompt
+    assert "keep face identity" not in prompt
+    assert "keep all subjects recognizable" in prompt
+    assert "keep pose and composition" not in prompt
+    assert "keep overall composition" in prompt
+
+
+def test_build_iterations_scope_none_explicit_keeps_preset_verbatim(
+    fake_styles, tmp_path,
+):
+    """The ``args.scope=None`` path is no longer CLI-reachable (v0.3.2
+    parser default is 'scene'), but build_iterations still honours it
+    when callers explicitly opt in. Locks the fall-through behaviour
+    for any future programmatic caller that wants the unmodified
+    preset prompt."""
+    fake_styles["anime"] = {
+        "prompt": "Transform this person into anime, keep face identity",
+    }
+
+    its = _build(
+        fake_styles=fake_styles, tmp_path=tmp_path,
+        args=_build_args(scope=None),
+    )
+
+    # Preset prompt comes through verbatim — no scope substitution.
+    assert its[0].prompt == (
+        "Transform this person into anime, keep face identity"
+    )
 
 
 def test_build_iterations_negative_defaults_to_empty(fake_styles, tmp_path):

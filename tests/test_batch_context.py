@@ -28,7 +28,7 @@ def _make_ctx(**overrides) -> BatchContext:
         height=1024,
         input_path=Path("/tmp/in.jpg"),
         effective_custom_prompt=None,
-        args=SimpleNamespace(scope=None, preview=False),
+        args=SimpleNamespace(scope="scene", preview=False),
         batch_id=None,
         env={"PATH": "/usr/bin"},
     )
