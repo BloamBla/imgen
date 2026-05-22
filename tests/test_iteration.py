@@ -119,3 +119,13 @@ def test_iteration_field_order_matches_spec():
         "output_path",
         "cmd",
     ]
+
+
+def test_iteration_is_explicitly_unhashable():
+    """`cmd: list[str]` is not hashable, so the frozen dataclass'
+    auto-generated __hash__ would TypeError on first use. We opt out
+    with `__hash__ = None` so the error surfaces at the set/dict
+    insertion site. (v0.2.5 review — same fix as BatchContext)"""
+    it = _make_iteration()
+    with pytest.raises(TypeError):
+        hash(it)

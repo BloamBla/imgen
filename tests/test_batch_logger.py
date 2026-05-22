@@ -242,6 +242,34 @@ def test_batch_logger_close_safe_with_no_writes(logs_dir):
     logger.close()  # must not raise
 
 
+def test_batch_logger_writes_after_close_raise(logs_dir):
+    """After close(), any further write_* / borrow_fd MUST raise
+    instead of silently re-opening the fd against a finalised batch.
+
+    Pre-v0.2.5 review IMP-2: a stale BatchLogger reference would
+    silently open a new fd on next write — relevant for v0.3.0
+    batch.py's nested loops where a forgotten reference could append
+    to a finished log."""
+    logger = BatchLogger("closedwrite")
+    logger.write_header(
+        input_path=Path("/x"), styles=["a"], run_dir=Path("/o"),
+        backend="qwen", quant=4, preview=False, scope=None, seed=1,
+    )
+    logger.close()
+
+    with pytest.raises(ValueError, match="closed"):
+        logger.iteration_start(
+            idx=1, total=1, style="a", ts=dt.datetime.now()
+        )
+    with pytest.raises(ValueError, match="closed"):
+        logger.write_header(
+            input_path=Path("/x"), styles=["a"], run_dir=Path("/o"),
+            backend="qwen", quant=4, preview=False, scope=None, seed=1,
+        )
+    with pytest.raises(ValueError, match="closed"):
+        logger.borrow_fd()
+
+
 def test_batch_logger_borrow_fd_opens_lazily(logs_dir):
     """borrow_fd() is the entry point for the subprocess stderr-tee.
     First borrow opens the fd; subsequent borrows return the same one."""
@@ -284,6 +312,41 @@ def test_batch_logger_borrowed_fd_writes_interleave_with_markers(logs_dir):
     e_pos = content.find(" → ok in 2s")
     # All four blocks present and in expected order.
     assert -1 < h_pos < s_pos < stderr_pos < e_pos
+
+
+def test_batch_logger_marker_writes_reuse_borrowed_fd(logs_dir):
+    """Tighter coherence check: the v0.2.5 persistent-fd design says
+    one fd is held for the whole batch. Verify by capturing the fd
+    object from borrow_fd() and asserting subsequent iteration_*
+    methods write to the SAME object (not a freshly-opened one).
+
+    Without this, a regression that re-opened per marker (the v0.2.4
+    pattern) would still pass test_..._interleave_with_markers because
+    POSIX O_APPEND keeps writes ordered across separate fds against
+    the same path. (v0.2.5 review IMP-3)"""
+    logger = BatchLogger("samefd")
+    fd_at_borrow = logger.borrow_fd()
+
+    logger.iteration_start(
+        idx=1, total=1, style="a",
+        ts=dt.datetime(2026, 5, 22, 10, 0, 0),
+    )
+    assert logger._fd is fd_at_borrow, \
+        "iteration_start must write through the borrowed fd, not a new one"
+
+    logger.iteration_end(idx=1, total=1, style="a", returncode=0, duration=1)
+    assert logger._fd is fd_at_borrow
+
+    logger.iteration_cancelled(idx=1, total=1, style="a", duration=1)
+    assert logger._fd is fd_at_borrow
+
+    logger.write_header(
+        input_path=Path("/x"), styles=["a"], run_dir=Path("/o"),
+        backend="qwen", quant=4, preview=False, scope=None, seed=1,
+    )
+    assert logger._fd is fd_at_borrow
+
+    logger.close()
 
 
 # ── prune_old_batch_logs ────────────────────────────────────────────────

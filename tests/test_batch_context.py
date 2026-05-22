@@ -103,3 +103,18 @@ def test_batch_context_with_custom_prompt():
 def test_batch_context_with_batch_id():
     ctx = _make_ctx(batch_id="abc123def456")
     assert ctx.batch_id == "abc123def456"
+
+
+def test_batch_context_is_explicitly_unhashable():
+    """frozen=True dataclasses auto-generate __hash__ which would call
+    hash() on each field. `env: dict` and `args: Namespace` aren't
+    hashable, so the default __hash__ would TypeError on first use.
+
+    We opt out with `__hash__ = None` so callers see the type error
+    AT THE SET/DICT INSERTION site, not deep inside the dataclass
+    machinery. Lock the contract. (v0.2.5 review IMP-1)"""
+    ctx = _make_ctx()
+    with pytest.raises(TypeError):
+        hash(ctx)
+    # Equality still works — locked separately by
+    # test_batch_context_equality_by_fields.

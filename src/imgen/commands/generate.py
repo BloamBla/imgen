@@ -785,21 +785,26 @@ def cmd_generate(args) -> int:
     # called from imgen clean. Held open for the whole batch (v0.2.5
     # IMP-4 — saves ~200 open/close syscalls at N×M=50); closed in the
     # try/finally below regardless of how cmd_generate exits.
+    #
+    # Construction + write_header live INSIDE the try block (v0.2.5
+    # review NIT) so an OSError during the first write_header (rare
+    # — disk full at exactly that moment) doesn't leak the fd that
+    # _ensure_open() opened mid-header.
     logger: BatchLogger | None = None
-    if is_batch:
-        logger = BatchLogger(batch_id)
-        logger.write_header(
-            input_path=input_path,
-            styles=[it.style_name for it in iterations],
-            run_dir=run_dir,
-            backend=backend,
-            quant=heaviest_quant,
-            preview=args.preview,
-            scope=args.scope,
-            seed=seed,
-        )
-
     try:
+        if is_batch:
+            logger = BatchLogger(batch_id)
+            logger.write_header(
+                input_path=input_path,
+                styles=[it.style_name for it in iterations],
+                run_dir=run_dir,
+                backend=backend,
+                quant=heaviest_quant,
+                preview=args.preview,
+                scope=args.scope,
+                seed=seed,
+            )
+
         # 14) Minimal env (don't forward random secrets from parent shell).
         env: dict[str, str] = {}
         for key in ("PATH", "HOME", "USER", "LANG", "LC_ALL", "TMPDIR",

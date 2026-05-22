@@ -1725,3 +1725,38 @@ def test_run_one_iteration_warns_on_history_failure(
     assert "history entry not recorded" in combined
     assert "RuntimeError" in combined
     assert "json busted" in combined
+
+
+def test_safe_append_history_propagates_keyboard_interrupt(monkeypatch):
+    """The broad-except in _safe_append_history catches `Exception` —
+    KeyboardInterrupt inherits from BaseException, so it MUST still
+    propagate. v0.2.5 review (security NIT-4) flagged this contract
+    as untested; lock it.
+
+    Without this, a Ctrl-C delivered exactly while append_history was
+    on the stack would be swallowed and the user would see no batch
+    cancellation."""
+    from imgen.commands.generate import _safe_append_history
+
+    monkeypatch.setattr(
+        "imgen.commands.generate.append_history",
+        lambda entry: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        _safe_append_history({"k": "v"})
+
+
+def test_safe_append_history_propagates_system_exit(monkeypatch):
+    """SystemExit is also BaseException, also must propagate.
+    Same contract as KeyboardInterrupt."""
+    from imgen.commands.generate import _safe_append_history
+
+    monkeypatch.setattr(
+        "imgen.commands.generate.append_history",
+        lambda entry: (_ for _ in ()).throw(SystemExit(99)),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        _safe_append_history({"k": "v"})
+    assert exc_info.value.code == 99

@@ -216,16 +216,30 @@ def load_user_style_file(path: Path) -> dict[str, Any]:
 
 
 def _is_safe_stem(stem: str) -> bool:
-    """Reject C0 controls and DEL in a style filename stem.
+    """Reject C0 controls, DEL, and C1 controls in a style filename stem.
 
     macOS APFS allows these bytes in filenames; if they end up as style
     names they ride into BatchLogger.write_header / _print_batch_summary
     output, surviving in logs and stdout where they can clear screens,
     inject window-title escapes, or otherwise mess up the user's terminal
-    when they later `cat ~/.imgen/logs/<id>.log`. (security N3 from
-    v0.2.4 review)
+    when they later `cat ~/.imgen/logs/<id>.log`.
+
+    Three ranges blocked:
+      * ``c < ' '``          — C0 controls 0x00–0x1F (NUL, BEL, ESC, ...)
+      * ``c == '\\x7f'``     — DEL
+      * ``'\\x80' <= c <= '\\x9f'`` — C1 controls; on 8-bit ECMA-48
+        terminals 0x9B alone acts as CSI (= `ESC[`), so a filename
+        like ``evil\\x9b[2Jname.toml`` could clear screen even without
+        a leading ESC. macOS Terminal.app + iTerm2 default UTF-8 mode
+        renders these as replacement chars, but defence-in-depth.
+
+    Initial filter landed in v0.2.4 closure (security N3); C1 range
+    added in v0.2.5 review (python NIT-2 / security NIT-1).
     """
-    return not any(c < ' ' or c == '\x7f' for c in stem)
+    return not any(
+        c < ' ' or c == '\x7f' or '\x80' <= c <= '\x9f'
+        for c in stem
+    )
 
 
 def load_user_styles_dir(dir_path: Path) -> dict[str, dict]:

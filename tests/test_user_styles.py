@@ -215,6 +215,27 @@ def test_load_user_styles_dir_keeps_unicode_stems(tmp_path):
     assert "anime🎨" in result
 
 
+def test_load_user_styles_dir_rejects_c1_csi_in_stem(tmp_path, capsys):
+    """C1 controls 0x80-0x9F act as 8-bit ECMA-48 escapes on terminals
+    that interpret them — 0x9B alone is CSI ("Control Sequence
+    Introducer") equivalent to ESC[. A filename `evil\\x9b[2J.toml`
+    could clear screen without an ESC prefix.
+
+    macOS Terminal.app + iTerm2 default UTF-8 mode renders raw C1
+    bytes as replacement chars, so the real-world risk is small, but
+    defence-in-depth costs nothing. (v0.2.5 review NIT)"""
+    d = tmp_path / "styles.d"
+    d.mkdir()
+    (d / "good.toml").write_text('prompt = "good"')
+    # 0x9B is CSI in 8-bit ECMA-48.
+    (d / "evil\x9B[2J.toml").write_text('prompt = "evil"')
+
+    result = load_user_styles_dir(d)
+
+    assert "good" in result
+    assert not any(k.startswith("evil") for k in result)
+
+
 def test_load_user_styles_dir_alphabetical_order(tmp_path):
     """Sort order determines which user-style gets the lower suffix on
     conflict — pin it to filename alphabetical so behavior is predictable."""

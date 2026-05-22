@@ -60,7 +60,9 @@ class BatchContext:
 
     Frozen because every iteration sees the same values; slots so
     typos on field access raise instead of silently registering on
-    __dict__.
+    __dict__. ``__hash__`` is explicitly disabled — `env: dict` and
+    `args: Namespace` aren't hashable, so the dataclass-auto-generated
+    __hash__ would crash on first `hash(ctx)` (v0.2.5 review IMP-1).
 
     `args` is the parsed argparse Namespace; typed Any to avoid
     importing argparse here just for an annotation.
@@ -77,6 +79,11 @@ class BatchContext:
     args: Any
     batch_id: str | None
     env: dict[str, str]
+
+    # Opt out of hashing — dict/Namespace fields make the auto-generated
+    # __hash__ blow up on any caller that tries to use BatchContext as
+    # a set member or dict key. Equality (__eq__) still works.
+    __hash__ = None  # type: ignore[assignment]
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +109,12 @@ class Iteration:
     final_strength: float
     output_path: Path
     cmd: list[str]
+
+    # Same opt-out reasoning as BatchContext: `cmd: list[str]` is not
+    # hashable, so a caller using Iteration as a set/dict-key would
+    # hit TypeError at first hash. Equality still works for test
+    # assertions on _build_iterations output.
+    __hash__ = None  # type: ignore[assignment]
 
 # Per-batch logs (v0.2.3+) — one .log file per multi-style invocation,
 # named after batch_id. Single-style generations don't write here.
@@ -163,6 +176,14 @@ def open_log_file_append(path: Path) -> BinaryIO:
 
     Returns a buffered binary file-like object — callers must encode()
     any strings they want to write.
+
+    **DO NOT remove `O_APPEND`.** It's the kernel-level atomicity
+    guarantee that lets BatchLogger.borrow_fd() share the underlying
+    fd with subprocess_helpers' stderr-tee — both writers append at
+    "current end of file" with no interleaving mid-write, regardless
+    of internal Python-buffer offsets. Without O_APPEND, the borrowed
+    fd's writes would race with BatchLogger's marker writes for file
+    position. (architect NIT-3 from v0.2.5 review)
     """
     fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     return os.fdopen(fd, "ab")
@@ -224,12 +245,13 @@ class BatchLogger:
     object. BatchLogger remains the owner — subprocess_helpers does
     NOT close it. (architect FWD-6 from v0.2.4 review)
     """
-    __slots__ = ("_batch_id", "_fd", "path")
+    __slots__ = ("_batch_id", "_closed", "_fd", "path")
 
     def __init__(self, batch_id: str) -> None:
         ensure_logs_dir()
         self._batch_id = batch_id
         self._fd: BinaryIO | None = None
+        self._closed = False
         self.path: Path = LOGS_DIR / f"{batch_id}.log"
 
     def __enter__(self) -> "BatchLogger":
@@ -239,7 +261,18 @@ class BatchLogger:
         self.close()
 
     def _ensure_open(self) -> BinaryIO:
-        """Open the log file lazily on first write."""
+        """Open the log file lazily on first write.
+
+        Raises ValueError if the logger has been closed. v0.2.5 review
+        IMP-2: a stale BatchLogger reference revived itself silently
+        under the previous design — a forgotten reference in v0.3.0
+        batch.py's nested loop would have opened a fresh fd against
+        an already-finalised batch log.
+        """
+        if self._closed:
+            raise ValueError(
+                "BatchLogger is closed — cannot write to a finalised batch"
+            )
         if self._fd is None:
             self._fd = open_log_file_append(self.path)
         return self._fd
@@ -249,6 +282,8 @@ class BatchLogger:
 
         Safe to call multiple times (second call is a no-op). Safe to
         call when no writes happened (fd was never opened — also no-op).
+        After close, any further write_* / borrow_fd call raises
+        ValueError instead of silently re-opening (v0.2.5 review IMP-2).
         """
         if self._fd is not None:
             try:
@@ -256,6 +291,7 @@ class BatchLogger:
             finally:
                 self._fd.close()
                 self._fd = None
+        self._closed = True
 
     def borrow_fd(self) -> BinaryIO:
         """Return the open (lazy-opened if needed) file object so the
