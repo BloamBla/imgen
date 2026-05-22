@@ -61,6 +61,13 @@ imgen doctor                                 # verify everything's wired
 imgen photo.jpg --preview                    # first run downloads FLUX (~24 GB, ~30 min)
 ```
 
+### Shared Macs and NFS homes
+
+`imgen` is built for a single user on a personal Mac. State (`~/.imgen/`), token (`~/.imgen/hf_token`, chmod 600), and history (`~/.imgen/history.jsonl`, chmod 600) all live under `$HOME` — fine for one account, but:
+
+- **Multiple macOS accounts on the same machine**: each account must run `bootstrap.sh` (or `pipx install`) separately. Don't share `~/imgen/.venv/` across users — venv binaries embed absolute paths, and `~/.imgen/` perms (0o700) intentionally lock other accounts out.
+- **NFS-mounted `$HOME`**: `~/.cache/huggingface/` over NFS makes mmap of the ~24 GB FLUX weights glacial (every page fault hits the network). If your Mac mounts `$HOME` from a fileserver, set `HF_HOME=/Volumes/local-ssd/hf-cache` (or any local-disk path) before first run so weights cache locally.
+
 ## Styles
 
 | Preset    | What you get |
@@ -161,6 +168,10 @@ pbpaste | imgen photo.jpg --custom-prompt -
 ```
 
 Both paths cap at 64 KB; missing file, empty content, or specifying both `--custom-prompt` and `--prompt-file` fail early with a clear message. The effective prompt (not the source file path or "-") is what gets stored in `~/.imgen/history.jsonl` so `imgen replay <id>` reproduces the actual text.
+
+### Don't paste `--dry-run` output into a shell
+
+The pretty-printed command emitted by `--dry-run` is for **reading**, not for re-executing. Quoting is best-effort and won't necessarily protect `$()`, backticks, or newlines embedded in your prompt — pasting the line into a shell could re-interpret those as commands or string substitutions. If you want to actually run with the same args, re-invoke `imgen` with the same flags rather than copy-pasting the displayed command.
 
 ## Tuning
 
