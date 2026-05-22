@@ -169,6 +169,45 @@ def cmd_setup(_args) -> int:
             "  strength = 0.65\n"
         )
 
+    # User-backends directory (v0.4 — same pattern as styles.d).
+    # 0o700 + README that doubles as schema docs + an explicit security
+    # warning, since `binary = ...` becomes an actual subprocess exec.
+    backends_dir = STATE_DIR / "backends.d"
+    if not backends_dir.exists():
+        backends_dir.mkdir(mode=0o700)
+        (backends_dir / "README.txt").write_text(
+            "Drop *.toml files here to add image-gen backends beyond\n"
+            "the built-in flux + qwen. Filename (without .toml) becomes\n"
+            "the --backend NAME.\n"
+            "\n"
+            "SECURITY: `binary = ...` is executed as a subprocess by imgen.\n"
+            "Treat backends.d/ files like shell scripts — only drop in files\n"
+            "you wrote yourself or got from a source you trust.\n"
+            "\n"
+            "Required fields:\n"
+            '  binary     = "..."   (bare name on $PATH, or absolute path)\n'
+            '  image_flag = "..."   ("--image-path" or "--image-paths")\n'
+            "\n"
+            "Optional fields:\n"
+            '  supports_strength = false   (true → accepts --image-strength)\n'
+            '  supports_negative = false   (true → accepts --negative-prompt)\n'
+            '  extra_args        = []      (e.g. ["--model", "sdxl"])\n'
+            "\n"
+            "Optional [secret] section — for backends that need an API\n"
+            "key or token in the subprocess env:\n"
+            '  [secret]\n'
+            '  env_var  = "MY_BACKEND_API_KEY"\n'
+            '  required = true   (false = best-effort forward)\n'
+            "\n"
+            "Example: ~/.imgen/backends.d/sdxl.toml\n"
+            '  binary = "mflux-generate-sdxl"\n'
+            '  image_flag = "--image-path"\n'
+            '  supports_strength = true\n'
+            '  extra_args = ["--model", "sdxl"]\n'
+            "\n"
+            "Verify with: imgen --list-backends   /   imgen doctor\n"
+        )
+
     # Starter config.toml — only if not present, never overwrite. All
     # keys commented out so defaults stay in effect until the user opts in.
     print()
