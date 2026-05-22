@@ -400,6 +400,16 @@ def prune_old_batch_logs(
         # walk into the target tree and unlink files there. Won't happen
         # in normal installs — user would have to manually `ln -s` over
         # the real dir — but cheap to refuse. (v0.2.5 security NIT-2)
+        #
+        # Warn (not silent) so a clean-only workflow surfaces the
+        # misconfiguration. ensure_logs_dir also warns; symmetry matters
+        # — a user who never runs `imgen generate` would otherwise see
+        # "0 logs removed" forever and never learn why. (v0.2.6 review
+        # NIT — triple-flagged by python/security/architect.)
+        from .colors import warn
+        warn(f"LOGS_DIR is a symlink ({LOGS_DIR}); refusing to prune. "
+             "Remove the symlink or relocate ~/.imgen/logs/ to a real "
+             "directory.")
         return 0, 0
     cutoff = _dt.datetime.now().timestamp() - days * 86400
     removed = 0

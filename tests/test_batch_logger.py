@@ -515,12 +515,17 @@ def test_prune_skips_hardlinks(logs_dir, tmp_path):
     assert removed == 0
 
 
-def test_prune_refuses_when_logs_dir_itself_is_symlink(tmp_path, monkeypatch):
+def test_prune_refuses_when_logs_dir_itself_is_symlink(
+    tmp_path, monkeypatch, capsys
+):
     """The v0.2.5 symlink-as-log-file fix catches symlinks INSIDE
     LOGS_DIR. v0.2.6 closes the next layer: LOGS_DIR itself being a
     symlink pointing elsewhere. Without this guard, `LOGS_DIR.glob`
     walks through the symlink and could unlink files in the target
-    directory. (v0.2.5 security NIT-2)"""
+    directory. (v0.2.5 security NIT-2)
+
+    Warns explicitly so a clean-only workflow surfaces the misconfig
+    (v0.2.6 review — symmetry with ensure_logs_dir warn)."""
     import imgen.runs as runs_mod
     target = tmp_path / "target_dir"
     target.mkdir(mode=0o700)
@@ -539,3 +544,7 @@ def test_prune_refuses_when_logs_dir_itself_is_symlink(tmp_path, monkeypatch):
     assert removed == 0
     assert removed_bytes == 0
     assert victim.exists()
+    # User informed.
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "symlink" in combined.lower()

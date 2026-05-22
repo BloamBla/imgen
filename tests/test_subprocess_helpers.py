@@ -70,7 +70,10 @@ def test_pattern_minimum_length_is_36():
 
 
 # A 40-char hf_-prefixed token; >36-char minimum the regex requires.
-_FAKE_TOKEN = "hf_" + "A" * 40
+# Mixed-case + digits + underscore — closer to real HF token shape, so a
+# future regex tightening (e.g. requiring character-class diversity)
+# would still match what we test against.
+_FAKE_TOKEN = "hf_AbCdEf0123_GhIjKlMnOpQrStUvWxYz" + "AbCd1234"
 
 
 def _python_cmd(code: str) -> list[str]:
@@ -86,9 +89,11 @@ def test_run_with_stderr_redaction_redacts_to_terminal(capfdbinary):
     """Token written to subprocess stderr → redacted in parent stderr.
 
     Uses capfdbinary (not capsys) because subprocess_helpers writes via
-    `sys.stderr.buffer.write(redacted_bytes)` — the binary buffer-level
-    interface. capsys intercepts sys.stdout/sys.stderr at the text
-    level and can miss writes that go directly to fd 2."""
+    `sys.stderr.buffer.write(redacted_bytes)`. capsys replaces
+    `sys.stderr` with a text-only stand-in that has no `.buffer`
+    attribute — `sys.stderr.buffer.write` would AttributeError under
+    capsys. capfdbinary captures fd 2 directly via os.dup2, transparent
+    to the production code path."""
     code = (
         "import sys; "
         f"sys.stderr.write('Authorization: Bearer {_FAKE_TOKEN}\\n')"
@@ -151,29 +156,41 @@ def test_run_with_stderr_redaction_returns_subprocess_returncode(
     rc = run_with_stderr_redaction(_python_cmd(code), env={})
 
     assert rc == 42
-    # Drain capture so other tests don't see this stderr.
-    capfdbinary.readouterr()
 
 
 def test_run_with_stderr_redaction_handles_multi_chunk_output(
     capfdbinary,
 ):
     """The chunk loop reads 256 bytes at a time and flushes up to the
-    last `\\n` or `\\r`. Verify a payload larger than one chunk gets
-    fully redacted (no token fragment slips out as buffer tail)."""
-    # Build a payload > 256 bytes so the read loop iterates at least
-    # twice. Place the token at a position straddling a 256-byte boundary.
-    prefix = "x" * 240
+    last `\\n` or `\\r`. Verify a token that straddles a read boundary
+    AFTER a newline-driven flush still gets fully redacted (no token
+    fragment slips out as the buffer tail held between reads).
+
+    Force determinism: subprocess writes a first chunk WITH a `\\n` and
+    flushes, then writes the token in a second write+flush. This
+    ensures the parent's first `read(256)` returns just the first
+    chunk (the kernel pipe is drained), and the token lives across
+    the second-read boundary.
+
+    Without the deterministic flush, subprocess buffering can deliver
+    the entire payload in one syscall write, the parent's one
+    `read(256)` returns it all at once, and the multi-chunk path
+    isn't exercised. (v0.2.6 review NIT — double-flagged by security
+    + architect.)"""
     code = (
         "import sys; "
-        f"sys.stderr.write({prefix!r} + 'AUTH: ' + {_FAKE_TOKEN!r} + '\\n')"
+        "sys.stderr.write('first chunk done\\n'); "
+        "sys.stderr.flush(); "
+        f"sys.stderr.write('AUTH: ' + {_FAKE_TOKEN!r} + '\\n'); "
+        "sys.stderr.flush()"
     )
     log = io.BytesIO()
 
     run_with_stderr_redaction(_python_cmd(code), env={}, log_file=log)
 
     log_content = log.getvalue()
+    # First chunk delivered intact.
+    assert b"first chunk done" in log_content
+    # Token in the second chunk fully redacted.
     assert _FAKE_TOKEN.encode() not in log_content
     assert b"hf_***REDACTED***" in log_content
-    # Drain.
-    capfdbinary.readouterr()
