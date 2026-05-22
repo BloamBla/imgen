@@ -278,21 +278,14 @@ def _patch_urlopen(monkeypatch, handler) -> None:
     monkeypatch.setattr(tokens_mod.urllib.request, "urlopen", handler)
 
 
-def test_validate_token_success_returns_username():
+def test_validate_token_success_returns_username(monkeypatch):
     """200 + JSON body with a `name` field → success."""
-    import imgen.tokens as tokens_mod
     from imgen.tokens import validate_token
-
-    monkey = pytest.MonkeyPatch()
-    try:
-        monkey.setattr(
-            tokens_mod.urllib.request,
-            "urlopen",
-            lambda req, timeout=None: _FakeResponse(b'{"name": "alice"}'),
-        )
-        result = validate_token("hf_abc")
-    finally:
-        monkey.undo()
+    _patch_urlopen(
+        monkeypatch,
+        lambda req, timeout=None: _FakeResponse(b'{"name": "alice"}'),
+    )
+    result = validate_token("hf_abc")
     assert result.username == "alice"
     assert result.error is None
 
@@ -399,3 +392,41 @@ def test_validate_token_oversized_response_returns_parse_error(monkeypatch):
     )
     result = validate_token("hf_abc")
     assert result.error == "parse"
+
+
+# ── TokenValidation invariant (architect IMP-2 + python IMPORTANT-3) ────
+
+
+def test_token_validation_rejects_both_fields_none():
+    """The "either username or error, never both, never neither"
+    invariant is enforced at construction. Both-None means a programming
+    bug at the call site (e.g. forgotten return value path); raising
+    at __new__ beats letting setup.py dispatch to the wrong elif branch
+    with a misleading message."""
+    from imgen.tokens import TokenValidation
+    with pytest.raises(ValueError, match="exactly one"):
+        TokenValidation(None, None)
+
+
+def test_token_validation_rejects_both_fields_set():
+    """Both-set is contradictory (a successful validation can't also
+    be a failure). Raising at __new__ catches misuse at the source."""
+    from imgen.tokens import TokenValidation
+    with pytest.raises(ValueError, match="exactly one"):
+        TokenValidation("alice", "auth")
+
+
+def test_token_validation_accepts_success_state():
+    """username set, error None — the documented success shape."""
+    from imgen.tokens import TokenValidation
+    result = TokenValidation("alice", None)
+    assert result.username == "alice"
+    assert result.error is None
+
+
+def test_token_validation_accepts_each_failure_kind():
+    """All three documented error kinds construct cleanly."""
+    from imgen.tokens import TokenValidation
+    for kind in ("auth", "network", "parse"):
+        result = TokenValidation(None, kind)  # type: ignore[arg-type]
+        assert result.error == kind

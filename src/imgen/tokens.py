@@ -16,8 +16,9 @@ import json
 import os
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
-from typing import NamedTuple
+from typing import Literal
 
 from .colors import ok, warn
 from .paths import LEGACY_TOKEN_FILE, TOKEN_FILE, ensure_state_dir
@@ -25,6 +26,7 @@ from .paths import LEGACY_TOKEN_FILE, TOKEN_FILE, ensure_state_dir
 __all__ = [
     "TOKEN_MAX_BYTES",
     "TokenValidation",
+    "ValidationError",
     "active_token_path",
     "check_token_perms",
     "load_token",
@@ -32,14 +34,28 @@ __all__ = [
     "validate_token",
 ]
 
+# The closed set of failure kinds :func:`validate_token` reports.
+# Typed as ``Literal`` so mypy --strict catches typos and exhaustive
+# match statements at call sites. (v0.3.6 architect IMP-2.)
+ValidationError = Literal["auth", "network", "parse"]
 
-class TokenValidation(NamedTuple):
+
+@dataclass(frozen=True, slots=True)
+class TokenValidation:
     """Result of :func:`validate_token`.
 
     Either ``username`` is set (success) or ``error`` is set (failure) —
-    never both, never neither. ``error`` values are coarse-grained so
-    the caller can present an actionable message without re-parsing
-    underlying exceptions.
+    never both, never neither. The invariant is enforced at construction
+    via :meth:`__post_init__`; ``ValueError`` on misuse beats "silent
+    fall-through into the wrong branch at the caller" (which is what
+    the pre-v0.3.6 ``str | None`` shape allowed).
+
+    Frozen + slots: immutable like a NamedTuple, no per-instance dict.
+    A NamedTuple subclass would be a more obvious fit, but ``typing.
+    NamedTuple`` (Python 3.12) refuses ``__new__`` / ``__init__``
+    overrides and we need to validate at construction. Surface is
+    attribute-access only (``r.username`` / ``r.error``), matching the
+    NamedTuple ergonomics callers already used in v0.3.5.
 
     error:
         ``None``       — success; ``username`` holds the HF whoami name.
@@ -54,7 +70,22 @@ class TokenValidation(NamedTuple):
                          this kind of response.
     """
     username: str | None
-    error: str | None
+    error: ValidationError | None
+
+    def __post_init__(self) -> None:
+        # XOR check: exactly one of (username, error) must be set.
+        # Both-None means a programming bug at the construction site
+        # (e.g. a forgotten return value); both-set means the caller
+        # is trying to express a contradictory state. Either way,
+        # raising at construction is strictly more useful than letting
+        # setup.py's if/elif chain dispatch to the wrong message.
+        # (v0.3.6 architect IMP-2 + python-reviewer IMPORTANT.)
+        if (self.username is None) == (self.error is None):
+            raise ValueError(
+                "TokenValidation requires exactly one of username/error "
+                f"to be set; got username={self.username!r}, "
+                f"error={self.error!r}"
+            )
 
 # Cap on token file size. Real HF tokens are ~70 chars (`hf_` + 37-char
 # secret + room to grow). 4 KB is several orders above realistic use; a
