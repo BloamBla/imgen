@@ -72,6 +72,48 @@ class Backend:
     # effort" — forward if set, silently skip if not, let the backend
     # binary report its own auth failure.
     secret_required: bool = True
+    # v0.5: LLM prompt enhancer. ``enhance_system_prompt`` is the system
+    # instruction fed to the local LLM (Qwen2.5-7B-Instruct by default)
+    # when ``--enhance-prompt`` is active. None on a backend = enhancer
+    # is silently skipped for that backend (fail-safe — better no-op
+    # than a generic instruction that might mis-shape the prompt for
+    # this backend's conventions). ``enhance_invariants`` are substrings
+    # that, if present in the input prompt, must also be present in the
+    # enhanced output — otherwise we fall back to the original. This is
+    # defence-in-depth: the system prompt explicitly tells the LLM to
+    # keep clauses like ``while preserving …`` intact, this is the
+    # tripwire that catches LLM drift.
+    enhance_system_prompt: str | None = None
+    enhance_invariants: tuple[str, ...] = ()
+
+
+# System prompts for built-in backends. Module-level constants so tests
+# can reference the exact text and import-time look at Backend tuples
+# stays terse. Tuned per backend conventions (see
+# project_v050_v060_design.md, "System prompts per backend").
+_FLUX_KONTEXT_ENHANCE_SYS = (
+    "You expand image-editing prompts for FLUX.1 Kontext, an image-"
+    "conditioning model that restyles input photos while preserving "
+    "identity, pose, and composition. Take the user prompt and expand "
+    "it to 40-60 tokens, keeping the 'Restyle this person as X while "
+    "preserving Y' verb structure intact. Add specific stylistic "
+    "descriptors (lighting, color palette, art technique, materials). "
+    "Do NOT invent objects, scenes, or characters not in the user "
+    "prompt — expand existing details only. NEVER describe the input "
+    "photo's content — Kontext sees it directly. Output ONLY the "
+    "expanded prompt with no preamble, no quotes, no explanation."
+)
+
+_QWEN_EDIT_ENHANCE_SYS = (
+    "You expand instruction-style edit prompts for Qwen-Image-Edit. "
+    "Use imperative verbs ('transform', 'restyle', 'apply'). Keep the "
+    "output under 40 tokens — Qwen-Edit prefers shorter directives "
+    "than FLUX. Preserve any 'while preserving …' clauses intact. Do "
+    "NOT invent objects, scenes, or characters not in the user "
+    "prompt — expand existing details only. NEVER describe the input "
+    "photo's content. Output ONLY the expanded prompt with no preamble, "
+    "no quotes, no explanation."
+)
 
 
 BUILTIN_BACKENDS: dict[str, Backend] = {
@@ -82,6 +124,8 @@ BUILTIN_BACKENDS: dict[str, Backend] = {
         supports_strength=True,
         supports_negative=True,
         extra_args=("--model", "dev"),
+        enhance_system_prompt=_FLUX_KONTEXT_ENHANCE_SYS,
+        enhance_invariants=("preserving",),
     ),
     "qwen": Backend(
         binary="mflux-generate-qwen-edit",
@@ -90,6 +134,8 @@ BUILTIN_BACKENDS: dict[str, Backend] = {
         supports_strength=False,
         supports_negative=False,
         extra_args=("--model", "qwen"),
+        enhance_system_prompt=_QWEN_EDIT_ENHANCE_SYS,
+        enhance_invariants=("preserving",),
     ),
 }
 

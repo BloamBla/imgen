@@ -23,6 +23,7 @@ classifiers = [
 ]
 dependencies = [
     "mflux==0.17.5",
+    "mlx-lm==0.31.3",
 ]
 
 [project.optional-dependencies]
