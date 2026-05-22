@@ -1620,3 +1620,85 @@ def test_run_one_iteration_passes_env_to_subprocess(
     )
 
     assert stub_mflux["calls"][0]["env"] == custom_env
+
+
+# ── history-vs-log coherence (v0.2.5 — IMP-2 from v0.2.4 review) ───────
+
+
+def test_run_one_iteration_log_marker_lands_even_if_history_raises(
+    tmp_state_dir, tmp_path, stub_mflux, monkeypatch
+):
+    """If append_history raises an unexpected exception (today
+    unreachable — history.py catches OSError — but defence for future
+    cases), the iteration_end log marker MUST still land. Otherwise
+    the log would show a start marker with no matching end and the
+    next iteration's start marker would look like part of this one.
+
+    The bug shape is: subprocess succeeded → history broken → next
+    log entry orphaned. The test stages an exception class that
+    history.py wouldn't normally catch (RuntimeError) so we exercise
+    the new _safe_append_history wrapper."""
+    monkeypatch.setattr(
+        "imgen.commands.generate.append_history",
+        lambda entry: (_ for _ in ()).throw(RuntimeError("json busted")),
+    )
+    logger = BatchLogger("coherence1")
+
+    cont = _run(
+        tmp_path=tmp_path, succeeded=[], failed=[],
+        logger=logger, is_batch=True, idx=1, total=2,
+    )
+
+    # Iteration still completes — succeeded list gets the entry, batch
+    # continues, history error gets a warn().
+    assert cont is True
+    assert logger.path.exists()
+    content = logger.path.read_bytes().decode()
+    # Both markers must be present — start before subprocess, end after
+    # despite the history-write exception.
+    assert "[1/2] anime" in content
+    assert " → ok in " in content
+
+
+def test_run_one_iteration_cancel_marker_lands_even_if_history_raises(
+    tmp_state_dir, tmp_path, stub_mflux, monkeypatch
+):
+    """Same coherence guarantee on the KeyboardInterrupt path: cancel
+    marker must land even if the cancel-history record write blew up."""
+    stub_mflux["raise"] = KeyboardInterrupt()
+    monkeypatch.setattr(
+        "imgen.commands.generate.append_history",
+        lambda entry: (_ for _ in ()).throw(RuntimeError("json busted")),
+    )
+    logger = BatchLogger("coherence2")
+
+    cont = _run(
+        tmp_path=tmp_path, succeeded=[], failed=[],
+        logger=logger, is_batch=True, idx=1, total=2,
+    )
+
+    # Caller still gets the early-exit signal (False → cmd_generate
+    # returns 130).
+    assert cont is False
+    content = logger.path.read_bytes().decode()
+    assert "[1/2] anime" in content
+    assert "CANCELLED" in content
+
+
+def test_run_one_iteration_warns_on_history_failure(
+    tmp_state_dir, tmp_path, stub_mflux, monkeypatch, capsys
+):
+    """User has to see *something* — log + history mismatch otherwise
+    looks like data was never recorded but the user has no clue why."""
+    monkeypatch.setattr(
+        "imgen.commands.generate.append_history",
+        lambda entry: (_ for _ in ()).throw(RuntimeError("json busted")),
+    )
+
+    _run(tmp_path=tmp_path, succeeded=[], failed=[])
+
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "history entry not recorded" in combined
+    assert "RuntimeError" in combined
+    assert "json busted" in combined

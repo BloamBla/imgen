@@ -169,6 +169,25 @@ def _resolve_output_layout(
     return None, run_dir
 
 
+def _safe_append_history(entry: dict) -> None:
+    """Append to history, warn on unexpected failure.
+
+    history.append_history already swallows OSError and returns 0 on
+    disk-level problems (lock contention, ENOSPC). This wrapper exists
+    so any *other* exception class — JSON encoding error on a weird
+    value, unicode mistake in a path — degrades to a warn() instead of
+    aborting `_run_one_iteration` between the subprocess success and
+    the log end-marker. Without it, a raise here would skip the
+    iteration_end marker, leaving the next iteration's start marker
+    flush against this one (looks like a hung iteration in the log).
+    (v0.2.4 review IMP-2 — wrap landed in v0.2.5)
+    """
+    try:
+        append_history(entry)
+    except Exception as e:  # noqa: BLE001 — degrade-don't-die is the point
+        warn(f"history entry not recorded: {type(e).__name__}: {e}")
+
+
 def _run_one_iteration(
     *,
     it: Iteration,
@@ -256,7 +275,7 @@ def _run_one_iteration(
             (datetime.datetime.now() - started).total_seconds())
         history_entry["status"] = "cancelled"
         history_entry["duration_sec"] = cancel_duration
-        append_history(history_entry)
+        _safe_append_history(history_entry)
         if logger is not None:
             logger.iteration_cancelled(idx, total, style_name, cancel_duration)
         return False
@@ -264,14 +283,7 @@ def _run_one_iteration(
     duration = int((datetime.datetime.now() - started).total_seconds())
     history_entry["duration_sec"] = duration
     history_entry["status"] = "success" if returncode == 0 else "failed"
-    # Known limitation (v0.2.4 review IMP-2, deferred to v0.2.5):
-    # if append_history() were to raise (it can't today — history.py
-    # already swallows OSError and returns 0), the iteration_end log
-    # marker below would be skipped and the next iteration's start
-    # marker would land flush against this one, looking like a hung
-    # iteration. Wrap-in-try is the v0.2.5 fix; the failure path is
-    # unreachable in current code so no behavioural impact today.
-    append_history(history_entry)
+    _safe_append_history(history_entry)
 
     if logger is not None:
         logger.iteration_end(idx, total, style_name, returncode, duration)
