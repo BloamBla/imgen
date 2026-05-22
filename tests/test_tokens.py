@@ -249,3 +249,153 @@ def test_save_token_atomic_creates_state_dir(tmp_token):
     assert tmp_token.new.exists()
     assert tmp_token.new.read_text() == "hf_freshly_set"
     assert (tmp_token.new.stat().st_mode & 0o777) == 0o600
+
+
+# ── validate_token: auth / network / parse distinction (python #7) ──────
+
+
+class _FakeResponse:
+    """Minimal urlopen-context-manager stand-in for validate_token tests."""
+
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    def read(self, size: int | None = None) -> bytes:
+        return self._body[:size] if size else self._body
+
+    def __enter__(self) -> "_FakeResponse":
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        return None
+
+
+def _patch_urlopen(monkeypatch, handler) -> None:
+    """Patch the symbol validate_token actually calls. tokens.py uses
+    `urllib.request.urlopen` via the imported module reference, so
+    patching the module attribute is the right surface."""
+    import imgen.tokens as tokens_mod
+    monkeypatch.setattr(tokens_mod.urllib.request, "urlopen", handler)
+
+
+def test_validate_token_success_returns_username():
+    """200 + JSON body with a `name` field → success."""
+    import imgen.tokens as tokens_mod
+    from imgen.tokens import validate_token
+
+    monkey = pytest.MonkeyPatch()
+    try:
+        monkey.setattr(
+            tokens_mod.urllib.request,
+            "urlopen",
+            lambda req, timeout=None: _FakeResponse(b'{"name": "alice"}'),
+        )
+        result = validate_token("hf_abc")
+    finally:
+        monkey.undo()
+    assert result.username == "alice"
+    assert result.error is None
+
+
+def test_validate_token_success_with_fullname_field(monkeypatch):
+    """HF whoami may return `fullname` instead of `name` for some accounts."""
+    from imgen.tokens import validate_token
+    _patch_urlopen(
+        monkeypatch,
+        lambda req, timeout=None: _FakeResponse(b'{"fullname": "Alice Q."}'),
+    )
+    result = validate_token("hf_abc")
+    assert result.username == "Alice Q."
+    assert result.error is None
+
+
+def test_validate_token_401_returns_auth_error(monkeypatch):
+    """HTTP 401 from HF → token rejected. Distinct from "couldn't reach"
+    so the caller can phrase an actionable message (rotate token vs
+    check network)."""
+    import urllib.error
+    from imgen.tokens import validate_token
+
+    def fake(req, timeout=None):
+        raise urllib.error.HTTPError(
+            req.full_url, 401, "Unauthorized", {}, None
+        )
+    _patch_urlopen(monkeypatch, fake)
+    result = validate_token("hf_revoked")
+    assert result.username is None
+    assert result.error == "auth"
+
+
+def test_validate_token_500_returns_network_error(monkeypatch):
+    """5xx is HF being down/flaky, not a token problem — bucket as
+    "network" (caller messages: try later, token may still be fine)."""
+    import urllib.error
+    from imgen.tokens import validate_token
+
+    def fake(req, timeout=None):
+        raise urllib.error.HTTPError(
+            req.full_url, 500, "Server Error", {}, None
+        )
+    _patch_urlopen(monkeypatch, fake)
+    result = validate_token("hf_abc")
+    assert result.error == "network"
+
+
+def test_validate_token_urlerror_returns_network_error(monkeypatch):
+    """Offline / DNS fail / connection refused → network bucket."""
+    import urllib.error
+    from imgen.tokens import validate_token
+
+    def fake(req, timeout=None):
+        raise urllib.error.URLError("offline")
+    _patch_urlopen(monkeypatch, fake)
+    result = validate_token("hf_abc")
+    assert result.error == "network"
+
+
+def test_validate_token_timeout_returns_network_error(monkeypatch):
+    """urlopen timeout → network bucket. validate_token caps at 10s."""
+    from imgen.tokens import validate_token
+
+    def fake(req, timeout=None):
+        raise TimeoutError("slow")
+    _patch_urlopen(monkeypatch, fake)
+    result = validate_token("hf_abc")
+    assert result.error == "network"
+
+
+def test_validate_token_non_json_returns_parse_error(monkeypatch):
+    """200 + HTML body (captive portal / proxy login page) — JSON parse
+    fails, distinct from auth/network so the user knows to log in to
+    the wifi rather than rotating their token."""
+    from imgen.tokens import validate_token
+    _patch_urlopen(
+        monkeypatch,
+        lambda req, timeout=None: _FakeResponse(b"<html>captive portal</html>"),
+    )
+    result = validate_token("hf_abc")
+    assert result.error == "parse"
+
+
+def test_validate_token_json_without_name_returns_parse_error(monkeypatch):
+    """200 + JSON but no `name`/`fullname` — HF API shape changed or
+    response is from a non-HF endpoint. Bucket as "parse"."""
+    from imgen.tokens import validate_token
+    _patch_urlopen(
+        monkeypatch,
+        lambda req, timeout=None: _FakeResponse(b'{"unrelated": "x"}'),
+    )
+    result = validate_token("hf_abc")
+    assert result.error == "parse"
+
+
+def test_validate_token_oversized_response_returns_parse_error(monkeypatch):
+    """Response body >= 64 KB cap → treated as parse failure. Defends
+    against DNS hijack serving infinite bytes."""
+    from imgen.tokens import validate_token
+    _patch_urlopen(
+        monkeypatch,
+        lambda req, timeout=None: _FakeResponse(b"x" * 80_000),
+    )
+    result = validate_token("hf_abc")
+    assert result.error == "parse"

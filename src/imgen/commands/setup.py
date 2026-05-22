@@ -123,13 +123,22 @@ def cmd_setup(_args) -> int:
                 except OSError as e:
                     warn(f"Saved new token but couldn't remove legacy "
                          f"{LEGACY_TOKEN_FILE}: {e}")
-            user = validate_token(tok)
-            if user:
-                ok(f"Token valid (HF user: {user})")
-            else:
-                warn("Token saved but couldn't validate — could be invalid, "
-                     "expired, or network issue. Check at: "
+            result = validate_token(tok)
+            if result.username:
+                ok(f"Token valid (HF user: {result.username})")
+            elif result.error == "auth":
+                warn("Token saved but HF rejected it (401) — likely "
+                     "invalid, revoked, or missing required scopes. "
+                     "Generate a new one at: "
                      "https://huggingface.co/settings/tokens")
+            elif result.error == "network":
+                warn("Token saved but couldn't reach HF to validate — "
+                     "offline, DNS issue, or HF is down. The token will "
+                     "be tried as-is on your next `imgen generate`.")
+            else:  # "parse" — captive portal / proxy serving a non-JSON 200
+                warn("Token saved but HF returned an unexpected response "
+                     "(captive portal or proxy?). Confirm internet access "
+                     "and re-run `imgen setup` to retry validation.")
         else:
             dim("   Skipped. Run `imgen setup` later to add token.")
 

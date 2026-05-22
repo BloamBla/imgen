@@ -17,18 +17,44 @@ import os
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import NamedTuple
 
 from .colors import ok, warn
 from .paths import LEGACY_TOKEN_FILE, TOKEN_FILE, ensure_state_dir
 
 __all__ = [
     "TOKEN_MAX_BYTES",
+    "TokenValidation",
     "active_token_path",
     "check_token_perms",
     "load_token",
     "save_token_atomic",
     "validate_token",
 ]
+
+
+class TokenValidation(NamedTuple):
+    """Result of :func:`validate_token`.
+
+    Either ``username`` is set (success) or ``error`` is set (failure) —
+    never both, never neither. ``error`` values are coarse-grained so
+    the caller can present an actionable message without re-parsing
+    underlying exceptions.
+
+    error:
+        ``None``       — success; ``username`` holds the HF whoami name.
+        ``"auth"``     — HF rejected the token (401). Token is invalid,
+                         revoked, or doesn't carry the needed scopes.
+        ``"network"``  — couldn't reach HF (offline, DNS fail, timeout,
+                         non-401 HTTP error including 5xx). User's
+                         token may still be fine — try later.
+        ``"parse"``    — got a 200 but the response wasn't valid JSON
+                         with a recognizable name/fullname field.
+                         Captive portals and transparent proxies serve
+                         this kind of response.
+    """
+    username: str | None
+    error: str | None
 
 # Cap on token file size. Real HF tokens are ~70 chars (`hf_` + 37-char
 # secret + room to grow). 4 KB is several orders above realistic use; a
@@ -101,8 +127,16 @@ def save_token_atomic(tok: str) -> None:
         f.write(tok)
 
 
-def validate_token(token: str) -> str | None:
-    """Hit HF whoami; return username on success, None on failure."""
+def validate_token(token: str) -> TokenValidation:
+    """Hit HF whoami; distinguish auth-fail, network-down, and parse errors.
+
+    Pre-v0.3.6 this returned ``str | None`` and the caller couldn't tell
+    "your token is wrong" (actionable: replace token) from "you're
+    offline" (actionable: try later) from "captive portal" (actionable:
+    log in to the wifi). The lumped warn confused users. Now returns
+    :class:`TokenValidation` so the caller phrases the right message.
+    (python #7 from v0.1.x review.)
+    """
     try:
         req = urllib.request.Request(
             "https://huggingface.co/api/whoami-v2",
@@ -113,11 +147,25 @@ def validate_token(token: str) -> str | None:
             # serving arbitrary bytes.
             raw = resp.read(64_000)
             if len(raw) >= 64_000:
-                return None
-            data = json.loads(raw)
-            return data.get("name") or data.get("fullname")
-    except (urllib.error.URLError, json.JSONDecodeError, TimeoutError, OSError):
-        return None
+                return TokenValidation(None, "parse")
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                return TokenValidation(None, "parse")
+            name = data.get("name") or data.get("fullname")
+            if name:
+                return TokenValidation(name, None)
+            return TokenValidation(None, "parse")
+    except urllib.error.HTTPError as e:
+        # HTTPError is a subclass of URLError — must match first so the
+        # status code is available. 401 means HF saw the token and
+        # rejected it; everything else (403/404/5xx) is HF being weird
+        # or down — not actionable on the user's token side.
+        if e.code == 401:
+            return TokenValidation(None, "auth")
+        return TokenValidation(None, "network")
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return TokenValidation(None, "network")
 
 
 # ── internal helpers ────────────────────────────────────────────────────
