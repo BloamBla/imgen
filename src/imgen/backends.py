@@ -25,6 +25,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from ._schema import validate_against_schema
+
 __all__ = [
     "BACKENDS",
     "BUILTIN_BACKENDS",
@@ -281,20 +283,14 @@ def validate_user_backend_schema(data: dict, source: Path) -> Backend:
         )
 
     # Validate every known top-level field (required + optional).
-    validated: dict[str, Any] = {}
-    for key, value in data.items():
-        if key == "secret":
-            # Handled separately below.
-            continue
-        if key not in _USER_BACKEND_SCHEMA:
-            warn(f"{source}: unknown field '{key}' — ignored")
-            continue
-        expected_desc, predicate = _USER_BACKEND_SCHEMA[key]
-        if not predicate(value):
-            raise UserBackendError(
-                f"{source}: {key}: expected {expected_desc}, got {value!r}"
-            )
-        validated[key] = value
+    # The "secret" table is in skip_keys because it gets its own
+    # nested validation pass below — without the skip, the top-level
+    # loop would emit a spurious "unknown field 'secret' — ignored"
+    # warn before the [secret] handler ever runs.
+    validated = validate_against_schema(
+        data, _USER_BACKEND_SCHEMA, UserBackendError,
+        source=str(source), skip_keys={"secret"},
+    )
 
     # Extra binary-content checks beyond the schema predicate.
     _validate_binary_field(validated["binary"], source)
@@ -313,16 +309,13 @@ def validate_user_backend_schema(data: dict, source: Path) -> Backend:
             raise UserBackendError(
                 f"{source}: [secret] table requires env_var = \"...\""
             )
-        for skey, svalue in secret_data.items():
-            if skey not in _SECRET_SCHEMA:
-                warn(f"{source}: [secret] unknown field '{skey}' — ignored")
-                continue
-            expected_desc, predicate = _SECRET_SCHEMA[skey]
-            if not predicate(svalue):
-                raise UserBackendError(
-                    f"{source}: secret.{skey}: expected {expected_desc}, "
-                    f"got {svalue!r}"
-                )
+        # Same (desc, predicate) loop pattern as the top-level pass —
+        # field_prefix="secret." gets error messages like
+        # ``"path: secret.required: expected bool, got 'yes'"``.
+        validate_against_schema(
+            secret_data, _SECRET_SCHEMA, UserBackendError,
+            source=str(source), field_prefix="secret.",
+        )
         secret_env_var = secret_data["env_var"]
         if secret_env_var in _DANGEROUS_ENV_VARS:
             raise UserBackendError(

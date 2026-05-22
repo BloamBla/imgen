@@ -24,6 +24,7 @@ import tomllib
 from pathlib import Path
 from typing import Any, Callable
 
+from ._schema import validate_against_schema
 from .backends import BACKENDS
 from .colors import warn
 from .styles import list_styles
@@ -157,20 +158,15 @@ def validate_section(
 
     Raises ConfigError on a known key with a bad value — caller decides
     whether to die() or fall back to module DEFAULTS.
+
+    Thin wrapper around the shared :func:`_schema.validate_against_schema`
+    helper (architect IMP-2 from v0.4 review unified the three inline
+    copies into one). Source label is ``"[section_name]"`` to keep the
+    historical config.toml error prefix shape.
     """
-    validated: dict[str, Any] = {}
-    for key, value in raw.items():
-        if key not in schema:
-            warn(f"[{section_name}] unknown key '{key}' in config.toml — ignored")
-            continue
-        expected_desc, predicate = schema[key]
-        if not predicate(value):
-            raise ConfigError(
-                f"[{section_name}] {key}: expected {expected_desc}, "
-                f"got {value!r} ({type(value).__name__})"
-            )
-        validated[key] = value
-    return validated
+    return validate_against_schema(
+        raw, schema, ConfigError, source=f"[{section_name}]",
+    )
 
 
 def load_validated_config(path: Path) -> dict[str, dict[str, Any]]:

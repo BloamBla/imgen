@@ -20,6 +20,8 @@ import tomllib
 from pathlib import Path
 from typing import Any, Callable
 
+from ._schema import validate_against_schema
+
 # Forward-declared so loader can warn without a circular import on .colors.
 # Resolved below the BUILTIN_STYLES dict.
 
@@ -278,18 +280,9 @@ def load_user_style_file(path: Path) -> dict[str, Any]:
     except (OSError, tomllib.TOMLDecodeError) as e:
         raise UserStyleError(f"{path}: {e}") from e
 
-    validated: dict[str, Any] = {}
-    for key, value in raw.items():
-        if key not in _USER_STYLE_SCHEMA:
-            warn(f"{path}: unknown field '{key}' — ignored")
-            continue
-        expected_desc, predicate = _USER_STYLE_SCHEMA[key]
-        if not predicate(value):
-            raise UserStyleError(
-                f"{path}: {key}: expected {expected_desc}, got {value!r}"
-            )
-        validated[key] = value
-    return validated
+    return validate_against_schema(
+        raw, _USER_STYLE_SCHEMA, UserStyleError, source=str(path),
+    )
 
 
 def _is_safe_stem(stem: str) -> bool:
