@@ -171,6 +171,130 @@ def _resolve_output_layout(
     return None, run_dir
 
 
+def _run_one_iteration(
+    *,
+    it: Iteration,
+    idx: int,
+    total: int,
+    multi: bool,
+    backend: str,
+    seed: int,
+    width: int,
+    height: int,
+    input_path: Path,
+    effective_custom_prompt: str | None,
+    args,
+    batch_id: str | None,
+    env: dict[str, str],
+    log_path: Path | None,
+    succeeded: list[tuple[str, Path, int]],
+    failed: list[tuple[str, int, Path]],
+) -> bool:
+    """Execute one mflux iteration end-to-end.
+
+    Steps: print banner → write log start-marker → run subprocess →
+    update history → write log end-marker → append to succeeded or
+    failed. Mutates the two lists (caller owns the storage; the helper
+    is the producer of entries).
+
+    Returns ``True`` to keep the batch loop going, ``False`` if the user
+    pressed Ctrl-C (caller should early-exit with 130). The KeyboardInterrupt
+    handler writes a `cancelled` history entry and the matching log
+    marker before returning so a re-run via `imgen history --replay`
+    can pick up where the interrupted batch left off.
+    """
+    style_name = it.style_name
+    output_path = it.output_path
+    cmd = it.cmd
+
+    if multi:
+        step(f"Generating [{idx}/{total}] {style_name} → {output_path.name}")
+    else:
+        step(f"Generating {style_name} → {output_path.name}")
+    print(f"   {C.DIM}backend: {backend} q{it.final_quantize}  "
+          f"steps: {it.final_steps}  guidance: {it.final_guidance}  "
+          f"strength: {it.final_strength}  seed: {seed}{C.END}")
+    print(f"   {C.DIM}size: {width}x{height}  "
+          f"input: {input_path.name} → output: {output_path}{C.END}")
+    print()
+
+    started = datetime.datetime.now()
+    history_entry: dict = {
+        "ts": started.isoformat(timespec="seconds"),
+        "input": str(input_path),
+        "output": str(output_path),
+        # `style` stored as the per-iteration style name when there's
+        # no custom prompt — replay uses it to reload the same preset.
+        "style": style_name if not effective_custom_prompt else None,
+        "custom_prompt": effective_custom_prompt,
+        "scope": args.scope,
+        "preview": args.preview,
+        "prompt": it.prompt,
+        "negative": it.negative,
+        "seed": seed,
+        "steps": it.final_steps,
+        "guidance": it.final_guidance,
+        "strength": it.final_strength,
+        "backend": backend,
+        "quantize": it.final_quantize,
+        "width": width,
+        "height": height,
+        # v0.2.3: ties multi-style entries together. Null for single-
+        # style invocations (preserves v0.2.x shape).
+        "batch_id": batch_id,
+        "batch_index": f"{idx}/{total}" if multi else None,
+    }
+
+    if log_path is not None:
+        marker = (f"\n=== [{idx}/{total}] {style_name} → "
+                  f"{started.isoformat(timespec='seconds')} ===\n")
+        with open_log_file_append(log_path) as f:
+            f.write(marker.encode())
+
+    try:
+        returncode = run_with_stderr_redaction(cmd, env=env, log_path=log_path)
+    except KeyboardInterrupt:
+        warn("Cancelled by user")
+        cancel_duration = int(
+            (datetime.datetime.now() - started).total_seconds())
+        history_entry["status"] = "cancelled"
+        history_entry["duration_sec"] = cancel_duration
+        append_history(history_entry)
+        if log_path is not None:
+            marker = (f"\n=== [{idx}/{total}] {style_name} → "
+                      f"CANCELLED in {cancel_duration}s ===\n")
+            with open_log_file_append(log_path) as f:
+                f.write(marker.encode())
+        return False
+
+    duration = int((datetime.datetime.now() - started).total_seconds())
+    history_entry["duration_sec"] = duration
+    history_entry["status"] = "success" if returncode == 0 else "failed"
+    append_history(history_entry)
+
+    if log_path is not None:
+        status = ("ok" if returncode == 0
+                  else f"FAILED exit={returncode}")
+        marker = (f"\n=== [{idx}/{total}] {style_name} → {status} "
+                  f"in {duration}s ===\n")
+        with open_log_file_append(log_path) as f:
+            f.write(marker.encode())
+
+    if returncode != 0:
+        err(f"mflux exited with code {returncode} after {duration}s "
+            f"— {style_name}")
+        failed.append((style_name, returncode, output_path))
+        # Continue with next style — don't waste already-done work.
+        print()
+        return True
+
+    succeeded.append((style_name, output_path, duration))
+    print()
+    ok(f"Done in {duration // 60}m {duration % 60}s — {output_path}")
+    print()
+    return True
+
+
 def _open_results(
     succeeded: list[tuple[str, Path, int]],
     run_dir: Path | None,
@@ -683,94 +807,26 @@ def cmd_generate(args) -> int:
     total = len(iterations)
 
     for idx, it in enumerate(iterations, start=1):
-        style_name = it.style_name
-        output_path = it.output_path
-        cmd = it.cmd
-
-        if multi:
-            step(f"Generating [{idx}/{total}] {style_name} → {output_path.name}")
-        else:
-            step(f"Generating {style_name} → {output_path.name}")
-        print(f"   {C.DIM}backend: {backend} q{it.final_quantize}  "
-              f"steps: {it.final_steps}  guidance: {it.final_guidance}  "
-              f"strength: {it.final_strength}  seed: {seed}{C.END}")
-        print(f"   {C.DIM}size: {width}x{height}  "
-              f"input: {input_path.name} → output: {output_path}{C.END}")
-        print()
-
-        started = datetime.datetime.now()
-        history_entry: dict = {
-            "ts": started.isoformat(timespec="seconds"),
-            "input": str(input_path),
-            "output": str(output_path),
-            # `style` stored as the per-iteration style name when there's
-            # no custom prompt — replay uses it to reload the same preset.
-            "style": style_name if not effective_custom_prompt else None,
-            "custom_prompt": effective_custom_prompt,
-            "scope": args.scope,
-            "preview": args.preview,
-            "prompt": it.prompt,
-            "negative": it.negative,
-            "seed": seed,
-            "steps": it.final_steps,
-            "guidance": it.final_guidance,
-            "strength": it.final_strength,
-            "backend": backend,
-            "quantize": it.final_quantize,
-            "width": width,
-            "height": height,
-            # NEW v0.2.3: ties multi-style entries together. Null for
-            # single-style invocations (preserves v0.2.x shape).
-            "batch_id": batch_id,
-            "batch_index": f"{idx}/{total}" if multi else None,
-        }
-
-        if log_path is not None:
-            marker = (f"\n=== [{idx}/{total}] {style_name} → "
-                      f"{started.isoformat(timespec='seconds')} ===\n")
-            with open_log_file_append(log_path) as f:
-                f.write(marker.encode())
-        try:
-            returncode = run_with_stderr_redaction(cmd, env=env, log_path=log_path)
-        except KeyboardInterrupt:
-            warn("Cancelled by user")
-            cancel_duration = int(
-                (datetime.datetime.now() - started).total_seconds())
-            history_entry["status"] = "cancelled"
-            history_entry["duration_sec"] = cancel_duration
-            append_history(history_entry)
-            if log_path is not None:
-                marker = (f"\n=== [{idx}/{total}] {style_name} → "
-                          f"CANCELLED in {cancel_duration}s ===\n")
-                with open_log_file_append(log_path) as f:
-                    f.write(marker.encode())
+        cont = _run_one_iteration(
+            it=it,
+            idx=idx,
+            total=total,
+            multi=multi,
+            backend=backend,
+            seed=seed,
+            width=width,
+            height=height,
+            input_path=input_path,
+            effective_custom_prompt=effective_custom_prompt,
+            args=args,
+            batch_id=batch_id,
+            env=env,
+            log_path=log_path,
+            succeeded=succeeded,
+            failed=failed,
+        )
+        if not cont:
             return 130
-
-        duration = int((datetime.datetime.now() - started).total_seconds())
-        history_entry["duration_sec"] = duration
-        history_entry["status"] = "success" if returncode == 0 else "failed"
-        append_history(history_entry)
-
-        if log_path is not None:
-            status = ("ok" if returncode == 0
-                      else f"FAILED exit={returncode}")
-            marker = (f"\n=== [{idx}/{total}] {style_name} → {status} "
-                      f"in {duration}s ===\n")
-            with open_log_file_append(log_path) as f:
-                f.write(marker.encode())
-
-        if returncode != 0:
-            err(f"mflux exited with code {returncode} after {duration}s "
-                f"— {style_name}")
-            failed.append((style_name, returncode, output_path))
-            # Continue with next style — don't waste already-done work.
-            print()
-            continue
-
-        succeeded.append((style_name, output_path, duration))
-        print()
-        ok(f"Done in {duration // 60}m {duration % 60}s — {output_path}")
-        print()
 
     # 16) Open in Preview (single-style) or Finder (multi-style); silent
     # no-op on --no-open or when `open` is missing.

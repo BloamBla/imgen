@@ -30,6 +30,7 @@ from imgen.commands.generate import (
     _print_batch_summary,
     _resolve_output_layout,
     _resolve_styles_list,
+    _run_one_iteration,
     _validate_input_path,
 )
 from imgen.runs import Iteration
@@ -1302,3 +1303,293 @@ def test_open_results_swallows_filenotfound(monkeypatch, tmp_path):
         multi=False,
         no_open=False,
     )
+
+
+# ── _run_one_iteration ──────────────────────────────────────────────────
+
+
+def _full_iter(tmp_path, style="anime") -> Iteration:
+    """Iteration with real-ish values for tests against the run loop."""
+    return Iteration(
+        style_name=style,
+        prompt="prompt text",
+        negative="",
+        final_steps=14,
+        final_quantize=8,
+        final_guidance=2.5,
+        final_strength=0.6,
+        output_path=tmp_path / f"out-{style}.png",
+        cmd=["/fake/mflux", "--prompt", "x"],
+    )
+
+
+def _full_args(**overrides) -> SimpleNamespace:
+    defaults = dict(scope=None, preview=False)
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+@pytest.fixture
+def stub_mflux(monkeypatch):
+    """Replace run_with_stderr_redaction with a controllable stub.
+
+    Default returns 0 (success); tests override `state["returncode"]`
+    or `state["raise"]` to drive failure / cancel scenarios."""
+    state: dict = {"returncode": 0, "raise": None, "calls": []}
+
+    def fake_run(cmd, env, log_path=None):
+        state["calls"].append({"cmd": cmd, "env": env, "log_path": log_path})
+        if state["raise"] is not None:
+            raise state["raise"]
+        return state["returncode"]
+
+    monkeypatch.setattr(
+        "imgen.commands.generate.run_with_stderr_redaction", fake_run
+    )
+    return state
+
+
+def _run(*, it=None, tmp_path, succeeded, failed, log_path=None, **kwargs):
+    """Wrapper threading sensible defaults for the verbose 16-arg call.
+
+    Lets each test override only what it cares about (returncode,
+    log_path, scope, etc.) without rebuilding the whole context."""
+    if it is None:
+        it = _full_iter(tmp_path)
+    defaults = dict(
+        it=it,
+        idx=1,
+        total=1,
+        multi=False,
+        backend="flux",
+        seed=42,
+        width=1024,
+        height=1024,
+        input_path=tmp_path / "in.jpg",
+        effective_custom_prompt=None,
+        args=_full_args(),
+        batch_id=None,
+        env={"PATH": "/usr/bin"},
+        log_path=log_path,
+        succeeded=succeeded,
+        failed=failed,
+    )
+    defaults.update(kwargs)
+    return _run_one_iteration(**defaults)
+
+
+def test_run_one_iteration_success_appends_to_succeeded(
+    tmp_state_dir, tmp_path, stub_mflux
+):
+    succeeded: list = []
+    failed: list = []
+
+    cont = _run(
+        tmp_path=tmp_path, succeeded=succeeded, failed=failed
+    )
+
+    assert cont is True, "successful iteration must return True (continue)"
+    assert len(succeeded) == 1
+    assert len(failed) == 0
+    style_name, output_path, duration = succeeded[0]
+    assert style_name == "anime"
+    assert output_path == tmp_path / "out-anime.png"
+    assert isinstance(duration, int) and duration >= 0
+
+
+def test_run_one_iteration_failure_appends_to_failed(
+    tmp_state_dir, tmp_path, stub_mflux, capsys
+):
+    """Non-zero returncode → recorded in failed, batch continues (True)."""
+    stub_mflux["returncode"] = 7
+    succeeded: list = []
+    failed: list = []
+
+    cont = _run(
+        tmp_path=tmp_path, succeeded=succeeded, failed=failed
+    )
+
+    assert cont is True, "failed iteration still returns True (multi continues)"
+    assert succeeded == []
+    assert len(failed) == 1
+    name, rc, path = failed[0]
+    assert name == "anime"
+    assert rc == 7
+    assert path == tmp_path / "out-anime.png"
+
+
+def test_run_one_iteration_keyboard_interrupt_returns_false(
+    tmp_state_dir, tmp_path, stub_mflux, capsys
+):
+    """Ctrl-C mid-mflux → helper catches KeyboardInterrupt, writes a
+    cancel history entry, returns False so cmd_generate early-exits 130."""
+    stub_mflux["raise"] = KeyboardInterrupt()
+    succeeded: list = []
+    failed: list = []
+
+    cont = _run(
+        tmp_path=tmp_path, succeeded=succeeded, failed=failed
+    )
+
+    assert cont is False
+    # Neither list mutated — we exit immediately, not "failed".
+    assert succeeded == []
+    assert failed == []
+
+
+def test_run_one_iteration_writes_history_on_success(
+    tmp_state_dir, tmp_path, stub_mflux
+):
+    """append_history fires regardless of outcome — replay needs the
+    record to exist so a re-run can pick up the same params."""
+    from imgen.history import load_history
+
+    _run(
+        tmp_path=tmp_path, succeeded=[], failed=[],
+    )
+
+    entries = load_history()
+    assert len(entries) == 1
+    e = entries[0]
+    assert e["status"] == "success"
+    assert e["style"] == "anime"
+    assert e["backend"] == "flux"
+    assert e["seed"] == 42
+
+
+def test_run_one_iteration_writes_history_on_failure(
+    tmp_state_dir, tmp_path, stub_mflux
+):
+    stub_mflux["returncode"] = 1
+    from imgen.history import load_history
+
+    _run(
+        tmp_path=tmp_path, succeeded=[], failed=[],
+    )
+
+    entries = load_history()
+    assert entries[0]["status"] == "failed"
+
+
+def test_run_one_iteration_writes_history_on_cancel(
+    tmp_state_dir, tmp_path, stub_mflux
+):
+    stub_mflux["raise"] = KeyboardInterrupt()
+    from imgen.history import load_history
+
+    _run(
+        tmp_path=tmp_path, succeeded=[], failed=[],
+    )
+
+    entries = load_history()
+    assert len(entries) == 1
+    assert entries[0]["status"] == "cancelled"
+
+
+def test_run_one_iteration_history_style_null_when_custom_prompt(
+    tmp_state_dir, tmp_path, stub_mflux
+):
+    """Custom prompt means replay can't reconstruct from preset — the
+    `style` field is None in that case so replay falls back to the
+    stored prompt directly."""
+    from imgen.history import load_history
+
+    _run(
+        tmp_path=tmp_path, succeeded=[], failed=[],
+        effective_custom_prompt="my custom",
+    )
+
+    e = load_history()[0]
+    assert e["style"] is None
+    assert e["custom_prompt"] == "my custom"
+
+
+def test_run_one_iteration_history_batch_fields(
+    tmp_state_dir, tmp_path, stub_mflux
+):
+    """Multi-style runs stamp batch_id + batch_index per entry; single-
+    style keeps them None (preserves v0.2.x shape)."""
+    from imgen.history import load_history
+
+    _run(
+        tmp_path=tmp_path, succeeded=[], failed=[],
+        multi=True, idx=2, total=3, batch_id="abc123def456",
+    )
+
+    e = load_history()[0]
+    assert e["batch_id"] == "abc123def456"
+    assert e["batch_index"] == "2/3"
+
+
+def test_run_one_iteration_history_batch_fields_null_when_single(
+    tmp_state_dir, tmp_path, stub_mflux
+):
+    from imgen.history import load_history
+
+    _run(
+        tmp_path=tmp_path, succeeded=[], failed=[],
+        multi=False, batch_id=None,
+    )
+
+    e = load_history()[0]
+    assert e["batch_id"] is None
+    assert e["batch_index"] is None
+
+
+def test_run_one_iteration_log_markers_written_when_path_given(
+    tmp_state_dir, tmp_path, stub_mflux
+):
+    """log_path set → start + end markers appended."""
+    log = tmp_path / "batch.log"
+
+    _run(
+        tmp_path=tmp_path, succeeded=[], failed=[],
+        log_path=log, multi=True, idx=1, total=2,
+    )
+
+    assert log.exists()
+    content = log.read_bytes().decode()
+    assert "[1/2] anime" in content
+    assert "ok" in content
+
+
+def test_run_one_iteration_log_markers_record_cancel(
+    tmp_state_dir, tmp_path, stub_mflux
+):
+    stub_mflux["raise"] = KeyboardInterrupt()
+    log = tmp_path / "batch.log"
+
+    _run(
+        tmp_path=tmp_path, succeeded=[], failed=[],
+        log_path=log, multi=True, idx=1, total=2,
+    )
+
+    content = log.read_bytes().decode()
+    assert "CANCELLED" in content
+
+
+def test_run_one_iteration_log_skipped_when_path_none(
+    tmp_state_dir, tmp_path, stub_mflux
+):
+    """log_path=None (single-style) → no file written."""
+    _run(
+        tmp_path=tmp_path, succeeded=[], failed=[],
+        log_path=None,
+    )
+
+    # No log file because we didn't pass one.
+    assert not any(tmp_path.glob("*.log"))
+
+
+def test_run_one_iteration_passes_env_to_subprocess(
+    tmp_state_dir, tmp_path, stub_mflux
+):
+    """The minimal env built by cmd_generate must reach mflux verbatim
+    — token + COLUMNS/LINES are critical."""
+    custom_env = {"PATH": "/usr/bin", "HF_TOKEN": "hf_xxx", "COLUMNS": "120"}
+
+    _run(
+        tmp_path=tmp_path, succeeded=[], failed=[], env=custom_env,
+    )
+
+    assert stub_mflux["calls"][0]["env"] == custom_env
