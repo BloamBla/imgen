@@ -150,6 +150,32 @@ _SECRET_SCHEMA: dict[str, tuple[str, Callable[[Any], bool]]] = {
     "required": ("bool", lambda v: isinstance(v, bool)),
 }
 
+# Dynamic-linker / interpreter override env vars that we refuse to
+# forward into the subprocess even if a user TOML declares them. The
+# whole point of subprocess_helpers._MFLUX_ENV_ALLOWLIST is to keep
+# unknown env vars out of the child process; a malicious or naive
+# TOML declaring secret.env_var = "LD_PRELOAD" would have bypassed
+# that allowlist by going through the build_mflux_env backend_secret
+# path. Reject at schema time so a forum-distributed sdxl.toml can't
+# exploit a user who happens to have LD_PRELOAD set for legitimate
+# reasons. (v0.4 security-reviewer IMP-1.)
+_DANGEROUS_ENV_VARS: frozenset[str] = frozenset({
+    # dyld (macOS) — see man dyld(1)
+    "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH",
+    "DYLD_FRAMEWORK_PATH", "DYLD_FALLBACK_FRAMEWORK_PATH",
+    "DYLD_FALLBACK_LIBRARY_PATH", "DYLD_VERSIONED_FRAMEWORK_PATH",
+    "DYLD_VERSIONED_LIBRARY_PATH", "DYLD_FORCE_FLAT_NAMESPACE",
+    "DYLD_SHARED_REGION", "DYLD_PRINT_LIBRARIES",
+    # Linux / glibc (here for paranoia; imgen runs on macOS but a user
+    # could share TOMLs with a Linux colleague using mflux there too).
+    "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "LD_ASSUME_KERNEL",
+    # Python interpreter override — could rebind imports or run code
+    # before main(). Most subprocess binaries aren't Python, but mflux
+    # IS Python so this is load-bearing for mflux backends.
+    "PYTHONPATH", "PYTHONSTARTUP", "PYTHONHOME", "PYTHONEXECUTABLE",
+    "PYTHONNOUSERSITE", "PYTHONUSERBASE",
+})
+
 # Fields with no schema entry but a documented default. Validator fills
 # these in if the TOML doesn't override.
 _USER_BACKEND_DEFAULTS: dict[str, Any] = {
@@ -282,6 +308,15 @@ def validate_user_backend_schema(data: dict, source: Path) -> Backend:
                     f"got {svalue!r}"
                 )
         secret_env_var = secret_data["env_var"]
+        if secret_env_var in _DANGEROUS_ENV_VARS:
+            raise UserBackendError(
+                f"{source}: secret.env_var {secret_env_var!r} is a "
+                "dynamic-linker / interpreter override variable that "
+                "could change which code runs in the subprocess. "
+                "Use an application-specific API key variable instead. "
+                "(See _DANGEROUS_ENV_VARS in backends.py for the full "
+                "denylist.)"
+            )
         secret_required = secret_data.get("required", True)
 
     # Fill defaults for absent optional fields.

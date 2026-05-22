@@ -253,6 +253,51 @@ def test_validator_rejects_non_bool_required():
         validate_user_backend_schema(data, Path("test.toml"))
 
 
+# ── Denylist for dynamic-linker / interpreter override env vars ─────────
+
+
+@pytest.mark.parametrize("dangerous", [
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_LIBRARY_PATH",
+    "DYLD_FRAMEWORK_PATH",
+    "DYLD_FORCE_FLAT_NAMESPACE",
+    "PYTHONPATH",
+    "PYTHONSTARTUP",
+    "PYTHONHOME",
+])
+def test_validator_rejects_dangerous_env_var_names(dangerous):
+    """v0.4 security-reviewer IMP-1: a forum-distributed sdxl.toml
+    declaring secret.env_var = "LD_PRELOAD" used to be accepted by
+    the schema (matches the POSIX-name regex) and would forward
+    whatever LD_PRELOAD the user has set in their shell into the
+    subprocess env — bypassing the _MFLUX_ENV_ALLOWLIST. Reject at
+    schema time so the exploit shape is closed regardless of
+    whether the user's shell has the variable set."""
+    data = {
+        "binary": "x", "image_flag": "--image-path",
+        "secret": {"env_var": dangerous},
+    }
+    with pytest.raises(UserBackendError, match="dynamic-linker"):
+        validate_user_backend_schema(data, Path("test.toml"))
+
+
+def test_validator_accepts_normal_api_key_env_var_names():
+    """Sanity: the denylist doesn't over-match. Common API-key env
+    var shapes still validate cleanly."""
+    for env_var in [
+        "REPLICATE_API_TOKEN", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+        "HF_TOKEN", "MY_CUSTOM_KEY", "BACKEND_SECRET_2",
+    ]:
+        data = {
+            "binary": "x", "image_flag": "--image-path",
+            "secret": {"env_var": env_var},
+        }
+        be = validate_user_backend_schema(data, Path("test.toml"))
+        assert be.secret_env_var == env_var
+
+
 def test_validator_warns_on_unknown_secret_field(capsys):
     data = {
         "binary": "x", "image_flag": "--image-path",
