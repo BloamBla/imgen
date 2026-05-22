@@ -15,6 +15,7 @@ from imgen.images import (
     RESOLUTIONS,
     SCOPE_PERSON_SUFFIX,
     SCOPE_SCENE_REPLACEMENTS,
+    SCOPE_SCENE_SUFFIX,
     apply_scope,
 )
 
@@ -87,6 +88,73 @@ def test_apply_scope_scene_replacement_count_matches_table():
     for old, new in SCOPE_SCENE_REPLACEMENTS:
         assert isinstance(old, str) and isinstance(new, str)
         assert old != new
+
+
+# ── scene fallback (v0.3.3 — hybrid apply_scope) ──────────────────────
+
+
+def test_apply_scope_scene_appends_suffix_when_no_trigger_matches():
+    """User-supplied styles in ~/.imgen/styles.d/ won't follow the
+    v0.1.x built-in wording convention ("this person" / "keep face
+    identity" / etc.). v0.3.2 made scope=scene the default, which made
+    silent no-ops on those prompts a real bug — user asks for scene
+    framing, gets a person-focused prompt unchanged. v0.3.3 fix: when
+    no SCOPE_SCENE_REPLACEMENTS trigger matched, append
+    SCOPE_SCENE_SUFFIX as a fallback directive."""
+    base = "Render the subject as a watercolor painting"
+    result = apply_scope(base, "scene")
+    assert result == base + SCOPE_SCENE_SUFFIX
+
+
+def test_apply_scope_scene_does_not_double_apply_suffix_when_triggers_present():
+    """Built-in presets (which trigger the substring rewrites) must
+    NOT also get the fallback suffix appended — that would be a
+    redundant scene-directive on top of the already-rewritten wording."""
+    base = "Transform this person, keep face identity, keep pose"
+    result = apply_scope(base, "scene")
+    # Triggers rewrote in-place; no trailing suffix.
+    assert not result.endswith(SCOPE_SCENE_SUFFIX)
+    # And the rewrites still fired (sanity).
+    assert "this entire scene" in result
+    assert "keep all subjects recognizable" in result
+
+
+def test_apply_scope_scene_fallback_on_empty_prompt():
+    """Edge case: empty prompt has no triggers → fallback appends.
+    Defensive — shouldn't happen in practice (resolve_prompt rejects
+    empty), but apply_scope itself stays defined."""
+    assert apply_scope("", "scene") == SCOPE_SCENE_SUFFIX
+
+
+def test_apply_scope_scene_partial_trigger_match_no_fallback():
+    """If even ONE trigger fires, the fallback does NOT — the targeted
+    rewrite is sufficient. Lock the boundary against double-treatment."""
+    # Prompt has only one of the five triggers ("this person") — others
+    # absent. The single rewrite fires; no suffix gets appended.
+    base = "Transform this person into watercolor"
+    result = apply_scope(base, "scene")
+    assert "this entire scene" in result
+    assert not result.endswith(SCOPE_SCENE_SUFFIX)
+
+
+def test_apply_scope_scene_suffix_constant_shape():
+    """SCOPE_SCENE_SUFFIX must lead with a comma (so it grafts onto an
+    existing prompt cleanly) and be non-trivial."""
+    assert SCOPE_SCENE_SUFFIX.startswith(",")
+    assert "scene" in SCOPE_SCENE_SUFFIX.lower()
+    # Symmetric in shape with SCOPE_PERSON_SUFFIX — both lead with
+    # ", " for clean concatenation.
+    assert SCOPE_PERSON_SUFFIX.startswith(",")
+
+
+def test_apply_scope_person_unaffected_by_scene_changes():
+    """Hybrid scene logic must not touch the person path — it stays a
+    pure suffix append."""
+    base = "Render the subject as watercolor"  # no triggers
+    result = apply_scope(base, "person")
+    assert result == base + SCOPE_PERSON_SUFFIX
+    # And no scene-suffix leaked in.
+    assert SCOPE_SCENE_SUFFIX not in result
 
 
 def test_apply_scope_unknown_scope_is_noop():

@@ -637,16 +637,22 @@ def _build(*, fake_styles, tmp_path, **overrides) -> list[Iteration]:
 
 
 def test_build_iterations_single_style_preset_prompt(fake_styles, tmp_path):
-    """No CLI overrides → preset prompt flows through. The fake preset
-    here has no scope-trigger substrings, so ``args.scope="scene"``
-    (the new v0.3.2 default) is a no-op and the prompt is verbatim.
-    Tests for the scope-trigger substitution chain are below."""
+    """Verifies the preset → Iteration plumbing in isolation: prompt
+    content and negative come through unchanged. ``scope=None`` is
+    passed explicitly so the v0.3.2 default ``"scene"`` (which would
+    fall through ``apply_scope``'s hybrid path and append
+    ``SCOPE_SCENE_SUFFIX`` to a trigger-free prompt) doesn't muddy the
+    plumbing assertion. End-to-end scope behaviour is covered by the
+    dedicated scope tests in this file + ``test_images.py``."""
     fake_styles["anime"] = {
         "prompt": "cinematic anime style, dramatic lighting",
         "negative": "bad anatomy",
     }
 
-    its = _build(fake_styles=fake_styles, tmp_path=tmp_path)
+    its = _build(
+        fake_styles=fake_styles, tmp_path=tmp_path,
+        args=_build_args(scope=None),
+    )
 
     assert len(its) == 1
     it = its[0]
@@ -683,6 +689,29 @@ def test_build_iterations_default_scope_scene_rewrites_built_in_style(
     assert "keep all subjects recognizable" in prompt
     assert "keep pose and composition" not in prompt
     assert "keep overall composition" in prompt
+
+
+def test_build_iterations_default_scope_scene_falls_back_for_user_style(
+    fake_styles, tmp_path,
+):
+    """v0.3.3 hybrid apply_scope locked end-to-end: a user-defined
+    preset whose prompt has NONE of the SCOPE_SCENE_REPLACEMENTS
+    trigger substrings gets the SCOPE_SCENE_SUFFIX directive appended
+    instead. Without this, the v0.3.2 ``--scope=scene`` default would
+    silently no-op on every user-defined style in ~/.imgen/styles.d/."""
+    from imgen.images import SCOPE_SCENE_SUFFIX
+
+    # Trigger-free prompt — would silent-no-op pre-v0.3.3.
+    fake_styles["watercolor"] = {
+        "prompt": "Render the subject as a watercolor painting",
+    }
+
+    its = _build(
+        fake_styles=fake_styles, tmp_path=tmp_path,
+        styles_list=["watercolor"],
+    )
+
+    assert its[0].prompt.endswith(SCOPE_SCENE_SUFFIX)
 
 
 def test_build_iterations_scope_none_explicit_keeps_preset_verbatim(
@@ -922,7 +951,11 @@ def test_build_iterations_strength_falls_back_to_defaults(
 # ── build_iterations multi-style + output_path resolution ──────────────
 
 def test_build_iterations_multi_style_one_per_name(fake_styles, tmp_path):
-    """List length matches styles_list len; order preserved."""
+    """List length matches styles_list len; order preserved.
+    ``scope=None`` passed explicitly to keep the assertion on raw
+    preset prompts (v0.3.3's hybrid apply_scope would otherwise append
+    SCOPE_SCENE_SUFFIX to these trigger-free prompts under the default
+    ``scope="scene"``)."""
     fake_styles["anime"] = {"prompt": "a"}
     fake_styles["ghibli"] = {"prompt": "g"}
     fake_styles["pixar"] = {"prompt": "p"}
@@ -931,6 +964,7 @@ def test_build_iterations_multi_style_one_per_name(fake_styles, tmp_path):
         fake_styles=fake_styles,
         tmp_path=tmp_path,
         styles_list=["anime", "ghibli", "pixar"],
+        args=_build_args(scope=None),
     )
 
     assert [it.style_name for it in its] == ["anime", "ghibli", "pixar"]
