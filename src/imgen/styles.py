@@ -181,21 +181,12 @@ BUILTIN_STYLES: dict[str, dict] = {
             "Pixar-style 3D-animated environment with soft volumetric "
             "lighting, painterly textures, and cinematic depth-of-field"
         ),
-        # v0.6: Canopus-Pixar-3D-Flux-LoRA (openrail-m). Trigger
-        # "Pixar 3D" is required for the LoRA's weight delta to fire —
-        # prepend_trigger_words handles that automatically when the
-        # prompt doesn't already contain it. The built-in prompt above
-        # uses "Pixar 3D animated" so the trigger is implicitly there;
-        # the trigger field still set so user --custom-prompt overrides
-        # that drop "Pixar 3D" wording still activate the LoRA.
-        "loras": (
-            LoraRef(
-                ref="prithivMLmods/Canopus-Pixar-3D-Flux-LoRA",
-                weight=0.8,
-                compatible_with=("flux-1",),
-                trigger="Pixar 3D",
-            ),
-        ),
+        # v0.6.0 shipped a Canopus-Pixar-3D-Flux-LoRA built-in mapping;
+        # v0.6.1 reverted it to text-only after A/B revealed the LoRA
+        # is FLUX.1-dev base (filename: Canopus-Pixar-3D-FluxDev-LoRA)
+        # and crashes mflux Kontext at attention shape mismatch — see
+        # [[project-v06x-backlog]] for the lesson. Users can still
+        # attach Kontext-compatible LoRAs ad-hoc via --lora REF.
     },
 
     "anime": {
@@ -223,18 +214,15 @@ BUILTIN_STYLES: dict[str, dict] = {
             "hand-painted anime cel-shaded environment with vibrant "
             "skies, soft cloud shapes, and detailed illustrated scenery"
         ),
-        # v0.6: strangerzonehf/Flux-Animeo-v1-LoRA (Apache-2.0).
-        # Trigger word "Animeo" must appear in the prompt to fire — the
-        # base prompt above doesn't use it, so prepend_trigger_words
-        # inserts it at command-build time.
-        "loras": (
-            LoraRef(
-                ref="strangerzonehf/Flux-Animeo-v1-LoRA",
-                weight=0.8,
-                compatible_with=("flux-1",),
-                trigger="Animeo",
-            ),
-        ),
+        # v0.6.0 shipped a strangerzonehf/Flux-Animeo-v1-LoRA built-in
+        # mapping; v0.6.1 reverted it to text-only after A/B revealed
+        # the LoRA is FLUX.1-dev base and crashes mflux Kontext at
+        # attention shape mismatch (matmul shape (1,4992,16) vs
+        # (64,3072) — Kontext's modified attention layer doesn't fit
+        # the LoRA's rank-16 tensors). All 912 LoRA keys "matched" at
+        # load time, but inference exploded on first denoise step.
+        # See [[project-v06x-backlog]] for the lesson. Users can still
+        # attach a Kontext-compatible anime LoRA ad-hoc via --lora REF.
     },
 
     "simpsons": {

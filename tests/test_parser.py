@@ -301,20 +301,21 @@ def test_list_loras_flag_parsed():
 def test_print_loras_shows_built_in_mappings(tmp_path, capsys):
     """`--list-loras` surfaces every built-in style's LoRA mapping with
     repo ref, weight, trigger word, and cache state. HF cache is
-    pointed at an empty tmp dir so every entry shows 'not downloaded'."""
+    pointed at an empty tmp dir so every entry shows 'not downloaded'.
+
+    v0.6.1: anime + pixar reverted to text-only after the FLUX.1-dev
+    vs Kontext attention shape mismatch was discovered post-ship.
+    Only ghibli still ships a built-in LoRA."""
     from imgen.parser import print_loras
     rc = print_loras(hf_cache=tmp_path)
     out = capsys.readouterr().out
     assert rc == 0
-    # All three built-in LoRA-shipping styles surface their refs.
-    assert "strangerzonehf/Flux-Animeo-v1-LoRA" in out
-    assert "prithivMLmods/Canopus-Pixar-3D-Flux-LoRA" in out
+    # Only ghibli ships a built-in LoRA after v0.6.1 hotfix.
     assert "openfree/flux-chatgpt-ghibli-lora" in out
     # Weight is shown with 2-decimal precision.
     assert "@0.80" in out
-    # Triggers shown for activation discoverability.
-    assert "Animeo" in out
-    assert "Pixar 3D" in out
+    # Trigger shown for activation discoverability.
+    assert "Ghibli style" in out
     assert "Ghibli style" in out
     # flux-1 compat group shown.
     assert "flux-1" in out

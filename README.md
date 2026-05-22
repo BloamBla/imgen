@@ -8,7 +8,7 @@ imgen photo.jpg --style anime
 imgen photo.jpg --style simpsons --preview   # ~3 min fast test
 imgen photo.jpg --custom-prompt "Mona Lisa painting style"
 imgen photo.jpg --style anime --enhance-prompt   # smarter prompts → better results
-imgen photo.jpg --style anime --no-lora          # A/B vs the built-in LoRA (anime/pixar/ghibli ship one)
+imgen photo.jpg --style ghibli --no-lora         # A/B vs the built-in LoRA (only ghibli ships one in v0.6.1)
 imgen batch ~/Desktop/holiday --style anime,ghibli   # every photo in folder × every style
 ```
 
@@ -299,15 +299,15 @@ Smaller models (3B) are faster but produce flatter expansions. Larger (14B) won'
 
 A LoRA is a small weight delta — typically 50-300 MB — trained on top of a base diffusion model to nudge it toward a specific style. Used at generation time, a LoRA *layers* on top of the base model, no full re-training, no need to swap models between styles.
 
-Three built-in styles ship with a curated LoRA:
+One built-in style ships with a curated LoRA:
 
 | Style    | LoRA                                                | Weight | Trigger     |
 |----------|-----------------------------------------------------|--------|-------------|
-| `anime`  | `strangerzonehf/Flux-Animeo-v1-LoRA`                | 0.8    | `Animeo`      |
-| `pixar`  | `prithivMLmods/Canopus-Pixar-3D-Flux-LoRA`          | 0.8    | `Pixar 3D`    |
 | `ghibli` | `openfree/flux-chatgpt-ghibli-lora`                 | 0.8    | `Ghibli style`|
 
-`simpsons`, `vangogh`, and `pencil` stay text-only — either no quality LoRA exists on HuggingFace (Simpsons IP-blocked; vangogh's available impressionism LoRAs didn't beat text-only in side-by-side comparison) or the style is already strong in FLUX's base training (pencil).
+`anime`, `pixar`, `simpsons`, `vangogh`, and `pencil` stay text-only on the default `flux` (Kontext) backend.
+
+**Why so few built-in LoRAs?** Most HuggingFace "Flux LoRA" weights were trained on **FLUX.1-dev** (the base text-to-image model). `imgen`'s default backend is **FLUX.1-Kontext-dev** — a different model in the same family, with a modified attention layer to accept image conditioning. Many FLUX.1-dev LoRAs *load* on Kontext (all tensor keys match) but **crash at the first denoise step** with an attention shape mismatch, because the rank-16 weight deltas don't fit Kontext's attention shape. v0.6.0 originally shipped LoRA mappings for `anime` (Flux-Animeo) and `pixar` (Canopus-Pixar-3D-FluxDev); v0.6.1 reverted both to text-only after they crashed in real runs. `openfree/flux-chatgpt-ghibli-lora` happens to use a rank that maps onto Kontext attention correctly, so it survives. **Per-LoRA Kontext compatibility must be verified by actual inference** — name + key-match are not enough.
 
 `imgen --list-loras` shows the active mapping plus which LoRAs are already cached locally vs. about to download:
 
@@ -404,13 +404,9 @@ In practice all three built-in LoRAs are flux-1 only. Switching `--backend qwen`
 
 **`imgen` ships no LoRA weights of its own.** The built-in style mappings reference HuggingFace repos by id, and `mflux` (via `huggingface_hub`) downloads them on first use into `~/.cache/huggingface/hub/` — the same cache that holds FLUX itself. `imgen clean --all` clears the whole HF cache including LoRAs.
 
-Built-in LoRA picks were filtered to permissive licenses (Apache-2.0, MIT, CC0, openrail-m). Specifically:
+- **`flux-chatgpt-ghibli-lora`** — see the HF repo for the up-to-date license; the underlying FLUX.1-Kontext-dev base is non-commercial (FLUX-NC), so practical commercial use is gated by that anyway.
 
-- **`Flux-Animeo-v1-LoRA`** — Apache-2.0. Free for commercial and personal use.
-- **`Canopus-Pixar-3D-Flux-LoRA`** — CreativeML OpenRAIL-M. Free for personal use; commercial use should review the OpenRAIL-M use-case restrictions (no defamatory content, no targeted harassment, etc.).
-- **`flux-chatgpt-ghibli-lora`** — see the HF repo for the up-to-date license; the underlying FLUX.1-dev base is non-commercial (FLUX-NC), so practical Ghibli commercial use is gated by that anyway.
-
-`--lora` references you supply yourself are entirely your responsibility — `imgen` doesn't check upstream licenses. The same applies to user `styles.d/*.toml` LoRA entries.
+`--lora` references you supply yourself are entirely your responsibility — `imgen` doesn't check upstream licenses, and (as the Kontext-compatibility note above explains) most FLUX-LoRAs on HuggingFace target FLUX.1-dev base and will crash on Kontext. The same applies to user `styles.d/*.toml` LoRA entries.
 
 ## Backends
 
