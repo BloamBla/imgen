@@ -6,7 +6,9 @@ import re
 import shlex
 import shutil
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Mapping
 
 from ..checks import (
     check_disk_gb,
@@ -105,6 +107,76 @@ def check_alias_consistency(
             continue
         status = "match" if aliased_resolved == expected else "mismatch"
         results.append((rc, aliased, status))
+    return results
+
+
+@dataclass(frozen=True, slots=True)
+class BackendHealth:
+    """One backend's binary + secret-env status, for doctor reporting.
+
+    Pure-data result of :func:`check_backend_health`. ``binary_ok`` and
+    ``secret_present`` are the two health gates; ``cmd_doctor`` turns
+    each into an ok/warn line. ``secret_present`` is None when no
+    ``[secret]`` section is declared (don't report on what wasn't
+    asked for).
+    """
+    name: str
+    origin: str               # "built-in" | "custom"
+    binary_path: Path
+    binary_ok: bool           # is_file() at check time
+    secret_env_var: str | None
+    secret_present: bool | None
+    secret_required: bool
+
+
+def check_backend_health(
+    *,
+    venv_bin: Path,
+    env: Mapping[str, str],
+) -> list[BackendHealth]:
+    """Iterate the merged backend registry, classify each entry.
+
+    Pure (no print, no warn) — the doctor printer wraps results into
+    ok/warn lines and bumps the issues counter. Extracted from inline
+    cmd_doctor v0.4 code per architect IMP-5 from the v0.4 review:
+    same shape as ``check_alias_consistency`` (v0.3.6), restores
+    symmetry between the two diagnostic surfaces and makes the
+    "binary not found" / "required env var missing" paths
+    independently testable.
+
+    Args:
+        venv_bin: where bare-name binaries are resolved (production
+                  passes :data:`paths.VENV_BIN`; tests pass a tmp dir).
+        env:      env mapping checked for declared secret vars
+                  (production passes ``os.environ``; tests pass a
+                  dict).
+
+    Returns one :class:`BackendHealth` per merged backend, in
+    ``list_backends()`` order (sorted by name).
+    """
+    results: list[BackendHealth] = []
+    for name in list_backends():
+        be = get_backend(name)
+        origin = "built-in" if name in BUILTIN_BACKENDS else "custom"
+        if be.binary.startswith("/"):
+            binary_path = Path(be.binary)
+        else:
+            binary_path = venv_bin / be.binary
+        binary_ok = binary_path.is_file()
+
+        secret_present: bool | None = None
+        if be.secret_env_var is not None:
+            secret_present = bool(env.get(be.secret_env_var))
+
+        results.append(BackendHealth(
+            name=name,
+            origin=origin,
+            binary_path=binary_path,
+            binary_ok=binary_ok,
+            secret_env_var=be.secret_env_var,
+            secret_present=secret_present,
+            secret_required=be.secret_required,
+        ))
     return results
 
 
@@ -325,51 +397,39 @@ def cmd_doctor(_args) -> int:
     # Backends (built-in + user TOMLs from ~/.imgen/backends.d/)
     # v0.4 — surfaces binary-on-disk + secret-env-var status per
     # backend so the user knows up-front whether `imgen --backend X`
-    # will actually launch. Mirrors the existing per-backend RAM
-    # forecast section earlier, but one rung lower (file resolution +
-    # env, not memory).
+    # will actually launch. Pure check_backend_health() returns the
+    # classification; this loop turns it into UI. Mirrors the v0.3.6
+    # alias-consistency check shape.
     print()
     info("Backends")
-    for name in list_backends():
-        be = get_backend(name)
-        origin = "built-in" if name in BUILTIN_BACKENDS else "custom"
-        # Binary resolution — branch on shape matches the actual
-        # resolution in cmd_helpers.load_backend_and_token. Absolute
-        # paths used as-is, bare names live in VENV_BIN (mflux
-        # convention).
-        if be.binary.startswith("/"):
-            binary_path = Path(be.binary)
-        else:
-            binary_path = VENV_BIN / be.binary
+    for health in check_backend_health(venv_bin=VENV_BIN, env=os.environ):
         # !r-format the path so any C0/DEL/C1 bytes that snuck past
         # the validator (or that ride along on a path the validator
         # never saw, e.g. via a symlinked target name) render as
         # \x1b literals instead of escaping into the terminal.
-        # Mirrors the alias-section defence above. (v0.4 security-
-        # reviewer IMP-2.)
-        binary_safe = repr(str(binary_path))
-        # is_file() rather than exists() — a directory wouldn't be
-        # executable anyway. (v0.4 python-reviewer IMP-1.)
-        if binary_path.is_file():
-            ok(f"{name} ({origin}): {binary_safe}")
+        # (v0.4 security-reviewer IMP-2.)
+        binary_safe = repr(str(health.binary_path))
+        if health.binary_ok:
+            ok(f"{health.name} ({health.origin}): {binary_safe}")
         else:
-            warn(f"{name} ({origin}): binary not found (or not a regular "
-                 f"file) at {binary_safe}"
-                 + ("" if origin == "built-in" else " — fix backends.d "
-                    "TOML or install the binary"))
+            warn(f"{health.name} ({health.origin}): binary not found "
+                 f"(or not a regular file) at {binary_safe}"
+                 + ("" if health.origin == "built-in" else " — fix "
+                    "backends.d TOML or install the binary"))
             issues += 1
         # Secret env var status (only declared on custom backends).
-        if be.secret_env_var is not None:
-            value = os.environ.get(be.secret_env_var)
-            if value:
-                ok(f"   secret ${be.secret_env_var} set")
-            elif be.secret_required:
-                warn(f"   secret ${be.secret_env_var} (required) NOT set in "
-                     f"environment — `imgen --backend {name}` will die")
+        if health.secret_env_var is not None:
+            if health.secret_present:
+                ok(f"   secret ${health.secret_env_var} set")
+            elif health.secret_required:
+                warn(f"   secret ${health.secret_env_var} (required) "
+                     f"NOT set in environment — "
+                     f"`imgen --backend {health.name}` will die")
                 issues += 1
             else:
-                dim(f"   secret ${be.secret_env_var} (optional) not set — "
-                    "best-effort forward, backend handles its own auth")
+                dim(f"   secret ${health.secret_env_var} (optional) "
+                    "not set — best-effort forward, backend handles "
+                    "its own auth")
 
     # User config
     print()
