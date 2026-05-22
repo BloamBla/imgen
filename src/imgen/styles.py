@@ -45,13 +45,48 @@ __all__ = [
 USER_STYLE_MAX_BYTES = 256 * 1024
 
 
+# Prompt structure follows BFL's official FLUX.1 Kontext guidance
+# (docs.bfl.ai/guides/prompting_guide_kontext_i2i, June 2025) and the
+# mflux Kontext README. Three-layer pattern, applied uniformly to every
+# built-in preset:
+#
+#   ACTION  → "Restyle this person as <STYLE NOUN>"
+#   ──────────  ("Restyle"/"Convert" preferred over "Transform [person]",
+#                which BFL explicitly flags as identity-drift risk:
+#                ❌ "Transform the person into a Viking"
+#                ✅ "Change the clothes to a Viking warrior while
+#                    preserving facial features")
+#
+#   PRESERVATION → "while preserving the exact facial features,
+#   ──────────     hairstyle, body proportions, and pose"
+#                  (anchored mid-prompt with "while" connector — Kontext
+#                  weights mid-sentence preservation tokens consistently
+#                  vs tail tokens. Four explicit identity anchors:
+#                  face / hair / body / pose. v0.3.4 user goal: preserve
+#                  face + figure as much as possible.)
+#
+#   STYLE DESCRIPTORS → ", with <concrete visual attributes>"
+#   ─────────────────  (named style + concrete attributes per BFL:
+#                       "name the style + describe characteristics".
+#                       Lands at the tail — also leaves a clean slot
+#                       for v0.3.5 augmentation via --custom-prompt.)
+#
+# Negative prompts stay focused on artifact rejection (deformed, blurry,
+# watermark) — they were not the diagnosed issue and don't need surgery.
+
 BUILTIN_STYLES: dict[str, dict] = {
     "pixar": {
+        # Pixar restructures facial geometry (rounded features, big
+        # eyes are core to the style). "Exact facial features" would
+        # contradict the style descriptors below; "facial identity"
+        # tells the model to keep WHO it is while letting the style
+        # reshape HOW. (v0.3.4 review HIGH-1.)
         "prompt": (
-            "Transform this person into a polished Pixar 3D animation style, "
-            "soft volumetric lighting, smooth rounded features, expressive large "
-            "eyes, stylized cartoon character, high-quality CGI rendering, "
-            "keep face identity, keep pose and composition"
+            "Restyle this person as a polished Pixar 3D animated "
+            "character, while preserving the facial identity, "
+            "hairstyle, body proportions, and pose, with soft volumetric "
+            "lighting, smooth rounded features, expressive large eyes, "
+            "stylized cartoon proportions, and high-quality CGI rendering"
         ),
         "negative": (
             "deformed, blurry, photorealistic skin, flat lighting, missing eye, "
@@ -62,11 +97,15 @@ BUILTIN_STYLES: dict[str, dict] = {
     },
 
     "anime": {
+        # Anime enlarges eyes + reshapes face geometry — see pixar
+        # comment. Same "facial identity" anchor instead of "exact
+        # facial features". (v0.3.4 review HIGH-1.)
         "prompt": (
-            "Transform this person into Japanese anime art style, cel-shaded "
-            "illustration, expressive large eyes, detailed line art, vibrant "
-            "colors, clean shading, manga aesthetic, keep face identity, "
-            "keep pose and composition"
+            "Restyle this person as a Japanese anime character, while "
+            "preserving the facial identity, hairstyle, body "
+            "proportions, and pose, with cel-shaded illustration, "
+            "expressive large eyes, detailed line art, vibrant colors, "
+            "clean shading, and manga aesthetic"
         ),
         "negative": (
             "realistic photo, 3d render, deformed face, bad anatomy, extra "
@@ -77,12 +116,19 @@ BUILTIN_STYLES: dict[str, dict] = {
     },
 
     "simpsons": {
+        # Simpsons style fundamentally restructures facial features
+        # (yellow skin + large round white eyes are core to the style),
+        # so "exact facial features" would create contradictory
+        # instructions. Use "recognizable expression" as the identity
+        # anchor instead — that's the most stylistically-flexible token
+        # the model can hold onto while still rebuilding the face.
         "prompt": (
-            "Transform this person into The Simpsons cartoon style by Matt "
-            "Groening, bright yellow skin, large round white eyes with small "
-            "black pupils, bold thick black outlines, flat saturated colors, "
-            "characteristic overbite, simple cartoon proportions, 1990s "
-            "Springfield aesthetic, keep face identity, keep pose"
+            "Restyle this person as a Matt Groening Simpsons character, "
+            "while preserving the recognizable expression, hairstyle, "
+            "body proportions, and pose, with bright yellow skin, large "
+            "round white eyes with small black pupils, bold thick black "
+            "outlines, flat saturated colors, characteristic overbite, "
+            "simple cartoon proportions, and 1990s Springfield aesthetic"
         ),
         "negative": (
             "realistic, 3d render, photo, soft shading, gradients, complex "
@@ -93,11 +139,16 @@ BUILTIN_STYLES: dict[str, dict] = {
     },
 
     "ghibli": {
+        # Ghibli simplifies features (expressive but simple) — would
+        # conflict with "exact facial features". Same "facial identity"
+        # anchor as pixar/anime. (v0.3.4 review HIGH-1.)
         "prompt": (
-            "Transform this person into Studio Ghibli animation style by Hayao "
-            "Miyazaki, soft watercolor textures, gentle pastel colors, "
-            "hand-drawn 2D animation, expressive but simple features, dreamy "
-            "atmosphere, painterly background, keep face identity, keep pose"
+            "Restyle this person as a Studio Ghibli character in Hayao "
+            "Miyazaki's style, while preserving the facial identity, "
+            "hairstyle, body proportions, and pose, with soft "
+            "watercolor textures, gentle pastel colors, hand-drawn 2D "
+            "animation, expressive but simple features, dreamy "
+            "atmosphere, and painterly background"
         ),
         "negative": (
             "photorealistic, 3d render, harsh lighting, sharp edges, deformed, "
@@ -109,10 +160,12 @@ BUILTIN_STYLES: dict[str, dict] = {
 
     "vangogh": {
         "prompt": (
-            "Transform this person into Vincent Van Gogh oil painting style, "
-            "thick visible impasto brushstrokes, swirling textured patterns, "
-            "vibrant post-impressionist colors, painterly distortion, expressive "
-            "yellows and blues, keep face identity, keep pose and composition"
+            "Restyle this person as a Vincent Van Gogh oil painting "
+            "subject, while preserving the exact facial features, "
+            "hairstyle, body proportions, and pose, with thick visible "
+            "impasto brushstrokes, swirling textured patterns, vibrant "
+            "post-impressionist colors, painterly distortion, and "
+            "expressive yellows and blues"
         ),
         "negative": (
             "smooth, flat, photo, 3d render, digital art, clean lines, "
@@ -124,10 +177,12 @@ BUILTIN_STYLES: dict[str, dict] = {
 
     "pencil": {
         "prompt": (
-            "Transform this person into a detailed graphite pencil sketch, fine "
-            "cross-hatching, careful shading gradations, monochrome grayscale, "
-            "realistic drawing on paper texture, hand-drawn precision, keep "
-            "face identity, keep pose"
+            "Restyle this person as a detailed graphite pencil sketch "
+            "portrait, while preserving the exact facial features, "
+            "hairstyle, body proportions, and pose, with fine "
+            "cross-hatching, careful shading gradations, monochrome "
+            "grayscale, realistic drawing on paper texture, and "
+            "hand-drawn precision"
         ),
         "negative": (
             "colorful, painting, 3d render, photo, smooth gradients, deformed, "

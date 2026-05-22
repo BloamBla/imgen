@@ -777,9 +777,18 @@ def test_build_iterations_custom_prompt_ignores_scope(fake_styles, tmp_path):
 
 
 def test_build_iterations_scope_applied_to_preset_prompt(fake_styles, tmp_path):
-    """No custom prompt + scope=scene → apply_scope rewrites 'this person'
-    → 'this entire scene' in the preset prompt."""
-    fake_styles["anime"] = {"prompt": "portrait of this person, anime style"}
+    """No custom prompt + scope=scene → apply_scope's legacy
+    "Transform this person" trigger fires through the build_iterations
+    plumbing and produces "Transform this entire scene".
+
+    (v0.3.4: the legacy trigger was anchored to the full "Transform
+    this person" prefix to avoid double-firing on v0.3.4 openers like
+    "Restyle this person as <X>". The HIGH-2 fix kept the legacy path
+    live for back-compat with user-defined styles still using v0.1.x
+    wording.)"""
+    fake_styles["anime"] = {
+        "prompt": "Transform this person, keep face identity, keep pose"
+    }
 
     its = _build(
         fake_styles=fake_styles,
@@ -787,9 +796,10 @@ def test_build_iterations_scope_applied_to_preset_prompt(fake_styles, tmp_path):
         args=_build_args(scope="scene"),
     )
 
-    # scope=scene swaps "this person" → "this entire scene".
+    # scope=scene swaps "Transform this person" → "Transform this
+    # entire scene" via the legacy v0.1.x rewrite path.
     assert "this person" not in its[0].prompt
-    assert "this entire scene" in its[0].prompt
+    assert "Transform this entire scene" in its[0].prompt
 
 
 def test_build_iterations_scope_person_adds_suffix(fake_styles, tmp_path):

@@ -40,6 +40,54 @@ def test_preset_strength_in_argparse_range(name):
         assert 0.0 <= s <= 1.0, f"{name}: strength {s} out of [0.0, 1.0]"
 
 
+# ── v0.3.4: structural lock on the BFL-aligned prompt shape ────────────
+
+
+@pytest.mark.parametrize("name", ALL_STYLES)
+def test_preset_uses_restyle_verb_not_transform_person(name):
+    """v0.3.4: every built-in preset starts with "Restyle this person
+    as X" — NOT the v0.1.x-v0.3.3 "Transform this person into X"
+    pattern. BFL guidance explicitly flags "Transform [person]" as
+    identity-drift risk; "Restyle" / "Convert" target the rendering
+    rather than the person object."""
+    prompt = STYLES[name]["prompt"]
+    assert prompt.startswith("Restyle this person as "), \
+        f"{name}: prompt must lead with 'Restyle this person as …' " \
+        f"(got: {prompt[:60]!r})"
+    assert "Transform this person" not in prompt, \
+        f"{name}: legacy 'Transform this person' verb leaked back in"
+
+
+@pytest.mark.parametrize("name", ALL_STYLES)
+def test_preset_has_explicit_preservation_clause(name):
+    """v0.3.4: every preset must contain an explicit "while preserving"
+    clause that anchors identity/figure preservation in the middle of
+    the prompt (BFL-recommended position). Without this anchor the
+    style descriptors at the tail can drift the model away from the
+    source person."""
+    prompt = STYLES[name]["prompt"]
+    assert "while preserving" in prompt, \
+        f"{name}: missing 'while preserving …' preservation clause"
+    # Must cover hairstyle + body proportions + pose at minimum
+    # (the four-anchor pattern face/hair/body/pose).
+    for anchor in ("hairstyle", "body proportions", "pose"):
+        assert anchor in prompt, f"{name}: preservation missing '{anchor}'"
+
+
+@pytest.mark.parametrize("name", ALL_STYLES)
+def test_preset_drops_legacy_keep_face_identity_phrasing(name):
+    """v0.3.4: the terse legacy "keep face identity" / "keep pose"
+    phrasing is replaced by the explicit "while preserving …" block.
+    Locking against accidental drift back to the old wording.
+
+    (The legacy substrings remain in SCOPE_SCENE_REPLACEMENTS for
+    back-compat with user-defined styles still using them, but
+    no built-in should produce them.)"""
+    prompt = STYLES[name]["prompt"]
+    assert "keep face identity" not in prompt
+    assert "keep pose" not in prompt
+
+
 def test_list_styles_sorted_and_complete():
     assert list_styles() == sorted(STYLES.keys())
 

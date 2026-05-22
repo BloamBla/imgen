@@ -44,14 +44,70 @@ PREVIEW_RESOLUTIONS = [
 # --scope: how to modify the prompt
 SCOPE_PERSON_SUFFIX = ", keep the background photorealistic and unchanged"
 
-# Targeted substring rewrites for prompts that follow the v0.1.x built-in
-# wording convention ("Transform this person ... keep face identity, keep
-# pose"). When a prompt contains the trigger substrings, these in-place
-# rewrites surgically reframe person-focused wording into scene-focused
-# wording without growing the prompt.
+# Targeted substring rewrites that reframe person-focused wording into
+# scene-focused wording when a prompt contains any of the trigger
+# substrings. Two cohorts:
+#
+#   • v0.3.4 built-in wording — "Restyle this person as <X>, while
+#     preserving the exact facial features, hairstyle, body proportions,
+#     and pose" (or its Simpsons variant). Scene mode relaxes the
+#     person-anchored preservation block into a scene-wide one.
+#   • v0.1.x — v0.3.3 legacy wording — "Transform this person into X,
+#     ..., keep face identity, keep pose [and composition]". User
+#     styles in ``~/.imgen/styles.d/`` and any custom prompts written
+#     against earlier imgen versions still use this phrasing; we keep
+#     the old triggers for back-compat so scene mode doesn't silently
+#     fall through on those.
+#
+# When neither cohort matches (truly free-form prompt), the v0.3.3
+# hybrid :func:`apply_scope` fallback appends :data:`SCOPE_SCENE_SUFFIX`
+# instead — so scene mode is never a silent no-op.
 SCOPE_SCENE_REPLACEMENTS = [
-    ("this person", "this entire scene"),
-    ("the person", "the whole scene"),
+    # ── v0.3.4 preservation-clause rewrites ───────────────────────
+    # Three variants matching the three preservation phrasings used
+    # across built-in presets:
+    #
+    #   * "exact facial features"  — vangogh, pencil (paint/sketch
+    #                                styles that don't restructure
+    #                                facial geometry)
+    #   * "facial identity"        — pixar, anime, ghibli (styles
+    #                                that DO restructure face; identity
+    #                                anchor without geometry claim)
+    #   * "recognizable expression" — simpsons (style radically
+    #                                restructures the face)
+    #
+    # All three relax to the same scene-wide preservation directive:
+    # composition + relative position of all subjects. The legacy
+    # "Transform this person" trigger below does NOT fire on v0.3.4
+    # openers ("Restyle this person as …") so these are the only
+    # rewrites applied to built-ins under scope=scene.
+    (
+        "while preserving the exact facial features, hairstyle, "
+        "body proportions, and pose",
+        "while preserving the overall composition and the relative "
+        "position of all subjects",
+    ),
+    (
+        "while preserving the facial identity, hairstyle, "
+        "body proportions, and pose",
+        "while preserving the overall composition and the relative "
+        "position of all subjects",
+    ),
+    (
+        "while preserving the recognizable expression, hairstyle, "
+        "body proportions, and pose",
+        "while preserving the overall composition and the relative "
+        "position of all subjects",
+    ),
+
+    # ── v0.1.x — v0.3.3 legacy wording (kept for back-compat) ─────
+    # Anchored to the legacy "Transform this person" syntactic context
+    # rather than the bare "this person" substring — otherwise these
+    # would also fire on v0.3.4's "Restyle this person as <X>" openers
+    # and produce grammatically-broken output like "Restyle this entire
+    # scene as a Pixar 3D character". (v0.3.4 review HIGH-2.)
+    ("Transform this person", "Transform this entire scene"),
+    ("Transform the person", "Transform the whole scene"),
     ("keep face identity", "keep all subjects recognizable"),
     ("keep pose and composition", "keep overall composition"),
     ("keep pose", "keep composition"),

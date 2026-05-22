@@ -84,7 +84,9 @@ def test_apply_scope_scene_does_known_replacements():
 def test_apply_scope_scene_replacement_count_matches_table():
     # If someone adds a tuple to SCOPE_SCENE_REPLACEMENTS without updating
     # apply_scope, this would catch a silent no-op replacement.
-    assert len(SCOPE_SCENE_REPLACEMENTS) >= 4
+    # v0.3.4: table grew to 8 entries (3 new preservation-clause variants
+    # for v0.3.4 prompts + 5 legacy v0.1.x triggers kept for back-compat).
+    assert len(SCOPE_SCENE_REPLACEMENTS) >= 8
     for old, new in SCOPE_SCENE_REPLACEMENTS:
         assert isinstance(old, str) and isinstance(new, str)
         assert old != new
@@ -155,6 +157,139 @@ def test_apply_scope_person_unaffected_by_scene_changes():
     assert result == base + SCOPE_PERSON_SUFFIX
     # And no scene-suffix leaked in.
     assert SCOPE_SCENE_SUFFIX not in result
+
+
+# ── v0.3.4: HIGH-2 — no double-rewrite on v0.3.4 prompts ──────────────
+
+
+def test_apply_scope_scene_does_not_double_rewrite_v034_subject_opener():
+    """v0.3.4 review HIGH-2: pre-fix, the legacy 'this person' →
+    'this entire scene' trigger fired on the v0.3.4 opener
+    ('Restyle this person as <X>') simultaneously with the new
+    preservation-clause trigger, producing grammatically-broken
+    output like 'Restyle this entire scene as a Pixar 3D character'.
+    Fix: the legacy trigger was anchored to 'Transform this person'
+    (v0.1.x form only). v0.3.4 openers stay verbatim under scope=scene;
+    only the preservation clause gets relaxed."""
+    base = (
+        "Restyle this person as a polished Pixar 3D animated character, "
+        "while preserving the facial identity, hairstyle, body "
+        "proportions, and pose, with cartoon styling"
+    )
+    result = apply_scope(base, "scene")
+    # Opener stays — "Restyle this person as" not corrupted by the
+    # legacy subject rewrite.
+    assert "Restyle this person as" in result
+    assert "this entire scene as" not in result
+    # But the preservation clause IS scene-rewritten.
+    assert "facial identity" not in result
+    assert "overall composition" in result
+
+
+def test_apply_scope_scene_legacy_transform_pattern_still_works():
+    """Back-compat: user styles in ~/.imgen/styles.d/ that still use
+    the v0.1.x 'Transform this person ...' wording must continue to
+    get the legacy subject rewrite under scope=scene. Anchoring the
+    trigger to 'Transform this person' (v0.3.4 HIGH-2 fix) keeps that
+    code path live for legacy callers."""
+    legacy = "Transform this person into watercolor painting"
+    result = apply_scope(legacy, "scene")
+    assert "Transform this entire scene" in result
+    assert "this person" not in result
+
+
+def test_apply_scope_scene_facial_identity_variant_rewrites():
+    """v0.3.4 pixar/anime/ghibli use 'facial identity' instead of
+    'exact facial features' because their styles restructure facial
+    geometry (HIGH-1 fix). Scene mode must recognize that variant."""
+    base = (
+        "Restyle this person as a Pixar character, while preserving "
+        "the facial identity, hairstyle, body proportions, and pose, "
+        "with cartoon styling"
+    )
+    result = apply_scope(base, "scene")
+    assert "facial identity" not in result
+    assert "overall composition" in result
+
+
+# ── v0.3.4: built-in presets must fire scene-mode rewrites ─────────────
+
+
+def test_apply_scope_scene_rewrites_v034_preservation_clause():
+    """v0.3.4 built-in prompts have a uniform preservation clause:
+    "while preserving the exact facial features, hairstyle, body
+    proportions, and pose". Scene mode must relax this into a scene-
+    wide preservation directive — otherwise person-anchored
+    preservation overrides the user's scene-wide intent."""
+    base = (
+        "Restyle this person as a Pixar 3D character, while preserving "
+        "the exact facial features, hairstyle, body proportions, and "
+        "pose, with cartoon styling"
+    )
+    result = apply_scope(base, "scene")
+    # Person-anchored preservation gone, scene-wide preservation in.
+    assert "exact facial features" not in result
+    assert "overall composition" in result
+    assert "relative position of all subjects" in result
+
+
+def test_apply_scope_scene_rewrites_simpsons_variant_preservation():
+    """The Simpsons preset uses a slightly different preservation
+    phrasing ("recognizable expression" instead of "facial features"
+    because the style restructures the face). That variant must also
+    be recognized by scene mode."""
+    base = (
+        "Restyle this person as a Simpsons character, while preserving "
+        "the recognizable expression, hairstyle, body proportions, "
+        "and pose, with yellow skin"
+    )
+    result = apply_scope(base, "scene")
+    assert "recognizable expression" not in result
+    assert "overall composition" in result
+
+
+@pytest.mark.parametrize("name", [
+    "pixar", "anime", "simpsons", "ghibli", "vangogh", "pencil",
+])
+def test_apply_scope_scene_actually_rewrites_every_built_in(name):
+    """End-to-end lock: scope=scene applied to every built-in preset
+    prompt must produce a visibly different string (and NOT trigger
+    the v0.3.3 SCOPE_SCENE_SUFFIX fallback — built-ins should rewrite,
+    not append). Catches future drift where a preset's wording slips
+    past every trigger and silently no-ops.
+
+    v0.3.2 made scope=scene the default — this guarantee is critical
+    because every default invocation depends on it."""
+    from imgen.images import SCOPE_SCENE_SUFFIX
+    from imgen.styles import STYLES
+
+    original = STYLES[name]["prompt"]
+    rewritten = apply_scope(original, "scene")
+
+    assert rewritten != original, (
+        f"{name}: scope=scene was a no-op on built-in prompt — no "
+        f"trigger matched and fallback didn't fire"
+    )
+    # Built-ins must REWRITE (their "this person" or v0.3.4 preservation
+    # clause triggers), not fall back to the suffix append meant for
+    # truly-trigger-free prompts.
+    assert not rewritten.endswith(SCOPE_SCENE_SUFFIX), (
+        f"{name}: scope=scene used the fallback suffix instead of the "
+        f"targeted substring rewrite — a trigger should have fired"
+    )
+
+
+@pytest.mark.parametrize("name", [
+    "pixar", "anime", "simpsons", "ghibli", "vangogh", "pencil",
+])
+def test_apply_scope_person_appends_suffix_to_every_built_in(name):
+    """Symmetric to the scene check — person mode must append the
+    background-preservation suffix to every built-in preset."""
+    from imgen.styles import STYLES
+
+    original = STYLES[name]["prompt"]
+    result = apply_scope(original, "person")
+    assert result == original + SCOPE_PERSON_SUFFIX
 
 
 def test_apply_scope_unknown_scope_is_noop():
