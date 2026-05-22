@@ -171,3 +171,54 @@ def test_short_v_and_long_version_both_print_same(capsys):
 
     assert short_out == long_out
     assert __version__ in short_out
+
+
+# ── v0.4: --backend choices include user backends from backends.d/ ──────
+
+
+def test_parser_loads_user_backends_before_choices(tmp_path, monkeypatch):
+    """v0.4 design decision 3: --backend choices are loaded at parse
+    time via list_backends(), so a TOML in ~/.imgen/backends.d/ shows
+    up as a valid --backend argument without code changes.
+
+    Without this, `imgen --backend custom_thing` died with "invalid
+    choice" even when the TOML was valid — defeating the registry."""
+    import imgen.backends as backends_mod
+    import imgen.paths as paths_mod
+    state = tmp_path / ".imgen"
+    state.mkdir()
+    backends_dir = state / "backends.d"
+    backends_dir.mkdir()
+    (backends_dir / "mythical.toml").write_text(
+        'binary = "mflux-generate-fake"\nimage_flag = "--image-path"\n'
+    )
+    monkeypatch.setattr(paths_mod, "STATE_DIR", state)
+    backends_mod.reset_backends_cache()
+    try:
+        parser = build_parser()
+        args = parser.parse_args(
+            ["generate", "photo.jpg", "--backend", "mythical"]
+        )
+        assert args.backend == "mythical"
+    finally:
+        backends_mod.reset_backends_cache()
+
+
+def test_parser_rejects_unknown_backend(tmp_path, monkeypatch):
+    """Sanity: a string that doesn't match any built-in or user
+    backend still dies with argparse's "invalid choice"."""
+    import imgen.backends as backends_mod
+    import imgen.paths as paths_mod
+    state = tmp_path / ".imgen"
+    state.mkdir()
+    (state / "backends.d").mkdir()  # empty
+    monkeypatch.setattr(paths_mod, "STATE_DIR", state)
+    backends_mod.reset_backends_cache()
+    try:
+        parser = build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(
+                ["generate", "photo.jpg", "--backend", "totally_unknown_xyz"]
+            )
+    finally:
+        backends_mod.reset_backends_cache()

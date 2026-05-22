@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .backends import BACKENDS
+from .backends import list_backends
 from .colors import C, step
 from .defaults import DEFAULTS, MFLUX_PIN, PREVIEW_OVERRIDES
 from .paths import DEFAULT_OUTPUT_DIR, SAFE_OUTPUT_EXTS
@@ -210,7 +210,7 @@ def _add_generate_args(
                         "style preset may override)")
     p.add_argument("--seed", type=_int_range(0, 2**32 - 1),
                    help="Seed (default: random)")
-    p.add_argument("--backend", choices=list(BACKENDS),
+    p.add_argument("--backend", choices=list_backends(),
                    default=defaults["backend"],
                    help=f"Backend (default {defaults['backend']})")
     p.add_argument("-q", "--quantize", type=int, choices=[3, 4, 5, 6, 8],
@@ -285,7 +285,7 @@ def _add_batch_args(
     p.add_argument("--seed", type=_int_range(0, 2**32 - 1),
                    help="Seed shared across the whole N×M batch "
                         "(default: random)")
-    p.add_argument("--backend", choices=list(BACKENDS),
+    p.add_argument("--backend", choices=list_backends(),
                    default=defaults["backend"],
                    help=f"Backend (default {defaults['backend']})")
     p.add_argument("-q", "--quantize", type=int, choices=[3, 4, 5, 6, 8],
