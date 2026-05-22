@@ -88,6 +88,89 @@ def _clean_model_ref(s: str) -> str:
     return s
 
 
+def _lora_ref_arg(s: str):
+    """argparse validator for ``--lora REF[:WEIGHT]``. Returns a
+    :class:`imgen.styles.LoraRef` instance (repeatable; argparse's
+    ``action='append'`` collects them into a list).
+
+    Syntax:
+
+    * Bare ref → weight defaults to 1.0:
+      ``--lora "alvarobartt/ghibli-characters-flux-lora"``
+    * ``REF:WEIGHT`` for explicit weight (single colon separator):
+      ``--lora "alvarobartt/ghibli-characters-flux-lora:0.8"``
+
+    Note: HF repo ids cannot contain ``:`` (only alphanumerics, ``-``,
+    ``_``, ``/``, ``.``) so split-on-rightmost-colon disambiguates a
+    weight suffix from any colon that might appear in an absolute
+    path (``/Users/x/...`` doesn't contain ``:``; we only split if the
+    suffix parses as a float).
+
+    Compatible_with defaults to ``("flux-1",)`` — same as :class:`LoraRef`'s
+    own default. Users who need a different compat group for a CLI-
+    supplied LoRA should put it in a styles.d/*.toml entry instead
+    where the full ``[[loras]]`` shape with explicit ``compatible_with``
+    is available.
+
+    Defence-in-depth: reject control bytes + oversized refs + weights
+    outside [-2.0, 2.0] at parse time, matching the user-style schema.
+    """
+    from .styles import LoraRef
+
+    # Inline byte caps + control-byte check matching the user-style
+    # schema (styles._LORA_REF_MAX_LEN + styles._is_safe_stem).
+    # Cross-module duplication here is intentional — the v0.6 design
+    # memo flagged ``_safe.py`` extraction as v0.5+ candidate; until
+    # that lands, parser.py keeps its own copy of the two constants
+    # rather than reaching into styles.py's private names.
+    _MAX_LEN = 4096
+
+    def _has_control_bytes(s: str) -> bool:
+        return any(
+            c < ' ' or c == '\x7f' or '\x80' <= c <= '\x9f' for c in s
+        )
+
+    raw = s.strip()
+    if not raw:
+        raise argparse.ArgumentTypeError(
+            "--lora value must be non-empty"
+        )
+
+    # Try to split a trailing ``:WEIGHT``. If the rightmost ``:`` is
+    # followed by a parseable float, treat as weight; otherwise the
+    # whole string is the ref (handles absolute-path edge cases where
+    # the path itself might contain a colon — Windows-style, unlikely
+    # on macOS but defensive).
+    ref = raw
+    weight = 1.0
+    if ":" in raw:
+        head, _, tail = raw.rpartition(":")
+        try:
+            candidate_weight = float(tail)
+        except ValueError:
+            pass
+        else:
+            if head.strip():
+                ref = head.strip()
+                weight = candidate_weight
+
+    if len(ref) > _MAX_LEN:
+        raise argparse.ArgumentTypeError(
+            f"--lora ref too long ({len(ref)} bytes; cap {_MAX_LEN})"
+        )
+    if _has_control_bytes(ref):
+        raise argparse.ArgumentTypeError(
+            "--lora ref contains control bytes (C0/DEL/C1) — "
+            "reject so they don't reach mlx_lm via subprocess argv"
+        )
+    if not (-2.0 <= weight <= 2.0):
+        raise argparse.ArgumentTypeError(
+            f"--lora weight out of range: {weight} (must be -2.0..2.0)"
+        )
+
+    return LoraRef(ref=ref, weight=weight, compatible_with=("flux-1",))
+
+
 # ── Parser ───────────────────────────────────────────────────────────────
 
 def build_parser(
@@ -257,6 +340,7 @@ def _add_generate_args(
                    help="Skip resource checks (RAM, parallel mflux, etc.) "
                         "and try anyway. Use at your own risk.")
     _add_enhance_args(p)
+    _add_lora_args(p)
 
 
 def _add_batch_args(
@@ -332,6 +416,7 @@ def _add_batch_args(
                    help="Skip resource checks (RAM, parallel mflux, etc.) "
                         "and try anyway. Use at your own risk.")
     _add_enhance_args(p)
+    _add_lora_args(p)
 
 
 def _add_enhance_args(p: argparse.ArgumentParser) -> None:
@@ -367,6 +452,38 @@ def _add_enhance_args(p: argparse.ArgumentParser) -> None:
         metavar="T",
         help="Sampler temperature for the enhancer (0.0 = greedy = "
              "deterministic; default 0.0 for replay reproducibility).",
+    )
+
+
+def _add_lora_args(p: argparse.ArgumentParser) -> None:
+    """LoRA weight-delta flags. Shared by generate + batch.
+
+    ``--lora`` is repeatable; each occurrence appends one
+    :class:`styles.LoraRef` to ``args.lora`` (an actual list, not None).
+    ``--no-lora`` is mutex with ``--lora`` and signals "drop both
+    style-declared and CLI-declared LoRAs for this run". When neither
+    is passed, the style's own ``loras`` field applies as-is.
+    """
+    group = p.add_argument_group(
+        "LoRA stack",
+        "LoRA weight deltas applied on top of the base diffusion "
+        "model. Built-in styles may ship with curated LoRAs; "
+        "--lora APPENDS additional ones; --no-lora drops them "
+        "entirely for this run. Repeatable: --lora A --lora B:0.5.",
+    )
+    mode = group.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--lora", action="append", type=_lora_ref_arg, default=None,
+        metavar="REF[:WEIGHT]",
+        help="LoRA HF repo id (e.g. 'strangerzonehf/Flux-Animeo-v1-LoRA') "
+             "or absolute path to .safetensors, with optional :WEIGHT "
+             "suffix (default 1.0). Repeatable to stack multiple LoRAs.",
+    )
+    mode.add_argument(
+        "--no-lora", dest="no_lora", action="store_true", default=False,
+        help="Drop any LoRAs the chosen style declares — generate from "
+             "the base model alone. Useful for A/B comparing style + LoRA "
+             "vs style + text-only.",
     )
 
 

@@ -59,7 +59,12 @@ from pathlib import Path
 
 from dataclasses import replace as _dataclass_replace
 
-from .backends import Backend, build_mflux_cmd, get_backend
+from .backends import (
+    Backend,
+    build_mflux_cmd,
+    filter_compatible_loras,
+    get_backend,
+)
 from .checks import check_mflux, check_resources, check_venv
 from .colors import C, die, err, ok, step, warn
 from .config import effective_enhance, effective_output_dir
@@ -79,7 +84,7 @@ from .runs import (
     auto_run_dirname,
     next_available_run_dir,
 )
-from .styles import StyleNotFound, get_style
+from .styles import LoraRef, StyleNotFound, get_style
 from .subprocess_helpers import run_with_stderr_redaction
 from .tokens import load_token
 
@@ -94,12 +99,90 @@ __all__ = [
     "maybe_enhance_for_command",
     "open_results",
     "preflight_resources",
+    "prepend_trigger_words",
     "print_batch_summary",
+    "resolve_effective_loras",
     "resolve_output_layout",
     "resolve_styles_list",
     "run_one_iteration",
     "safe_append_history",
 ]
+
+
+# ── v0.6: LoRA stack resolution + trigger-word prepending ─────────────
+
+
+def resolve_effective_loras(
+    preset: dict,
+    cli_lora: list | None,
+    no_lora: bool,
+) -> tuple[LoraRef, ...]:
+    """Combine style-declared LoRAs + CLI-supplied LoRAs into the final
+    tuple that flows into ``build_mflux_cmd``.
+
+    Precedence:
+
+    * ``no_lora=True`` → empty tuple. Mutex with non-None ``cli_lora`` is
+      enforced at the argparse layer; if a caller bypasses argparse,
+      ``no_lora`` wins (the explicit "drop all" signal).
+    * Otherwise the style's ``preset.get("loras", ())`` provides the
+      base stack; ``cli_lora`` (if non-None) is APPENDED. Order in
+      the final tuple = style LoRAs first, CLI LoRAs after. mflux
+      applies LoRAs in argv order, so the user's CLI additions layer
+      ON TOP of the style's curated stack.
+
+    Pure: no I/O, no mutation of either input. Returns an empty
+    tuple when both sources are empty / disabled.
+    """
+    if no_lora:
+        return ()
+    style_loras = tuple(preset.get("loras", ()))
+    if not cli_lora:
+        return style_loras
+    return style_loras + tuple(cli_lora)
+
+
+def prepend_trigger_words(
+    prompt: str,
+    loras: tuple[LoraRef, ...],
+) -> str:
+    """Ensure each LoRA's ``trigger`` (if set) appears in the prompt.
+
+    Style LoRAs often need a specific trigger word/phrase in the
+    prompt to activate (e.g. "Pixar 3D" for the Canopus-Pixar-3D-Flux-
+    LoRA — without that token in the prompt, the LoRA's weight delta
+    has minimal effect even when loaded). This helper checks each
+    LoRA's trigger against the existing prompt (case-insensitive
+    substring); for any missing triggers, prepends them comma-
+    separated at the START of the prompt so the LoRA fires.
+
+    Triggers already present in the prompt (because the style preset
+    or user's ``--custom-prompt`` already mentions them) are left
+    alone — no duplication. Caller is expected to pass the COMPATIBLE-
+    filtered LoRA tuple; triggers for incompatible LoRAs would
+    pollute the prompt for no benefit (the LoRA doesn't fire).
+
+    Pure: no I/O. Returns the (possibly-prepended) prompt string.
+    """
+    needed: list[str] = []
+    prompt_lower = prompt.lower()
+    seen: set[str] = set()
+    for lora in loras:
+        if not lora.trigger:
+            continue
+        trig = lora.trigger.strip()
+        if not trig:
+            continue
+        trig_lower = trig.lower()
+        if trig_lower in prompt_lower:
+            continue
+        if trig_lower in seen:
+            continue  # de-dup across multiple LoRAs sharing a trigger
+        seen.add(trig_lower)
+        needed.append(trig)
+    if not needed:
+        return prompt
+    return ", ".join(needed) + ", " + prompt
 
 
 # ── ETA helpers ─────────────────────────────────────────────────────────
@@ -784,6 +867,23 @@ def build_iterations(
         else:
             output_path = run_dir / f"{input_path.stem}-{style_name}.png"
 
+        # v0.6: resolve the LoRA stack for this iteration. Style's
+        # ``loras`` (parsed in styles.py Phase 1A) + CLI ``--lora`` (if
+        # any) + ``--no-lora`` opt-out. Then prepend any missing
+        # trigger words for COMPATIBLE LoRAs (compat filter avoids
+        # cluttering the prompt with triggers for LoRAs that won't
+        # actually fire on this backend — build_mflux_cmd warns on
+        # those separately).
+        cli_lora_list = getattr(args, "lora", None)
+        no_lora = bool(getattr(args, "no_lora", False))
+        effective_loras = resolve_effective_loras(
+            preset, cli_lora_list, no_lora,
+        )
+        compatible_loras, _incompat = filter_compatible_loras(
+            effective_loras, be,
+        )
+        prompt = prepend_trigger_words(prompt, compatible_loras)
+
         cmd = build_mflux_cmd(
             binary=binary,
             backend=be,
@@ -800,6 +900,7 @@ def build_iterations(
             height=height,
             mlx_cache_gb=merged_defaults["mlx_cache_gb"],
             battery_stop=merged_defaults["battery_stop"],
+            loras=effective_loras,
         )
 
         iterations.append(Iteration(
