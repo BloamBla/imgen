@@ -35,23 +35,41 @@ _MFLUX_ENV_ALLOWLIST: tuple[str, ...] = (
 )
 
 
-def build_mflux_env(token: str | None) -> dict[str, str]:
+def build_mflux_env(
+    token: str | None = None,
+    backend_secret: tuple[str, str] | None = None,
+) -> dict[str, str]:
     """Minimal environment for the mflux subprocess.
 
     Allow-listed keys from :data:`_MFLUX_ENV_ALLOWLIST` are copied from
-    the parent environment; ``HF_TOKEN`` is added when the backend
-    needs gated-model access; ``COLUMNS`` / ``LINES`` are forwarded
-    from the host terminal so tqdm renders at the user's actual width.
+    the parent environment; ``HF_TOKEN`` is added when the (FLUX-built-
+    in) backend needs gated-model access; ``COLUMNS`` / ``LINES`` are
+    forwarded from the host terminal so tqdm renders at the user's
+    actual width.
 
     Shared by ``cmd_generate`` and ``cmd_batch`` (v0.3.0 IMP-5 — the
     two call sites used to inline this block separately, risking the
     allow-list drifting between them on the next edit).
+
+    v0.4: ``backend_secret`` is a ``(env_var_name, value)`` tuple for
+    custom backends from ``~/.imgen/backends.d/`` that declared a
+    ``[secret] env_var = ...`` field. The pair gets injected under the
+    declared name (e.g. ``REPLICATE_API_TOKEN``). Distinct slot from
+    ``token`` so an HF-token-bearing FLUX run can't accidentally
+    overwrite a custom backend's env var (or vice versa). Caller —
+    typically ``cmd_helpers._load_backend_and_token`` — resolves the
+    backend's ``secret_env_var`` against ``os.environ`` BEFORE calling
+    this, including the required-but-missing die path. This helper
+    only knows how to inject a pre-resolved pair.
     """
     env: dict[str, str] = {
         k: os.environ[k] for k in _MFLUX_ENV_ALLOWLIST if k in os.environ
     }
     if token:
         env["HF_TOKEN"] = token
+    if backend_secret is not None:
+        env_name, env_value = backend_secret
+        env[env_name] = env_value
     term = shutil.get_terminal_size(fallback=(80, 24))
     env["COLUMNS"] = str(term.columns)
     env["LINES"] = str(term.lines)

@@ -315,3 +315,50 @@ def test_format_cmd_quotes_positional_tokens_with_spaces():
     a binary name like `/path with spaces/mflux` is paste-safe too."""
     out = format_cmd(["/path with spaces/mflux", "--steps", "20"])
     assert "'/path with spaces/mflux'" in out
+
+
+# ── v0.4: build_mflux_env(backend_secret=...) ───────────────────────────
+
+
+def test_build_mflux_env_forwards_backend_secret():
+    """Custom backends declare a single env var name; build_mflux_env
+    injects it under that name. Distinct from HF_TOKEN so the two
+    don't collide on the same FLUX-or-custom invocation."""
+    env = build_mflux_env(
+        token=None,
+        backend_secret=("REPLICATE_API_TOKEN", "r8_abc123"),
+    )
+    assert env["REPLICATE_API_TOKEN"] == "r8_abc123"
+    assert "HF_TOKEN" not in env
+
+
+def test_build_mflux_env_no_backend_secret_when_none():
+    """Without a backend_secret tuple, no extra env var is injected."""
+    env = build_mflux_env(token=None, backend_secret=None)
+    # No FLUX_TOKEN / REPLICATE_API_TOKEN / etc — only the allowlist + tty.
+    assert "REPLICATE_API_TOKEN" not in env
+    assert "HF_TOKEN" not in env
+
+
+def test_build_mflux_env_token_and_secret_coexist():
+    """FLUX (token) + a custom backend's secret could theoretically be
+    set at once if the caller composes wrong — but the env should
+    contain BOTH variables without one overwriting the other, since
+    they live in different env keys."""
+    env = build_mflux_env(
+        token="hf_realtoken123",
+        backend_secret=("MY_KEY", "value1"),
+    )
+    assert env["HF_TOKEN"] == "hf_realtoken123"
+    assert env["MY_KEY"] == "value1"
+
+
+def test_build_mflux_env_backward_compatible_no_kwargs():
+    """Pre-v0.4 call sites used `build_mflux_env(token=...)`. With the
+    new signature having defaults for both kwargs, the old call style
+    still works unchanged. Locked in by every existing caller in
+    cmd_helpers / commands."""
+    env_with_token = build_mflux_env(token="hf_x")
+    env_without_token = build_mflux_env(token=None)
+    assert env_with_token["HF_TOKEN"] == "hf_x"
+    assert "HF_TOKEN" not in env_without_token
