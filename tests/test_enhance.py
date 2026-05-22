@@ -401,17 +401,23 @@ class TestEnhanceResultDataclass:
 
 class TestBackendEnhanceFieldsLockIn:
     """Built-in FLUX + Qwen backends must carry the tuned system prompts
-    and preserving-invariant. Lock-in tests so a refactor / typo silently
-    drops the enhance plumbing for the default backend."""
+    and identity-anchor invariants. Lock-in tests so a refactor / typo
+    silently drops the enhance plumbing for the default backend."""
 
     def test_flux_has_kontext_system_prompt(self):
         from imgen.backends import BUILTIN_BACKENDS
         sys_prompt = BUILTIN_BACKENDS["flux"].enhance_system_prompt
         assert sys_prompt is not None
         assert "Kontext" in sys_prompt
-        assert "Restyle this person as X while preserving Y" in sys_prompt
         # Defense-in-depth against LLM "describing the photo".
         assert "Kontext sees it directly" in sys_prompt
+        # Strong directive against anchor substitution. Phase C-1 smoke
+        # caught Qwen2.5 swapping "facial identity" for "overall
+        # composition" — system prompt must forbid this explicitly.
+        assert "VERBATIM" in sys_prompt
+        assert "facial identity" in sys_prompt
+        assert "exact facial features" in sys_prompt
+        assert "recognizable expression" in sys_prompt
 
     def test_qwen_has_imperative_system_prompt(self):
         from imgen.backends import BUILTIN_BACKENDS
@@ -420,11 +426,22 @@ class TestBackendEnhanceFieldsLockIn:
         assert "Qwen-Image-Edit" in sys_prompt
         # Qwen prefers shorter directives.
         assert "shorter" in sys_prompt or "40 tokens" in sys_prompt
+        # Same anchor-substitution defense as FLUX.
+        assert "VERBATIM" in sys_prompt
+        assert "facial identity" in sys_prompt
 
-    def test_both_carry_preserving_invariant(self):
+    def test_both_carry_identity_anchor_invariants(self):
+        """Multi-substring invariant covers all three v0.3.4 anchors —
+        each style family uses exactly one of these in its prompt, the
+        invariant check enforces only the one present in the input."""
         from imgen.backends import BUILTIN_BACKENDS
+        expected = {"facial identity", "exact facial features",
+                    "recognizable expression"}
         for name in ("flux", "qwen"):
-            assert "preserving" in BUILTIN_BACKENDS[name].enhance_invariants, name
+            invs = set(BUILTIN_BACKENDS[name].enhance_invariants)
+            assert invs == expected, (
+                f"{name}: invariants {invs} != expected {expected}"
+            )
 
     def test_user_backends_have_no_enhance_by_default(self):
         # A bare-minimum custom backend declared via backends.d/*.toml
@@ -442,3 +459,127 @@ class TestBackendEnhanceFieldsLockIn:
         )
         assert b.enhance_system_prompt is None
         assert b.enhance_invariants == ()
+
+
+class TestInvariantRegressionsFromPhaseC1Smoke:
+    """Regression tests for specific LLM-output patterns that Phase C-1
+    manual smoke (2026-05-22, Qwen2.5-7B-Instruct-4bit) exposed as
+    silent-corruption failure modes.
+
+    Each test pairs a real ``original`` prompt taken from styles.py
+    (v0.3.4 wording) with the actual ``enhanced`` LLM output that
+    drifted the identity anchor. The invariant check must catch the
+    drift and trigger fallback to original."""
+
+    def test_qwen_swap_facial_identity_for_composition_is_caught(self):
+        """Concrete case observed in smoke: ``--style anime
+        --custom-prompt 'wearing red kimono'`` produced an enhanced
+        prompt that replaced the v0.3.4 identity-anchor clause
+        ('preserving the facial identity, hairstyle, body proportions,
+        and pose') with a composition-only clause. The
+        identity-anchor invariant must reject this."""
+        from imgen.backends import BUILTIN_BACKENDS
+        original = (
+            "Restyle this person as a Japanese anime character, with "
+            "cel-shaded illustration, expressive large eyes, detailed "
+            "line art, vibrant colors, clean shading, and manga "
+            "aesthetic, while preserving the facial identity, "
+            "hairstyle, body proportions, and pose, wearing red kimono"
+        )
+        # Actual Qwen2.5-7B-4bit output captured 2026-05-22.
+        enhanced = (
+            "Restyle this person as a Japanese anime character, while "
+            "preserving the overall composition and the relative "
+            "position of all subjects, with cel-shaded illustration, "
+            "expressive large eyes, detailed line art, vibrant colors, "
+            "clean shading, and a manga aesthetic, wearing a red "
+            "kimono with intricate patterns and traditional Japanese "
+            "motifs."
+        )
+        flux_invariants = BUILTIN_BACKENDS["flux"].enhance_invariants
+        ok, reason = check_invariants(enhanced, original, flux_invariants)
+        assert ok is False, (
+            "invariant must reject — enhanced dropped 'facial identity'"
+        )
+        assert "facial identity" in reason
+
+    def test_vangogh_swap_exact_facial_features_is_caught(self):
+        """If Qwen drifts on the vangogh anchor ('exact facial
+        features'), same protection fires. Synthesized — vangogh's
+        smoke run hasn't been done yet, this locks the defense
+        ahead."""
+        from imgen.backends import BUILTIN_BACKENDS
+        original = (
+            "Restyle this person's portrait as Van Gogh, while "
+            "preserving the exact facial features, hairstyle, body "
+            "proportions, and pose"
+        )
+        enhanced = (
+            "Restyle this person's portrait as Van Gogh, while "
+            "preserving identifiable subject features, hairstyle, "
+            "body, and pose"
+        )
+        flux_invariants = BUILTIN_BACKENDS["flux"].enhance_invariants
+        ok, reason = check_invariants(enhanced, original, flux_invariants)
+        assert ok is False
+        assert "exact facial features" in reason
+
+    def test_simpsons_swap_recognizable_expression_is_caught(self):
+        """Simpsons uses the 'recognizable expression' variant (the
+        face structure changes too radically to anchor on identity).
+        Synthesized — same protection mechanism, different anchor."""
+        from imgen.backends import BUILTIN_BACKENDS
+        original = (
+            "Restyle this person as a Simpsons character, while "
+            "preserving the recognizable expression, hairstyle, body "
+            "proportions, and pose"
+        )
+        enhanced = (
+            "Restyle this person as a Simpsons character, while "
+            "preserving the facial layout and pose"  # dropped anchor
+        )
+        flux_invariants = BUILTIN_BACKENDS["flux"].enhance_invariants
+        ok, reason = check_invariants(enhanced, original, flux_invariants)
+        assert ok is False
+        assert "recognizable expression" in reason
+
+    def test_correct_anchor_preservation_passes(self):
+        """The positive control: if the enhancer keeps the anchor
+        verbatim (the system-prompt instruction worked), check_invariants
+        passes and the enhanced version is used."""
+        from imgen.backends import BUILTIN_BACKENDS
+        original = (
+            "Restyle this person as anime while preserving the facial "
+            "identity, hairstyle, body proportions, and pose"
+        )
+        # LLM expanded around the anchor without touching it — ideal.
+        enhanced = (
+            "Restyle this person as a vibrant cel-shaded Japanese "
+            "anime character with crisp ink outlines and studio "
+            "lighting, while preserving the facial identity, "
+            "hairstyle, body proportions, and pose"
+        )
+        flux_invariants = BUILTIN_BACKENDS["flux"].enhance_invariants
+        ok, reason = check_invariants(enhanced, original, flux_invariants)
+        assert ok is True
+        assert reason is None
+
+    def test_user_style_without_anchor_falls_through(self):
+        """User-defined styles in styles.d/*.toml that don't use any
+        of our 3 anchors get no protection — the invariant check
+        passes trivially because no anchor was in the original to
+        enforce. Documented limitation for v0.5 ship."""
+        from imgen.backends import BUILTIN_BACKENDS
+        original = (
+            "Restyle this person as cyberpunk, with neon highlights "
+            "and rain"
+        )
+        # Enhancer rewrote freely — no anchor to defend.
+        enhanced = (
+            "Restyle this person as a cyberpunk character with "
+            "neon-lit profile, dystopian rain atmosphere"
+        )
+        flux_invariants = BUILTIN_BACKENDS["flux"].enhance_invariants
+        ok, reason = check_invariants(enhanced, original, flux_invariants)
+        assert ok is True  # no anchor → no check → no failure
+        assert reason is None

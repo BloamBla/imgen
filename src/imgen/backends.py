@@ -91,28 +91,75 @@ class Backend:
 # can reference the exact text and import-time look at Backend tuples
 # stays terse. Tuned per backend conventions (see
 # project_v050_v060_design.md, "System prompts per backend").
+#
+# The CRITICAL section in each system prompt is the identity-anchor
+# preservation directive. v0.3.4 BFL Kontext tuning baked three specific
+# preservation phrases into our styles.py (one per style family) — the
+# enhancer must NOT substitute them for synonyms or alternative wording.
+# Phase C-1 smoke (2026-05-22) caught Qwen2.5-7B-4bit silently rewriting
+# "preserving the facial identity, hairstyle, body proportions, and pose"
+# to "preserving the overall composition and the relative position of
+# all subjects" — substring "preserving" survived but the semantic
+# identity-anchor was discarded. The fix is two-layer: (1) tighter
+# system prompt forbidding anchor substitution; (2) multi-substring
+# invariants below that fall back per-style when the specific anchor
+# is missing from the LLM output.
 _FLUX_KONTEXT_ENHANCE_SYS = (
     "You expand image-editing prompts for FLUX.1 Kontext, an image-"
     "conditioning model that restyles input photos while preserving "
     "identity, pose, and composition. Take the user prompt and expand "
-    "it to 40-60 tokens, keeping the 'Restyle this person as X while "
-    "preserving Y' verb structure intact. Add specific stylistic "
-    "descriptors (lighting, color palette, art technique, materials). "
-    "Do NOT invent objects, scenes, or characters not in the user "
-    "prompt — expand existing details only. NEVER describe the input "
-    "photo's content — Kontext sees it directly. Output ONLY the "
-    "expanded prompt with no preamble, no quotes, no explanation."
+    "it to 40-60 tokens. "
+    "CRITICAL: you MUST preserve the entire 'while preserving …' "
+    "clause from the user prompt VERBATIM. Keep every word inside that "
+    "clause exactly as written — particularly identity anchors such as "
+    "'facial identity', 'exact facial features', or 'recognizable "
+    "expression'. Do NOT replace these anchors with synonyms or "
+    "alternative preservation language (e.g. NEVER substitute 'overall "
+    "composition' or 'relative position of subjects' for the identity "
+    "anchor). "
+    "Add specific stylistic descriptors (lighting, color palette, art "
+    "technique, materials) at the START or END, not inside the "
+    "preserving clause. Do NOT invent objects, scenes, or characters "
+    "not in the user prompt — expand existing details only. NEVER "
+    "describe the input photo's content — Kontext sees it directly. "
+    "Output ONLY the expanded prompt with no preamble, no quotes, "
+    "no explanation."
 )
 
 _QWEN_EDIT_ENHANCE_SYS = (
     "You expand instruction-style edit prompts for Qwen-Image-Edit. "
     "Use imperative verbs ('transform', 'restyle', 'apply'). Keep the "
     "output under 40 tokens — Qwen-Edit prefers shorter directives "
-    "than FLUX. Preserve any 'while preserving …' clauses intact. Do "
-    "NOT invent objects, scenes, or characters not in the user "
+    "than FLUX. "
+    "CRITICAL: preserve the entire 'while preserving …' clause from "
+    "the user prompt VERBATIM, including identity anchors like "
+    "'facial identity', 'exact facial features', or 'recognizable "
+    "expression'. Do NOT swap these for synonyms. "
+    "Do NOT invent objects, scenes, or characters not in the user "
     "prompt — expand existing details only. NEVER describe the input "
     "photo's content. Output ONLY the expanded prompt with no preamble, "
     "no quotes, no explanation."
+)
+
+# Multi-substring invariant: each entry is a per-style-family identity
+# anchor. ``check_invariants`` enforces an invariant ONLY when it
+# appears in the original prompt, so the three anchors don't compete —
+# whichever one the style chose, that one gets enforced.
+#
+# Coverage matrix (v0.5 ship, see styles.py):
+#   "facial identity"          → pixar, anime, ghibli
+#   "exact facial features"    → vangogh, pencil
+#   "recognizable expression"  → simpsons
+#
+# User-defined styles in ``~/.imgen/styles.d/*.toml`` that don't use
+# any of these anchors get no enhanced protection — they fall through
+# the invariant gate (no anchor in original = no enforcement). That's
+# a known v0.5 limitation; tightening user-side anchors is a v0.6+
+# extension once we've validated the built-in path.
+_IDENTITY_ANCHOR_INVARIANTS: tuple[str, ...] = (
+    "facial identity",
+    "exact facial features",
+    "recognizable expression",
 )
 
 
@@ -125,7 +172,7 @@ BUILTIN_BACKENDS: dict[str, Backend] = {
         supports_negative=True,
         extra_args=("--model", "dev"),
         enhance_system_prompt=_FLUX_KONTEXT_ENHANCE_SYS,
-        enhance_invariants=("preserving",),
+        enhance_invariants=_IDENTITY_ANCHOR_INVARIANTS,
     ),
     "qwen": Backend(
         binary="mflux-generate-qwen-edit",
@@ -135,7 +182,7 @@ BUILTIN_BACKENDS: dict[str, Backend] = {
         supports_negative=False,
         extra_args=("--model", "qwen"),
         enhance_system_prompt=_QWEN_EDIT_ENHANCE_SYS,
-        enhance_invariants=("preserving",),
+        enhance_invariants=_IDENTITY_ANCHOR_INVARIANTS,
     ),
 }
 
