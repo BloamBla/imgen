@@ -67,7 +67,7 @@ def _read(path: Path) -> str:
 def test_batch_logger_write_header_includes_batch_id(logs_dir):
     logger = BatchLogger("abc123def456")
     logger.write_header(
-        input_path=Path("/photos/vacation.jpg"),
+        input_paths=[Path("/photos/vacation.jpg")],
         styles=["anime", "ghibli"],
         run_dir=Path("/desktop/imgen/2026-05-22-10-00-00"),
         backend="flux",
@@ -84,7 +84,7 @@ def test_batch_logger_write_header_includes_batch_id(logs_dir):
 def test_batch_logger_write_header_lists_styles(logs_dir):
     logger = BatchLogger("abc")
     logger.write_header(
-        input_path=Path("/x.jpg"),
+        input_paths=[Path("/x.jpg")],
         styles=["anime", "ghibli", "pixar"],
         run_dir=Path("/out"),
         backend="flux",
@@ -100,7 +100,7 @@ def test_batch_logger_write_header_lists_styles(logs_dir):
 def test_batch_logger_write_header_includes_backend_quant_seed(logs_dir):
     logger = BatchLogger("abc")
     logger.write_header(
-        input_path=Path("/x.jpg"),
+        input_paths=[Path("/x.jpg")],
         styles=["a"],
         run_dir=Path("/out"),
         backend="qwen",
@@ -120,7 +120,7 @@ def test_batch_logger_write_header_creates_file_0o600(logs_dir):
     """Inherits the 0o600-from-creation behaviour of open_log_file_append."""
     logger = BatchLogger("abc")
     logger.write_header(
-        input_path=Path("/x"),
+        input_paths=[Path("/x")],
         styles=["a"],
         run_dir=Path("/o"),
         backend="qwen",
@@ -130,6 +130,185 @@ def test_batch_logger_write_header_creates_file_0o600(logs_dir):
         seed=1,
     )
     assert (logger.path.stat().st_mode & 0o777) == 0o600
+
+
+# ── v0.3.0 header shape: N inputs + counted styles ──────────────────────
+
+
+def test_batch_logger_write_header_inputs_line_counts_and_names(logs_dir):
+    """v0.3.0 header format: `# inputs (N):  name1, name2, name3`.
+    Counts in the prefix make N×M batches scannable at a glance — user
+    can verify "yes I queued 17 photos" without re-counting commas.
+    Names are basenames only (no leading path) so logs stay readable
+    when input dir is deep."""
+    logger = BatchLogger("hdr-multi")
+    logger.write_header(
+        input_paths=[
+            Path("/photos/IMG_1234.heic"),
+            Path("/photos/IMG_5678.heic"),
+            Path("/photos/vacation.jpg"),
+        ],
+        styles=["anime", "ghibli", "pixar"],
+        run_dir=Path("/out"),
+        backend="flux", quant=8, preview=False, scope=None, seed=42,
+    )
+    content = _read(logger.path)
+    assert "# inputs (3):  IMG_1234.heic, IMG_5678.heic, vacation.jpg" in content
+
+
+def test_batch_logger_write_header_inputs_line_single(logs_dir):
+    """Single-input multi-style still uses the unified `# inputs (N):`
+    shape (with N=1) — keeps the v0.3.0 log format uniform whether the
+    invocation is `imgen generate` or `imgen batch`."""
+    logger = BatchLogger("hdr-single")
+    logger.write_header(
+        input_paths=[Path("/photos/vacation.jpg")],
+        styles=["anime", "ghibli"],
+        run_dir=Path("/out"),
+        backend="flux", quant=8, preview=False, scope=None, seed=1,
+    )
+    content = _read(logger.path)
+    assert "# inputs (1):  vacation.jpg" in content
+
+
+def test_batch_logger_write_header_styles_line_counts(logs_dir):
+    """`# styles (M):  a, b, c` — same count-in-prefix shape as inputs."""
+    logger = BatchLogger("hdr-styles")
+    logger.write_header(
+        input_paths=[Path("/x.jpg")],
+        styles=["anime", "ghibli", "pixar"],
+        run_dir=Path("/out"),
+        backend="flux", quant=8, preview=False, scope=None, seed=1,
+    )
+    content = _read(logger.path)
+    assert "# styles (3):  anime, ghibli, pixar" in content
+
+
+def test_batch_logger_write_header_rejects_empty_input_paths(logs_dir):
+    """Empty list of inputs is a caller bug — would render
+    `# inputs (0):  ` which is meaningless. cmd_batch / cmd_generate
+    have already verified the list is non-empty before reaching here;
+    explicit guard so a future regression surfaces here instead of
+    silently writing a confusing header."""
+    logger = BatchLogger("hdr-empty")
+    with pytest.raises(ValueError, match="input_paths"):
+        logger.write_header(
+            input_paths=[],
+            styles=["a"],
+            run_dir=Path("/o"),
+            backend="qwen", quant=4, preview=False, scope=None, seed=1,
+        )
+
+
+# ── v0.3.0 per-input section markers ────────────────────────────────────
+
+
+def test_batch_logger_input_section_start_marker(logs_dir):
+    """`=== INPUT <name> (k/N) ===` opens each input's block in the
+    log. Name is the basename only — full path is in the header's
+    `# inputs (N):` line."""
+    logger = BatchLogger("section-start")
+    logger.input_section_start(idx_input=2, total_inputs=3, name="IMG_5678.heic")
+    content = _read(logger.path)
+    assert "=== INPUT IMG_5678.heic (2/3) ===" in content
+
+
+def test_batch_logger_input_section_end_marker_all_ok(logs_dir):
+    """`=== INPUT <name> → <ok>/<total> ok in <dur> ===` closes the
+    block. <ok>/<total> always reports successful/all-attempted so the
+    user can spot per-input partial failures at a glance."""
+    logger = BatchLogger("section-end-ok")
+    logger.input_section_end(
+        idx_input=1, total_inputs=2, name="vacation.jpg",
+        ok_count=3, fail_count=0, duration=552,
+    )
+    content = _read(logger.path)
+    assert "=== INPUT vacation.jpg → 3/3 ok in 552s ===" in content
+
+
+def test_batch_logger_input_section_end_marker_partial(logs_dir):
+    """When `fail_count > 0`, the marker reports `<ok>/<total>` (e.g.
+    `2/3 ok` for 2 successes + 1 failure) and embeds the failure count
+    so grepping the log for `INPUT.*fail=` finds every partial input."""
+    logger = BatchLogger("section-end-partial")
+    logger.input_section_end(
+        idx_input=2, total_inputs=3, name="IMG_5678.heic",
+        ok_count=2, fail_count=1, duration=400,
+    )
+    content = _read(logger.path)
+    assert "INPUT IMG_5678.heic" in content
+    assert "2/3 ok" in content
+    assert "fail=1" in content
+
+
+def test_batch_logger_input_section_end_marker_all_failed(logs_dir):
+    """All-failed input still produces a closing marker (so per-input
+    sections are balanced in the log file). `0/N ok fail=N` shape."""
+    logger = BatchLogger("section-end-allfail")
+    logger.input_section_end(
+        idx_input=1, total_inputs=2, name="bad.heic",
+        ok_count=0, fail_count=3, duration=120,
+    )
+    content = _read(logger.path)
+    assert "0/3 ok" in content
+    assert "fail=3" in content
+
+
+def test_batch_logger_input_section_markers_after_close_raise(logs_dir):
+    """Consistent with iteration_start / write_header: after close,
+    section markers must raise instead of silently re-opening."""
+    logger = BatchLogger("section-closed")
+    logger.input_section_start(idx_input=1, total_inputs=1, name="x.jpg")
+    logger.close()
+    with pytest.raises(ValueError, match="closed"):
+        logger.input_section_start(idx_input=1, total_inputs=1, name="x.jpg")
+    with pytest.raises(ValueError, match="closed"):
+        logger.input_section_end(
+            idx_input=1, total_inputs=1, name="x.jpg",
+            ok_count=1, fail_count=0, duration=1,
+        )
+
+
+def test_batch_logger_full_batch_log_order(logs_dir):
+    """End-to-end: header → input_section_start(1/2) → iter_start →
+    iter_end → input_section_end(1/2) → input_section_start(2/2) → ...
+    All markers in chronological order in the file."""
+    logger = BatchLogger("full-batch")
+    logger.write_header(
+        input_paths=[Path("/p/a.heic"), Path("/p/b.jpg")],
+        styles=["anime"],
+        run_dir=Path("/o"),
+        backend="flux", quant=8, preview=False, scope=None, seed=1,
+    )
+    ts = dt.datetime(2026, 5, 22, 10, 0, 0)
+    logger.input_section_start(1, 2, "a.heic")
+    logger.iteration_start(idx=1, total=2, style="anime", ts=ts)
+    logger.iteration_end(idx=1, total=2, style="anime", returncode=0, duration=3)
+    logger.input_section_end(
+        idx_input=1, total_inputs=2, name="a.heic",
+        ok_count=1, fail_count=0, duration=3,
+    )
+    logger.input_section_start(2, 2, "b.jpg")
+    logger.iteration_start(idx=2, total=2, style="anime", ts=ts)
+    logger.iteration_end(idx=2, total=2, style="anime", returncode=0, duration=4)
+    logger.input_section_end(
+        idx_input=2, total_inputs=2, name="b.jpg",
+        ok_count=1, fail_count=0, duration=4,
+    )
+    content = _read(logger.path)
+    positions = [
+        content.find("# imgen batch"),
+        content.find("INPUT a.heic (1/2)"),
+        content.find("[1/2] anime →"),
+        content.find("INPUT a.heic → 1/1 ok"),
+        content.find("INPUT b.jpg (2/2)"),
+        content.find("[2/2] anime →"),
+        content.find("INPUT b.jpg → 1/1 ok"),
+    ]
+    assert all(p != -1 for p in positions), \
+        f"missing marker(s); positions={positions}, content={content!r}"
+    assert positions == sorted(positions), \
+        f"markers out of order; positions={positions}"
 
 
 # ── iteration markers ───────────────────────────────────────────────────
@@ -176,7 +355,7 @@ def test_batch_logger_markers_append_not_truncate(logs_dir):
     batch instead of open/close per marker)."""
     logger = BatchLogger("abc")
     logger.write_header(
-        input_path=Path("/x"), styles=["a"], run_dir=Path("/o"),
+        input_paths=[Path("/x")], styles=["a"], run_dir=Path("/o"),
         backend="qwen", quant=4, preview=False, scope=None, seed=1,
     )
     ts = dt.datetime(2026, 5, 22, 10, 0, 0)
@@ -201,7 +380,7 @@ def test_batch_logger_works_as_context_manager(logs_dir):
     would fail."""
     with BatchLogger("ctxmgr1") as logger:
         logger.write_header(
-            input_path=Path("/x"), styles=["a"], run_dir=Path("/o"),
+            input_paths=[Path("/x")], styles=["a"], run_dir=Path("/o"),
             backend="qwen", quant=4, preview=False, scope=None, seed=1,
         )
         assert "imgen batch" in _read(logger.path)
@@ -228,7 +407,7 @@ def test_batch_logger_close_is_idempotent(logs_dir):
     raise. Closes a closed fd → error."""
     logger = BatchLogger("idem1")
     logger.write_header(
-        input_path=Path("/x"), styles=["a"], run_dir=Path("/o"),
+        input_paths=[Path("/x")], styles=["a"], run_dir=Path("/o"),
         backend="qwen", quant=4, preview=False, scope=None, seed=1,
     )
     logger.close()
@@ -252,7 +431,7 @@ def test_batch_logger_writes_after_close_raise(logs_dir):
     to a finished log."""
     logger = BatchLogger("closedwrite")
     logger.write_header(
-        input_path=Path("/x"), styles=["a"], run_dir=Path("/o"),
+        input_paths=[Path("/x")], styles=["a"], run_dir=Path("/o"),
         backend="qwen", quant=4, preview=False, scope=None, seed=1,
     )
     logger.close()
@@ -263,7 +442,7 @@ def test_batch_logger_writes_after_close_raise(logs_dir):
         )
     with pytest.raises(ValueError, match="closed"):
         logger.write_header(
-            input_path=Path("/x"), styles=["a"], run_dir=Path("/o"),
+            input_paths=[Path("/x")], styles=["a"], run_dir=Path("/o"),
             backend="qwen", quant=4, preview=False, scope=None, seed=1,
         )
     with pytest.raises(ValueError, match="closed"):
@@ -291,7 +470,7 @@ def test_batch_logger_borrowed_fd_writes_interleave_with_markers(logs_dir):
     append-position → ordered."""
     logger = BatchLogger("interleave1")
     logger.write_header(
-        input_path=Path("/x"), styles=["a"], run_dir=Path("/o"),
+        input_paths=[Path("/x")], styles=["a"], run_dir=Path("/o"),
         backend="qwen", quant=4, preview=False, scope=None, seed=1,
     )
     logger.iteration_start(
@@ -341,7 +520,7 @@ def test_batch_logger_marker_writes_reuse_borrowed_fd(logs_dir):
     assert logger._fd is fd_at_borrow
 
     logger.write_header(
-        input_path=Path("/x"), styles=["a"], run_dir=Path("/o"),
+        input_paths=[Path("/x")], styles=["a"], run_dir=Path("/o"),
         backend="qwen", quant=4, preview=False, scope=None, seed=1,
     )
     assert logger._fd is fd_at_borrow

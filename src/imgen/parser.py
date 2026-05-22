@@ -138,6 +138,16 @@ def build_parser(
                        help="Generate styled image (default command)")
     _add_generate_args(g, defaults)
 
+    # batch — N inputs × M styles (v0.3.0). Shares every generate flag
+    # except `--output FILE` (single-file mutex doesn't apply when the
+    # batch fan-out always produces multiple files).
+    b = sub.add_parser(
+        "batch",
+        help="Apply M styles to every supported image in a directory "
+             "(non-recursive). HEIC inputs auto-converted via sips.",
+    )
+    _add_batch_args(b, defaults)
+
     return p
 
 
@@ -218,6 +228,78 @@ def _add_generate_args(
                         "multiple images (M ≥ 2 styles).")
     p.add_argument("--dry-run", action="store_true",
                    help="Show mflux command without running")
+    p.add_argument("--force", action="store_true",
+                   help="Skip resource checks (RAM, parallel mflux, etc.) "
+                        "and try anyway. Use at your own risk.")
+
+
+def _add_batch_args(
+    p: argparse.ArgumentParser,
+    defaults: dict[str, Any],
+) -> None:
+    """Argparse stanza for `imgen batch <dir>` — superset of generate's
+    flags minus `--output FILE` (which is mutex with batch's many-files
+    fan-out)."""
+    p.add_argument("directory",
+                   help="Directory containing input photos (non-recursive). "
+                        "Supported: jpg/jpeg/png/webp/heic/heif/bmp/tif/"
+                        "tiff/gif; dotfiles skipped.")
+    p.add_argument(
+        "-s", "--style", type=_style_list_type, default=None,
+        metavar="STYLE[,STYLE,...]",
+        help=f"Style preset(s), comma-separated for multi-style "
+             f"(default: {defaults['style']}). See: imgen --list-styles",
+    )
+    p.add_argument("--custom-prompt",
+                   help="Custom prompt text (overrides --style's prompt). "
+                        "Pass '-' to read from stdin — hides the prompt "
+                        "from `ps auxww`.")
+    p.add_argument("--prompt-file", type=Path, default=None,
+                   help="Read prompt from PATH instead of an argv string. "
+                        "Mutually exclusive with --custom-prompt.")
+    # No `--output FILE` here — batch always uses run-folder layout.
+    p.add_argument(
+        "--output-dir", type=str, default=None,
+        help="Parent directory for the auto-named run folder. "
+             "Overrides $IMGEN_OUTPUT_DIR and [defaults] output_dir.",
+    )
+    p.add_argument("--steps", type=_int_range(1, 200), default=None,
+                   help=f"Inference steps 1..200 (default {defaults['steps']}, "
+                        f"preview {PREVIEW_OVERRIDES['steps']})")
+    p.add_argument("-g", "--guidance", type=_float_range(0.5, 15.0),
+                   default=None,
+                   help=f"Guidance scale 0.5..15 (default "
+                        f"{defaults['guidance']}, style preset may override)")
+    p.add_argument("--strength", type=_float_range(0.0, 1.0), default=None,
+                   help=f"Image strength 0..1 (default {defaults['strength']}, "
+                        "style preset may override)")
+    p.add_argument("--seed", type=_int_range(0, 2**32 - 1),
+                   help="Seed shared across the whole N×M batch "
+                        "(default: random)")
+    p.add_argument("--backend", choices=list(BACKENDS),
+                   default=defaults["backend"],
+                   help=f"Backend (default {defaults['backend']})")
+    p.add_argument("-q", "--quantize", type=int, choices=[3, 4, 5, 6, 8],
+                   default=None,
+                   help=f"Quantization (default {defaults['quantize']}, "
+                        f"preview {PREVIEW_OVERRIDES['quantize']})")
+    p.add_argument("--scope", choices=["person", "scene"],
+                   help="person=transform person only (keep background); "
+                        "scene=transform whole image")
+    p.add_argument("-p", "--preview", action="store_true",
+                   help="Fast preview mode applied uniformly across all "
+                        "N×M generations (~5x faster, lower quality)")
+    p.add_argument("--width", type=_int_range(64, 4096),
+                   help="Override output width (uniform across the batch)")
+    p.add_argument("--height", type=_int_range(64, 4096),
+                   help="Override output height (uniform across the batch)")
+    p.add_argument("--no-open", action="store_true",
+                   help="Don't open the run folder in Finder")
+    p.add_argument("-y", "--yes", action="store_true",
+                   help="Skip the N×M confirm gate")
+    p.add_argument("--dry-run", action="store_true",
+                   help="Show mflux command for every N×M iteration "
+                        "without running")
     p.add_argument("--force", action="store_true",
                    help="Skip resource checks (RAM, parallel mflux, etc.) "
                         "and try anyway. Use at your own risk.")

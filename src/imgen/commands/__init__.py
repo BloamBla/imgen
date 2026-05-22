@@ -9,6 +9,7 @@ dispatch table. Add a new subcommand by editing four files:
 """
 from __future__ import annotations
 
+from .batch import cmd_batch
 from .clean import cmd_clean
 from .doctor import cmd_doctor
 from .generate import cmd_generate
@@ -17,6 +18,7 @@ from .setup import cmd_setup
 from .upgrade import cmd_upgrade
 
 __all__ = [
+    "cmd_batch",
     "cmd_clean",
     "cmd_doctor",
     "cmd_generate",

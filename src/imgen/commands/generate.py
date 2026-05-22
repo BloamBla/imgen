@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import datetime
 import os
-import shutil
 import subprocess
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -22,6 +22,7 @@ from ..config import effective_output_dir
 from ..defaults import DEFAULTS, PREVIEW_OVERRIDES
 from ..history import append_history, load_history
 from ..images import apply_scope, detect_resolution
+from ..inputs import resolve_to_mflux_input
 from ..paths import (
     DEFAULT_OUTPUT_DIR,
     SAFE_OUTPUT_EXTS,
@@ -36,7 +37,7 @@ from ..runs import (
     next_available_run_dir,
 )
 from ..styles import get_style
-from ..subprocess_helpers import format_cmd, run_with_stderr_redaction
+from ..subprocess_helpers import build_mflux_env, format_cmd, run_with_stderr_redaction
 from ..tokens import load_token
 
 
@@ -158,7 +159,10 @@ def _resolve_output_layout(
         mkdir's after confirm gates so cancel doesn't orphan an empty
         dir.
     """
-    if args.output:
+    # `imgen batch` has no --output flag (always run-dir layout), so its
+    # argparse Namespace lacks `output`. getattr keeps this helper
+    # composable between generate (--output supported) and batch.
+    if getattr(args, "output", None):
         explicit_output = Path(args.output).expanduser().resolve()
         return explicit_output, None
     parent = effective_output_dir(
@@ -626,7 +630,11 @@ def _resolve_styles_list(args, merged_defaults: dict) -> list[str]:
                      "or run: imgen --list-styles")
         styles_list = [default_name]
 
-    if args.output and len(styles_list) > 1:
+    # getattr: `imgen batch` doesn't expose --output (mutex with batch's
+    # N inputs × M styles always needing a dir layout), so its argparse
+    # Namespace lacks the `output` attribute. The check below is generate-
+    # specific — silently no-op for batch callers.
+    if getattr(args, "output", None) and len(styles_list) > 1:
         die(f"--output FILE writes to one path; multi-style "
             f"(--style {','.join(styles_list)} → {len(styles_list)} files) "
             "needs a directory.",
@@ -686,194 +694,202 @@ def cmd_generate(args) -> int:
         warn(f"--scope={args.scope} ignored when using a custom prompt "
              "(--custom-prompt / --prompt-file)")
 
-    # 4) Resolution (input-derived — same for all M iterations).
-    if args.width and args.height:
-        width, height = args.width, args.height
-    else:
-        width, height = detect_resolution(input_path, preview=args.preview)
+    # 3c) HEIC pre-conversion (v0.3.0 bonus — also fixes the v0.2.x bug
+    # where `imgen generate vacation.heic` died with a cryptic mflux
+    # PIL error). resolve_to_mflux_input returns the input unchanged
+    # when it isn't HEIC, so the only non-HEIC overhead is one mkdir +
+    # one rmdir of an empty /tmp/imgen-heic-* — trivial vs the 30s-3min
+    # mflux runtime. ``BatchContext.input_path`` stays the ORIGINAL so
+    # history.input records what the user typed; ``Iteration.cmd``
+    # references the converted JPEG via ``_build_iterations(input_path=
+    # mflux_input)``.
+    with tempfile.TemporaryDirectory(prefix="imgen-heic-") as cache_str:
+        mflux_input = resolve_to_mflux_input(input_path, Path(cache_str))
 
-    # 5) Output root + run_dir (one folder for all M iterations).
-    explicit_output, run_dir = _resolve_output_layout(args, config_output_dir)
+        # 4) Resolution (read from the JPEG — mflux's PIL can't open HEIC).
+        if args.width and args.height:
+            width, height = args.width, args.height
+        else:
+            width, height = detect_resolution(mflux_input, preview=args.preview)
 
-    # 6) Backend, token, binary (same for all M).
-    backend, be, token, binary = _load_backend_and_token(args)
+        # 5) Output root + run_dir (one folder for all M iterations).
+        explicit_output, run_dir = _resolve_output_layout(args, config_output_dir)
 
-    # 7) Seed — one seed for the whole invocation so multi-style runs use
-    # the same noise pattern (only style differs → fair preset comparison).
-    seed = (args.seed if args.seed is not None
-            else int.from_bytes(os.urandom(4), "big"))
+        # 6) Backend, token, binary (same for all M).
+        backend, be, token, binary = _load_backend_and_token(args)
 
-    # 8) Pre-resolve each iteration's params + cmd so dry-run can show
-    # all M and we can preflight resources against the heaviest one.
-    iterations = _build_iterations(
-        styles_list=styles_list,
-        args=args,
-        effective_custom_prompt=effective_custom_prompt,
-        merged_defaults=merged_defaults,
-        be=be,
-        binary=binary,
-        input_path=input_path,
-        width=width,
-        height=height,
-        explicit_output=explicit_output,
-        run_dir=run_dir,
-        seed=seed,
-    )
+        # 7) Seed — one seed for the whole invocation so multi-style runs use
+        # the same noise pattern (only style differs → fair preset comparison).
+        seed = (args.seed if args.seed is not None
+                else int.from_bytes(os.urandom(4), "big"))
 
-    # is_batch threshold: "are we doing more than one image in this
-    # invocation?" v0.2.x → len(iterations) >= 2 (single input × M
-    # styles); v0.3.0 → N*M >= 2 (N inputs × M styles). Renamed from
-    # `multi` in v0.2.4 (architect item F1) so the upstream definition
-    # is the one place that changes when batch.py lands.
-    is_batch = len(iterations) >= 2
-    # batch_id stamps every history entry from this invocation when
-    # is_batch is True, making `imgen history --batch <id>` (v0.3.0+)
-    # trivial. Null for single-image runs to preserve v0.2.x history shape.
-    # 12 hex chars = 48 bits — collision probability is astronomical at
-    # single-user scale (one Mac, one human). Keeps log filenames short
-    # and readable vs the 32-char full uuid4. ULID would give lex-
-    # sortable IDs, but auto_run_dirname() already provides the
-    # chronological sort via run-folder names; batch_id only needs to
-    # be unique. (architect F4 from v0.2.3 review)
-    batch_id: str | None = uuid.uuid4().hex[:12] if is_batch else None
-
-    # 9) Dry run — show every M cmd, skip resource checks + history.
-    if args.dry_run:
-        for it in iterations:
-            step(f"Dry run — would execute ({it.style_name}):")
-            print()
-            print(format_cmd(it.cmd))
-            print()
-        return 0
-
-    # 10) Resource preflight — check against the heaviest quant in the
-    # batch (all iterations share a backend + quantize today since neither
-    # is per-style; verifying the first is sufficient and future-proof
-    # via max() if per-style quantize is ever added).
-    heaviest_quant = max(it.final_quantize for it in iterations)
-    _preflight_resources(
-        backend=backend, heaviest_quant=heaviest_quant, force=args.force
-    )
-
-    # 11) Confirm gate (multi-style only — single-style keeps v0.2.x's
-    # zero-prompt UX). --yes skips. Fires AFTER preflight so we never
-    # ask the user to confirm a batch we know we can't run anyway.
-    if is_batch and not args.yes:
-        one_eta = _estimate_one_seconds(
-            load_history(), backend, heaviest_quant, args.preview
-        )
-        proceed = _confirm_batch(
-            iterations=iterations,
-            input_name=input_path.name,
-            output_root=run_dir if run_dir is not None else explicit_output.parent,
-            one_eta_seconds=one_eta,
-        )
-        if not proceed:
-            warn("Cancelled — nothing generated.")
-            return 0
-
-    # 12) mkdir output dir now that we'll actually run.
-    if run_dir is not None:
-        run_dir.mkdir(parents=True, exist_ok=True)
-    else:
-        explicit_output.parent.mkdir(parents=True, exist_ok=True)
-
-    # 13) Per-batch log (multi-style only). BatchLogger owns the lifecycle:
-    # header here, iteration start/end/cancelled markers inside
-    # _run_one_iteration, mflux stderr-tee via borrow_fd() inside
-    # run_with_stderr_redaction, retention via runs.prune_old_batch_logs
-    # called from imgen clean. Held open for the whole batch (v0.2.5
-    # IMP-4 — saves ~200 open/close syscalls at N×M=50); closed in the
-    # try/finally below regardless of how cmd_generate exits.
-    #
-    # Construction + write_header live INSIDE the try block (v0.2.5
-    # review NIT) so an OSError during the first write_header (rare
-    # — disk full at exactly that moment) doesn't leak the fd that
-    # _ensure_open() opened mid-header.
-    logger: BatchLogger | None = None
-    try:
-        if is_batch:
-            logger = BatchLogger(batch_id)
-            logger.write_header(
-                input_path=input_path,
-                styles=[it.style_name for it in iterations],
-                run_dir=run_dir,
-                backend=backend,
-                quant=heaviest_quant,
-                preview=args.preview,
-                scope=args.scope,
-                seed=seed,
-            )
-
-        # 14) Minimal env (don't forward random secrets from parent shell).
-        env: dict[str, str] = {}
-        for key in ("PATH", "HOME", "USER", "LANG", "LC_ALL", "TMPDIR",
-                    "HF_HOME", "HF_HUB_CACHE", "TRANSFORMERS_CACHE",
-                    "MLX_METAL_PRECOMPILE_PATH"):
-            if key in os.environ:
-                env[key] = os.environ[key]
-        if token:
-            env["HF_TOKEN"] = token
-        term = shutil.get_terminal_size(fallback=(80, 24))
-        env["COLUMNS"] = str(term.columns)
-        env["LINES"] = str(term.lines)
-
-        # 15) The loop. Failures don't break the batch — log + continue,
-        # surface the summary at the end. Single-style retains v0.2.x
-        # exit semantics (mflux return code passes through).
-        succeeded: list[tuple[str, Path, int]] = []
-        failed: list[tuple[str, int, Path]] = []
-        total = len(iterations)
-
-        # Bundle the 9 batch-invariant args into a single BatchContext so
-        # _run_one_iteration's signature stays compact — and v0.3.0's
-        # nested N×M loop in commands/batch.py can thread one value
-        # through the inner loop instead of nine. (architect IMP-3 from
-        # v0.2.4 review)
-        ctx = BatchContext(
-            backend=backend,
-            seed=seed,
+        # 8) Pre-resolve each iteration's params + cmd so dry-run can show
+        # all M and we can preflight resources against the heaviest one.
+        iterations = _build_iterations(
+            styles_list=styles_list,
+            args=args,
+            effective_custom_prompt=effective_custom_prompt,
+            merged_defaults=merged_defaults,
+            be=be,
+            binary=binary,
+            input_path=mflux_input,
             width=width,
             height=height,
-            input_path=input_path,
-            effective_custom_prompt=effective_custom_prompt,
-            args=args,
-            batch_id=batch_id,
-            env=env,
-        )
-
-        for idx, it in enumerate(iterations, start=1):
-            cont = _run_one_iteration(
-                it=it,
-                idx=idx,
-                total=total,
-                is_batch=is_batch,
-                ctx=ctx,
-                logger=logger,
-                succeeded=succeeded,
-                failed=failed,
-            )
-            if not cont:
-                return 130
-
-        # 16) Open in Preview (single-style) or Finder (multi-style);
-        # silent no-op on --no-open or when `open` is missing.
-        _open_results(
-            succeeded=succeeded,
+            explicit_output=explicit_output,
             run_dir=run_dir,
-            is_batch=is_batch,
-            no_open=args.no_open,
+            seed=seed,
         )
 
-        # 17) End-of-batch summary (only for multi-style — single-style
-        # keeps the v0.2.x lean output).
-        if is_batch:
-            _print_batch_summary(succeeded, failed, total)
+        # is_batch threshold: "are we doing more than one image in this
+        # invocation?" v0.2.x → len(iterations) >= 2 (single input × M
+        # styles); v0.3.0 → N*M >= 2 (N inputs × M styles). Renamed from
+        # `multi` in v0.2.4 (architect item F1) so the upstream definition
+        # is the one place that changes when batch.py lands.
+        is_batch = len(iterations) >= 2
+        # batch_id stamps every history entry from this invocation when
+        # is_batch is True, making `imgen history --batch <id>` (v0.3.0+)
+        # trivial. Null for single-image runs to preserve v0.2.x history shape.
+        # 12 hex chars = 48 bits — collision probability is astronomical at
+        # single-user scale (one Mac, one human). Keeps log filenames short
+        # and readable vs the 32-char full uuid4. ULID would give lex-
+        # sortable IDs, but auto_run_dirname() already provides the
+        # chronological sort via run-folder names; batch_id only needs to
+        # be unique. (architect F4 from v0.2.3 review)
+        batch_id: str | None = uuid.uuid4().hex[:12] if is_batch else None
 
-        # 18) Exit code (single-style passthrough vs multi-style 0/1/5).
-        return _exit_code(
-            is_batch=is_batch, succeeded=succeeded, failed=failed
+        # 9) Dry run — show every M cmd, skip resource checks + history.
+        if args.dry_run:
+            for it in iterations:
+                step(f"Dry run — would execute ({it.style_name}):")
+                print()
+                print(format_cmd(it.cmd))
+                print()
+            return 0
+
+        # 10) Resource preflight — check against the heaviest quant in the
+        # batch (all iterations share a backend + quantize today since neither
+        # is per-style; verifying the first is sufficient and future-proof
+        # via max() if per-style quantize is ever added).
+        heaviest_quant = max(it.final_quantize for it in iterations)
+        _preflight_resources(
+            backend=backend, heaviest_quant=heaviest_quant, force=args.force
         )
-    finally:
-        if logger is not None:
-            logger.close()
+
+        # 11) Confirm gate (multi-style only — single-style keeps v0.2.x's
+        # zero-prompt UX). --yes skips. Fires AFTER preflight so we never
+        # ask the user to confirm a batch we know we can't run anyway.
+        if is_batch and not args.yes:
+            one_eta = _estimate_one_seconds(
+                load_history(), backend, heaviest_quant, args.preview
+            )
+            proceed = _confirm_batch(
+                iterations=iterations,
+                input_name=input_path.name,
+                output_root=run_dir if run_dir is not None else explicit_output.parent,
+                one_eta_seconds=one_eta,
+            )
+            if not proceed:
+                warn("Cancelled — nothing generated.")
+                return 0
+
+        # 12) mkdir output dir now that we'll actually run.
+        if run_dir is not None:
+            run_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            explicit_output.parent.mkdir(parents=True, exist_ok=True)
+
+        # 13) Per-batch log (multi-style only). BatchLogger owns the lifecycle:
+        # header here, iteration start/end/cancelled markers inside
+        # _run_one_iteration, mflux stderr-tee via borrow_fd() inside
+        # run_with_stderr_redaction, retention via runs.prune_old_batch_logs
+        # called from imgen clean. Held open for the whole batch (v0.2.5
+        # IMP-4 — saves ~200 open/close syscalls at N×M=50); closed in the
+        # try/finally below regardless of how cmd_generate exits.
+        #
+        # Construction + write_header live INSIDE the try block (v0.2.5
+        # review NIT) so an OSError during the first write_header (rare
+        # — disk full at exactly that moment) doesn't leak the fd that
+        # _ensure_open() opened mid-header.
+        logger: BatchLogger | None = None
+        try:
+            if is_batch:
+                logger = BatchLogger(batch_id)
+                logger.write_header(
+                    input_paths=[input_path],
+                    styles=[it.style_name for it in iterations],
+                    run_dir=run_dir,
+                    backend=backend,
+                    quant=heaviest_quant,
+                    preview=args.preview,
+                    scope=args.scope,
+                    seed=seed,
+                )
+
+            # 14) Minimal env (don't forward random secrets from parent shell).
+            # Shared with cmd_batch via subprocess_helpers.build_mflux_env —
+            # single source of truth for the allow-list (IMP-5 from v0.3.0
+            # review; was duplicated between batch.py and here).
+            env = build_mflux_env(token)
+
+            # 15) The loop. Failures don't break the batch — log + continue,
+            # surface the summary at the end. Single-style retains v0.2.x
+            # exit semantics (mflux return code passes through).
+            succeeded: list[tuple[str, Path, int]] = []
+            failed: list[tuple[str, int, Path]] = []
+            total = len(iterations)
+
+            # Bundle the 9 batch-invariant args into a single BatchContext so
+            # _run_one_iteration's signature stays compact — and v0.3.0's
+            # nested N×M loop in commands/batch.py can thread one value
+            # through the inner loop instead of nine. (architect IMP-3 from
+            # v0.2.4 review). input_path here is the ORIGINAL (HEIC or
+            # otherwise) so history.input records what the user typed —
+            # Iteration.cmd already points mflux at the sips-converted
+            # JPEG via mflux_input above.
+            ctx = BatchContext(
+                backend=backend,
+                seed=seed,
+                width=width,
+                height=height,
+                input_path=input_path,
+                effective_custom_prompt=effective_custom_prompt,
+                args=args,
+                batch_id=batch_id,
+                env=env,
+            )
+
+            for idx, it in enumerate(iterations, start=1):
+                cont = _run_one_iteration(
+                    it=it,
+                    idx=idx,
+                    total=total,
+                    is_batch=is_batch,
+                    ctx=ctx,
+                    logger=logger,
+                    succeeded=succeeded,
+                    failed=failed,
+                )
+                if not cont:
+                    return 130
+
+            # 16) Open in Preview (single-style) or Finder (multi-style);
+            # silent no-op on --no-open or when `open` is missing.
+            _open_results(
+                succeeded=succeeded,
+                run_dir=run_dir,
+                is_batch=is_batch,
+                no_open=args.no_open,
+            )
+
+            # 17) End-of-batch summary (only for multi-style — single-style
+            # keeps the v0.2.x lean output).
+            if is_batch:
+                _print_batch_summary(succeeded, failed, total)
+
+            # 18) Exit code (single-style passthrough vs multi-style 0/1/5).
+            return _exit_code(
+                is_batch=is_batch, succeeded=succeeded, failed=failed
+            )
+        finally:
+            if logger is not None:
+                logger.close()

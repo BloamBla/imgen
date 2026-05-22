@@ -12,6 +12,11 @@ Usage:
     imgen photo.jpg --prompt-file ~/p.txt        # prompt from file (hidden from ps)
     imgen photo.jpg -s simpsons --steps 30 --strength 0.7
     imgen photo.jpg --backend qwen               # use Qwen Edit instead of FLUX
+    imgen vacation.heic                          # HEIC auto-converted via sips (v0.3.0)
+
+    imgen batch ~/Desktop/holiday                # v0.3.0: every photo in folder, default style
+    imgen batch <dir> -s anime,ghibli,pixar      # N inputs × M styles into one timestamped folder
+    imgen batch <dir> --dry-run                  # show every mflux command without running
 
     imgen --list-styles
     imgen --dry-run photo.jpg --style anime
@@ -34,6 +39,7 @@ import sys
 
 from .colors import warn
 from .commands import (
+    cmd_batch,
     cmd_clean,
     cmd_doctor,
     cmd_generate,
@@ -50,7 +56,7 @@ from .paths import CONFIG_FILE
 
 _KNOWN_SUBCOMMANDS = {
     "setup", "doctor", "upgrade", "clean",
-    "history", "last", "replay", "generate",
+    "history", "last", "replay", "generate", "batch",
 }
 
 _HANDLERS = {
@@ -62,6 +68,7 @@ _HANDLERS = {
     "last": cmd_last,
     "replay": cmd_replay,
     "generate": cmd_generate,
+    "batch": cmd_batch,
 }
 
 

@@ -7,11 +7,14 @@ imgen photo.jpg                              # Pixar style (default)
 imgen photo.jpg --style anime
 imgen photo.jpg --style simpsons --preview   # ~3 min fast test
 imgen photo.jpg --custom-prompt "Mona Lisa painting style"
+imgen batch ~/Desktop/holiday --style anime,ghibli   # v0.3.0: every photo in folder × every style
 ```
 
 Every run creates a timestamped folder under `~/Desktop/imgen/` — e.g. `~/Desktop/imgen/2026-05-21-14-30-12/photo-pixar.png`. The result opens in Preview automatically. Change the parent with `--output-dir PATH` or pin an exact path with `--output FILE`.
 
 **Multi-style** (v0.2.3+): pass `--style anime,ghibli,pixar` to generate N images from one input in a single run — all dropped into the same timestamped folder, named by `<input>-<style>.png`. Confirms with a `[y/N]` summary before starting (skip with `-y/--yes`).
+
+**Batch a folder** (v0.3.0+): `imgen batch <dir>` applies M styles to every supported image directly under `<dir>` (non-recursive — `ls <dir>` ≈ what gets batched). Same flat output layout — all N×M results in one timestamped folder, named `<input>-<style>.png`. iPhone HEIC inputs are auto-converted via `sips` before mflux sees them; the same HEIC handling also fixes single-file `imgen generate vacation.heic`. Confirm gate shows N inputs × M styles + ETA; skip with `-y/--yes`.
 
 ## Requirements
 
@@ -110,6 +113,12 @@ imgen <photo> -s anime --scope scene           # restyle whole image
 imgen <photo> --backend qwen                   # use Qwen Edit (no HF token needed)
 imgen <photo> --force                          # skip resource preflight checks
 
+# Batch a folder (v0.3.0+) — same flags as generate except no -o/--output (always run-folder layout)
+imgen batch <dir>                              # every photo × default style → one timestamped folder
+imgen batch <dir> --style anime,ghibli,pixar   # N × M into one folder, named <input>-<style>.png
+imgen batch <dir> --style anime --yes          # skip the N×M confirm gate
+imgen batch <dir> --dry-run                    # show every mflux command without running
+
 # Diagnostics
 imgen doctor                                   # env + RAM forecast + cached models
 imgen --list-styles                            # show presets
@@ -190,6 +199,8 @@ color = "auto"              # "auto" | "always" | "never"
 For `output_dir` specifically the resolution is **`--output-dir` CLI flag > `$IMGEN_OUTPUT_DIR` env > config > default**. The CLI flag wins (added in v0.2.3 — beats env, which was the v0.1.x one-off channel); env is still the easiest way to redirect without touching config.
 
 **Output layout (v0.2.3+):** every run writes into a fresh timestamped folder under the resolved output root — `~/Desktop/imgen/2026-05-21-14-30-12/photo-pixar.png`. The folder name is `YYYY-MM-DD-HH-MM-SS`, sortable both alphabetically and chronologically. Files inside are named `<input-basename>-<style>.png`; `mtime` in Finder gives completion-time ordering. To bypass the folder entirely and write to one specific file, use `-o`/`--output FILE` (mutex with `--output-dir`).
+
+**`imgen batch <dir>`** (v0.3.0+) keeps the same flat folder layout — N inputs × M styles all land in one timestamped folder, named `<input.stem>-<style>.png`. Non-recursive (subdirectories ignored on purpose so `.photoslibrary` packages and mounted volumes can't leak in); dotfiles like `.DS_Store` skipped. Supported input formats: `jpg`/`jpeg`/`png`/`webp`/`heic`/`heif`/`bmp`/`tif`/`tiff`/`gif`. HEIC inputs are auto-converted to JPEG via macOS-native `sips` before mflux sees them — converted files live in a private `0o700` temp dir wiped on exit. Two inputs that would map to the same output stem (e.g. `IMG_1234.heic` + `IMG_1234.jpg`) fail fast with a "rename one" hint instead of silently overwriting.
 
 **Color:** `[ui] color = "auto"` (default) emits ANSI only when stdout is a tty; `"always"` forces color (handy for piping into `less -R`); `"never"` disables. The `NO_COLOR` env var (https://no-color.org/) beats both — any non-empty value disables color regardless of config.
 

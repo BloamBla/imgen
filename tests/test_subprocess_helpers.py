@@ -194,3 +194,63 @@ def test_run_with_stderr_redaction_handles_multi_chunk_output(
     # Token in the second chunk fully redacted.
     assert _FAKE_TOKEN.encode() not in log_content
     assert b"hf_***REDACTED***" in log_content
+
+
+# ── build_mflux_env (v0.3.0 IMP-5: single source of truth) ─────────────
+
+
+from imgen.subprocess_helpers import build_mflux_env
+
+
+def test_build_mflux_env_includes_path_when_set(monkeypatch):
+    """PATH is in the allow-list — child process needs it to find
+    any subprocess it spawns (mflux shelling out to git etc.)."""
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    env = build_mflux_env(token=None)
+    assert env["PATH"] == "/usr/bin:/bin"
+
+
+def test_build_mflux_env_omits_keys_not_in_parent(monkeypatch):
+    """Allow-list keys that AREN'T set in the parent stay absent —
+    no fabricated empties leaking into the child."""
+    for k in ("TMPDIR", "MLX_METAL_PRECOMPILE_PATH", "HF_HUB_CACHE"):
+        monkeypatch.delenv(k, raising=False)
+    env = build_mflux_env(token=None)
+    assert "TMPDIR" not in env
+    assert "MLX_METAL_PRECOMPILE_PATH" not in env
+    assert "HF_HUB_CACHE" not in env
+
+
+def test_build_mflux_env_excludes_unrelated_parent_vars(monkeypatch):
+    """Allow-list is a positive list — anything not enumerated stays
+    out, even when set in parent. This is the security guarantee:
+    AWS creds, ssh-agent socket, random shell aliases never reach
+    the mflux subprocess."""
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "secret-not-for-mflux")
+    monkeypatch.setenv("MY_RANDOM_VAR", "leak-me")
+    env = build_mflux_env(token=None)
+    assert "AWS_SECRET_ACCESS_KEY" not in env
+    assert "MY_RANDOM_VAR" not in env
+
+
+def test_build_mflux_env_token_set_when_passed(monkeypatch):
+    env = build_mflux_env(token="hf_realtoken123")
+    assert env["HF_TOKEN"] == "hf_realtoken123"
+
+
+def test_build_mflux_env_token_omitted_when_none(monkeypatch):
+    """qwen (open backend) → no HF_TOKEN forwarded. Defence-in-depth
+    against accidentally injecting credentials into open-backend runs."""
+    env = build_mflux_env(token=None)
+    assert "HF_TOKEN" not in env
+
+
+def test_build_mflux_env_forwards_terminal_size(monkeypatch):
+    """COLUMNS/LINES from shutil.get_terminal_size — tqdm reads these
+    to render a full-width progress bar instead of the 80-col fallback
+    when running detached from a tty."""
+    env = build_mflux_env(token=None)
+    assert "COLUMNS" in env
+    assert "LINES" in env
+    assert env["COLUMNS"].isdigit()
+    assert env["LINES"].isdigit()

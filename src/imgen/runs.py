@@ -316,7 +316,7 @@ class BatchLogger:
     def write_header(
         self,
         *,
-        input_path: Path,
+        input_paths: list[Path],
         styles: list[str],
         run_dir: Path | None,
         backend: str,
@@ -326,24 +326,93 @@ class BatchLogger:
         seed: int,
         now: _dt.datetime | None = None,
     ) -> None:
-        """Write the # imgen batch <id> header block.
+        """Write the ``# imgen batch <id>`` header block.
 
-        `now` defaults to wall-clock time but is injectable for tests.
+        ``input_paths`` is a list — v0.3.0 unified shape covering both
+        ``imgen generate`` (one input × M styles) and ``imgen batch``
+        (N inputs × M styles). Renders ``# inputs (N):  name1, name2,
+        ...`` with basenames only (full paths would balloon the line
+        when the input dir is deep).
+
+        Empty ``input_paths`` is a caller bug — every caller (cmd_generate
+        / cmd_batch) validates upstream, but a defensive guard surfaces
+        a regression here instead of writing a confusing ``inputs (0):``
+        line. (v0.3.0)
+
+        ``now`` defaults to wall-clock time but is injectable for tests.
         """
+        if not input_paths:
+            raise ValueError(
+                "write_header requires non-empty input_paths "
+                "(callers validate upstream)"
+            )
         started = (now if now is not None else _dt.datetime.now()).isoformat(
             timespec="seconds"
         )
+        input_names = ", ".join(p.name for p in input_paths)
+        styles_names = ", ".join(styles)
         header = (
             f"# imgen batch {self._batch_id}\n"
             f"# started:  {started}\n"
-            f"# input:    {input_path}\n"
-            f"# styles:   {', '.join(styles)}\n"
+            f"# inputs ({len(input_paths)}):  {input_names}\n"
+            f"# styles ({len(styles)}):  {styles_names}\n"
             f"# output:   {run_dir}\n"
             f"# backend:  {backend} q{quant}  "
             f"preview={preview}  scope={scope}  seed={seed}\n"
         )
         fd = self._ensure_open()
         fd.write(header.encode())
+        fd.flush()
+
+    def input_section_start(
+        self, idx_input: int, total_inputs: int, name: str
+    ) -> None:
+        """Open a per-input section block in the log (v0.3.0 batch).
+
+        Marker shape: ``=== INPUT <name> (k/N) ===``. Bookends the M
+        iteration blocks for one input, so ``tail -f`` users can see
+        progress at the input level without counting iteration markers.
+
+        Single-input runs (``imgen generate``) do NOT call this — only
+        ``cmd_batch`` opens sections. Keeps the v0.2.x single-input
+        log shape unchanged for that path.
+        """
+        marker = f"\n=== INPUT {name} ({idx_input}/{total_inputs}) ===\n"
+        fd = self._ensure_open()
+        fd.write(marker.encode())
+        fd.flush()
+
+    def input_section_end(
+        self,
+        *,
+        idx_input: int,
+        total_inputs: int,
+        name: str,
+        ok_count: int,
+        fail_count: int,
+        duration: int,
+    ) -> None:
+        """Close a per-input section with the per-input outcome summary.
+
+        Shape: ``=== INPUT <name> → <ok>/<total> ok in <dur>s ===`` for
+        all-success; appends ``fail=<n>`` when any iteration failed so
+        ``grep 'INPUT.*fail='`` finds every partially-failed input in
+        one pass.
+
+        ``ok_count + fail_count`` equals the number of styles attempted
+        for this input — the caller (cmd_batch) is responsible for the
+        running tallies (mirrors how ``_run_one_iteration`` mutates
+        ``succeeded`` / ``failed`` lists for the whole batch).
+        """
+        total = ok_count + fail_count
+        if fail_count == 0:
+            marker = (f"\n=== INPUT {name} → {ok_count}/{total} ok "
+                      f"in {duration}s ===\n")
+        else:
+            marker = (f"\n=== INPUT {name} → {ok_count}/{total} ok "
+                      f"fail={fail_count} in {duration}s ===\n")
+        fd = self._ensure_open()
+        fd.write(marker.encode())
         fd.flush()
 
     def iteration_start(

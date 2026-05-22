@@ -7,12 +7,54 @@ carriage-return overwrites, not newlines).
 """
 from __future__ import annotations
 
+import os
 import re
+import shutil
 import subprocess
 import sys
 from typing import BinaryIO
 
-__all__ = ["format_cmd", "run_with_stderr_redaction"]
+__all__ = ["build_mflux_env", "format_cmd", "run_with_stderr_redaction"]
+
+
+# Single source of truth for the env allow-list reaching the mflux
+# subprocess. Forwarding the FULL parent environment would leak any
+# secret the user's shell carries (other tokens, AWS creds, ssh-agent
+# vars) into the child's tracebacks and crash reports. The allow-list
+# captures only the env keys mflux + huggingface_hub + MLX genuinely
+# consume. (HF_TOKEN is added on top when the backend needs it.)
+#
+# COLUMNS / LINES are appended at build time from `shutil.get_terminal_size`
+# so tqdm renders full-width progress bars instead of a wrapped 80-col
+# fallback.
+_MFLUX_ENV_ALLOWLIST: tuple[str, ...] = (
+    "PATH", "HOME", "USER", "LANG", "LC_ALL", "TMPDIR",
+    "HF_HOME", "HF_HUB_CACHE", "TRANSFORMERS_CACHE",
+    "MLX_METAL_PRECOMPILE_PATH",
+)
+
+
+def build_mflux_env(token: str | None) -> dict[str, str]:
+    """Minimal environment for the mflux subprocess.
+
+    Allow-listed keys from :data:`_MFLUX_ENV_ALLOWLIST` are copied from
+    the parent environment; ``HF_TOKEN`` is added when the backend
+    needs gated-model access; ``COLUMNS`` / ``LINES`` are forwarded
+    from the host terminal so tqdm renders at the user's actual width.
+
+    Shared by ``cmd_generate`` and ``cmd_batch`` (v0.3.0 IMP-5 — the
+    two call sites used to inline this block separately, risking the
+    allow-list drifting between them on the next edit).
+    """
+    env: dict[str, str] = {
+        k: os.environ[k] for k in _MFLUX_ENV_ALLOWLIST if k in os.environ
+    }
+    if token:
+        env["HF_TOKEN"] = token
+    term = shutil.get_terminal_size(fallback=(80, 24))
+    env["COLUMNS"] = str(term.columns)
+    env["LINES"] = str(term.lines)
+    return env
 
 # Minimum 36 chars after `hf_` so a truncated prefix at a buffer boundary
 # (e.g. `hf_AbC\n` flushed via the last-`\r`-or-`\n` rule before the rest
