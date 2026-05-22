@@ -230,19 +230,205 @@ def test_replay_entry_namespace_has_explicit_v05_enhance_fields(
     assert args.imgen_config_enhance == {}
 
 
+# ── v=3 LoRA rehydration on replay (v0.6 — Architect CRITICAL #1) ──────
+
+
+def test_replay_entry_v3_rehydrates_stored_loras(tmp_state_dir, monkeypatch):
+    """A v=3 entry carrying a non-empty ``loras`` list must rehydrate
+    into ``args.lora`` (list[LoraRef]) + ``args.no_lora=True`` so the
+    style's CURRENT built-in LoRAs don't sneak in alongside the stored
+    snapshot. Architect-CRITICAL #1 fix from the v0.6 pre-tag review.
+
+    Without this rehydration, ``imgen replay <id>`` silently diverged
+    on LoRA selection: a generation originally run with ``--lora REF``
+    replayed WITHOUT the LoRA, and ``--no-lora`` original runs replayed
+    WITH the style's new built-in LoRA re-injected — both broke replay
+    determinism."""
+    import imgen.commands.history as history_cmd
+    from imgen.styles import LoraRef
+
+    captured = {}
+
+    def fake_cmd_generate(args):
+        captured["args"] = args
+        return 0
+
+    monkeypatch.setattr(history_cmd, "cmd_generate", fake_cmd_generate)
+
+    entry = {
+        "id": 7, "v": 3,
+        "input": "/photo.jpg",
+        "style": "anime",
+        "backend": "flux", "quantize": 8,
+        "steps": 20, "guidance": 3.5, "strength": 0.55,
+        "loras": [
+            {
+                "ref": "strangerzonehf/Flux-Animeo-v1-LoRA",
+                "weight": 0.8,
+                "compatible_with": ["flux-1"],
+                "trigger": "Animeo",
+            },
+        ],
+    }
+    history_cmd.replay_entry(entry)
+    args = captured["args"]
+
+    # args.lora reconstructed as a list of LoraRef matching the stored shape.
+    assert args.lora == [LoraRef(
+        ref="strangerzonehf/Flux-Animeo-v1-LoRA",
+        weight=0.8,
+        compatible_with=("flux-1",),
+        trigger="Animeo",
+    )]
+    # args.no_lora=True suppresses the style's CURRENT built-ins so
+    # only the stored stack is used (resolve_effective_loras carve-out
+    # keeps cli_lora when no_lora=True).
+    assert args.no_lora is True
+
+
+def test_replay_entry_v3_text_only_run_rehydrates_as_no_lora(
+    tmp_state_dir, monkeypatch,
+):
+    """A v=3 entry with ``loras=[]`` records a text-only original run
+    (either a style without built-in LoRAs OR an explicit --no-lora
+    invocation). Replay must reproduce the text-only behaviour even if
+    the style now ships built-in LoRAs."""
+    import imgen.commands.history as history_cmd
+    captured = {}
+
+    def fake_cmd_generate(args):
+        captured["args"] = args
+        return 0
+
+    monkeypatch.setattr(history_cmd, "cmd_generate", fake_cmd_generate)
+
+    entry = {
+        "id": 8, "v": 3,
+        "input": "/photo.jpg",
+        "style": "simpsons",
+        "backend": "flux", "quantize": 8,
+        "steps": 20, "guidance": 4.5, "strength": 0.65,
+        "loras": [],  # text-only original run
+    }
+    history_cmd.replay_entry(entry)
+    args = captured["args"]
+
+    # No CLI LoRAs to inject + no_lora=True → resolve_effective_loras
+    # returns () via the v0.5 path (carve-out only kicks in when
+    # cli_lora is non-empty).
+    assert args.lora is None
+    assert args.no_lora is True
+
+
+def test_replay_entry_pre_v3_falls_back_to_current_style_loras(
+    tmp_state_dir, monkeypatch,
+):
+    """v=1 and v=2 entries pre-date the LoRA persistence. Replay must
+    not crash on them — instead use the style's current LoRA stack
+    (best-effort fallback, matches v0.5 behaviour). args.lora=None
+    + args.no_lora=False reproduces "no CLI override, no opt-out"."""
+    import imgen.commands.history as history_cmd
+    captured = {}
+
+    def fake_cmd_generate(args):
+        captured["args"] = args
+        return 0
+
+    monkeypatch.setattr(history_cmd, "cmd_generate", fake_cmd_generate)
+
+    entry = {
+        "id": 9, "v": 2,
+        "input": "/photo.jpg",
+        "style": "anime",
+        "backend": "flux", "quantize": 8,
+        "steps": 20, "guidance": 4.0, "strength": 0.6,
+        # NO loras field — pre-v0.6 schema.
+    }
+    history_cmd.replay_entry(entry)
+    args = captured["args"]
+
+    assert args.lora is None
+    assert args.no_lora is False
+
+
+def test_replay_entry_v3_malformed_loras_field_gracefully_falls_back(
+    tmp_state_dir, monkeypatch,
+):
+    """Defensive: a hand-edited history.jsonl with a typo'd loras
+    shape (not a list, or list with non-dict entries) must NOT crash
+    replay. Falls back to "no LoRA info" so the generation still runs."""
+    import imgen.commands.history as history_cmd
+    captured = {}
+
+    def fake_cmd_generate(args):
+        captured["args"] = args
+        return 0
+
+    monkeypatch.setattr(history_cmd, "cmd_generate", fake_cmd_generate)
+
+    # Loras is a string instead of a list — corruption / hand-edit.
+    entry = {
+        "id": 10, "v": 3,
+        "input": "/photo.jpg",
+        "style": "anime",
+        "backend": "flux", "quantize": 8,
+        "steps": 20, "guidance": 4.0, "strength": 0.6,
+        "loras": "not-a-list",
+    }
+    history_cmd.replay_entry(entry)
+    args = captured["args"]
+
+    # Falls back to the pre-v3 behaviour: no override, no opt-out.
+    assert args.lora is None
+    assert args.no_lora is False
+
+
+def test_history_entry_persists_loras_field(tmp_state_dir):
+    """End-to-end persistence: writing an entry with a loras list
+    round-trips through history.jsonl with shape intact (list of dicts,
+    each dict carrying ref/weight/compatible_with/trigger)."""
+    append_history({
+        "input": "/p.jpg",
+        "output": "/o.png",
+        "prompt": "Restyle this person as anime",
+        "backend": "flux",
+        "loras": [
+            {
+                "ref": "strangerzonehf/Flux-Animeo-v1-LoRA",
+                "weight": 0.8,
+                "compatible_with": ["flux-1"],
+                "trigger": "Animeo",
+            },
+        ],
+    })
+    entries = load_history()
+    assert len(entries) == 1
+    assert entries[0]["v"] == HISTORY_SCHEMA_VERSION
+    assert entries[0]["loras"] == [
+        {
+            "ref": "strangerzonehf/Flux-Animeo-v1-LoRA",
+            "weight": 0.8,
+            "compatible_with": ["flux-1"],
+            "trigger": "Animeo",
+        },
+    ]
+
+
 # ── v=2 schema migration (v0.5 — LLM prompt enhancer) ──────────────────
 
 
-def test_history_schema_version_is_2(tmp_state_dir):
-    """v0.5 bumps the schema to 2 for the enhancer fields. Lock-in
-    against accidental downgrade in a future commit."""
-    assert HISTORY_SCHEMA_VERSION == 2
+def test_history_schema_version_is_3(tmp_state_dir):
+    """v0.6 bumps the schema to 3 for the new ``loras`` field (replay
+    determinism — Architect-CRITICAL #1 from the v0.6 pre-tag review).
+    Lock-in against accidental downgrade in a future commit."""
+    assert HISTORY_SCHEMA_VERSION == 3
 
 
 def test_v1_entries_still_pass_replay_schema_gate(tmp_state_dir, monkeypatch):
     """A history.jsonl row written by v0.4.x carries v=1 and no
-    enhance_* fields. Replay must NOT refuse it as "newer schema" —
-    1 < 2 = past schema, treat as if enhancement was off."""
+    enhance_* / loras fields. Replay must NOT refuse it as "newer
+    schema" — 1 < HISTORY_SCHEMA_VERSION, treat as if enhancement was
+    off and LoRA info absent (fall back to current style's LoRAs)."""
     import imgen.commands.history as history_cmd
 
     captured = {}
@@ -288,7 +474,7 @@ def test_v2_entry_with_enhance_fields_roundtrips(tmp_state_dir):
     entries = load_history()
     assert len(entries) == 1
     e = entries[0]
-    assert e["v"] == 2
+    assert e["v"] == HISTORY_SCHEMA_VERSION
     assert e["enhanced"] is True
     assert e["enhance_model"] == "mlx-community/Qwen2.5-7B-Instruct-4bit"
     assert e["enhance_fallback_reason"] is None
@@ -319,11 +505,11 @@ def test_v2_entry_with_fallback_records_reason(tmp_state_dir):
     assert entries[0]["prompt"] == entries[0]["prompt_original"]
 
 
-def test_v2_entry_without_enhance_fields_is_legal(tmp_state_dir):
+def test_v_current_entry_without_enhance_fields_is_legal(tmp_state_dir):
     """When --enhance-prompt is OFF (default), the entry doesn't write
     enhance_* fields at all — keeps the per-row JSON terse and matches
-    "no LLM was involved" semantics. v=2 stamping is unconditional
-    (every new entry gets v=2 even without enhance fields)."""
+    "no LLM was involved" semantics. Schema stamping is unconditional
+    (every new entry gets the current schema version)."""
     append_history({
         "input": "/p.jpg",
         "output": "/o.png",
@@ -331,7 +517,7 @@ def test_v2_entry_without_enhance_fields_is_legal(tmp_state_dir):
         "backend": "flux",
     })
     entries = load_history()
-    assert entries[0]["v"] == 2
+    assert entries[0]["v"] == HISTORY_SCHEMA_VERSION
     # Absence of the enhance_* keys is the "enhancer was off" signal.
     assert "enhanced" not in entries[0]
     assert "enhance_model" not in entries[0]

@@ -44,14 +44,34 @@ class TestResolveEffectiveLoras:
         out = resolve_effective_loras(preset, cli_lora=None, no_lora=True)
         assert out == ()
 
-    def test_no_lora_overrides_cli_loras_too(self):
-        """argparse enforces --lora + --no-lora mutex at parse time, but
-        if a programmatic caller bypasses that and passes both,
-        --no-lora wins (the explicit drop-all signal)."""
-        preset = {"prompt": "x"}
-        cli = [LoraRef(ref="cli/lora")]
+    def test_no_lora_keeps_cli_loras_for_replay_path(self):
+        """v0.6 carve-out: argparse enforces --lora + --no-lora mutex
+        from CLI, but the replay path bypasses argparse and passes
+        BOTH (cli_lora=stored_stack + no_lora=True) so the style's
+        CURRENT built-in LoRAs are suppressed while the stored
+        snapshot is reproduced. Architect-CRITICAL #1 fix from the
+        v0.6 pre-tag review. Without this carve-out replay would
+        silently drop the stored stack."""
+        preset = {
+            "prompt": "x",
+            "loras": (LoraRef(ref="style/current_builtin"),),
+        }
+        cli = [LoraRef(ref="replay/stored")]
         out = resolve_effective_loras(preset, cli_lora=cli, no_lora=True)
-        assert out == ()
+        # Style's current built-in suppressed; replay's stored stack survives.
+        assert out == (LoraRef(ref="replay/stored"),)
+
+    def test_no_lora_with_empty_cli_returns_empty_tuple(self):
+        """When no_lora=True and cli_lora is None / [], the carve-out
+        falls back to the original v0.5 semantics: empty tuple. Models
+        the user's --no-lora invocation (drop everything) and the
+        v=3 history entry with loras=[] (text-only original run)."""
+        preset = {
+            "prompt": "x",
+            "loras": (LoraRef(ref="style/lora", weight=0.8),),
+        }
+        assert resolve_effective_loras(preset, cli_lora=None, no_lora=True) == ()
+        assert resolve_effective_loras(preset, cli_lora=[], no_lora=True) == ()
 
     def test_style_loras_passed_through_when_no_cli(self):
         a = LoraRef(ref="a/1", weight=0.8)
@@ -169,6 +189,57 @@ class TestPrependTriggerWords:
         out = prepend_trigger_words("anime portrait", loras)
         # Trigger stripped before comparison + prepending.
         assert out == "Animeo, anime portrait"
+
+    # ── v0.6 python-reviewer IMP-2: word-boundary anchoring ────────
+
+    def test_short_trigger_does_not_false_positive_on_substring(self):
+        """v0.5 used unanchored ``trig_lower in prompt_lower`` — a
+        3-character user trigger like ``"ani"`` would falsely match
+        any prompt containing ``"animation"`` / ``"fanatical"`` /
+        ``"sanitary"`` and silently skip prepending. v0.6 uses regex
+        word-boundary (``\\b``) anchoring so short triggers behave
+        correctly. Built-in triggers (Animeo / Pixar 3D / Ghibli style)
+        are long enough that the v0.5 regression was latent, but the
+        surface is public-via-user-styles."""
+        loras = (LoraRef(ref="x/y", trigger="ani"),)
+        # "ani" does not appear as a whole word in this prompt.
+        out = prepend_trigger_words("animation portrait", loras)
+        assert out == "ani, animation portrait"
+
+    def test_short_trigger_matches_when_whole_word(self):
+        """The flip side: when the trigger IS a whole word in the
+        prompt, it counts as present and no prepending happens.
+        Symmetric with the substring-rejection case above."""
+        loras = (LoraRef(ref="x/y", trigger="ani"),)
+        out = prepend_trigger_words("ani style portrait", loras)
+        assert out == "ani style portrait"
+
+    def test_multi_word_trigger_matches_only_at_word_boundaries(self):
+        """``"Pixar 3D"`` must match in a prompt only when bracketed by
+        word boundaries (start/end of string OR non-word chars). A
+        prompt with ``"superPixar 3D"`` does NOT contain the trigger
+        as a whole token."""
+        loras = (LoraRef(ref="x/y", trigger="Pixar 3D"),)
+        # No word-boundary before "Pixar" → counts as missing.
+        out = prepend_trigger_words("superPixar 3D portrait", loras)
+        assert out == "Pixar 3D, superPixar 3D portrait"
+        # Word-boundary present → counts as present.
+        out = prepend_trigger_words("Pixar 3D portrait", loras)
+        assert out == "Pixar 3D portrait"
+
+    def test_trigger_with_regex_metacharacters_safe(self):
+        """If a user-defined LoRA trigger happens to contain regex
+        metacharacters (``.``/``+``/``(``/...), the search must treat
+        them as literal — ``re.escape`` handles this. Defensive against
+        a future LoRA whose trigger is ``v1.0`` or ``a+b``."""
+        loras = (LoraRef(ref="x/y", trigger="v1.0"),)
+        # Without re.escape, "v1.0" would match "v100" via the regex
+        # ".". With escape, the literal dot is required.
+        out = prepend_trigger_words("portrait of v100 model", loras)
+        assert out == "v1.0, portrait of v100 model"
+        # Whole-word literal match → skip prepending.
+        out = prepend_trigger_words("portrait of v1.0 model", loras)
+        assert out == "portrait of v1.0 model"
 
 
 # ── End-to-end via build_iterations ────────────────────────────────────

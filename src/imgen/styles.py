@@ -440,12 +440,18 @@ _USER_STYLE_SCHEMA: dict[str, tuple[str, Callable[[Any], bool]]] = {
 
 # Per-field bounds for a single LoRA entry. Reused by parse_lora_refs.
 _LORA_REF_FIELD_SCHEMA: dict[str, tuple[str, Callable[[Any], bool]]] = {
+    # v0.6 security-reviewer IMP-1: ref values starting with ``-`` are
+    # rejected (flag-shaped refs would land on mflux's argv as ``--lora-
+    # paths --config /etc/passwd`` and confuse mflux's argparser).
+    # Absolute paths (``/...``) are allowed; HF repo ids never start
+    # with ``-`` anyway. Symmetric with parser._lora_ref_arg.
     "ref": (
-        "non-empty string, <= 4 KB, no control bytes "
+        "non-empty string, <= 4 KB, no control bytes, not flag-shaped "
         "(HF repo id or absolute path)",
         lambda v: (
             isinstance(v, str)
             and v.strip() != ""
+            and not v.strip().startswith("-")
             and len(v) <= _LORA_REF_MAX_LEN
             and _is_safe_stem(v)
         ),

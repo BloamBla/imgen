@@ -99,6 +99,14 @@ class Iteration:
     Field order matches the legacy dict-of-strings shape (style_name,
     prompt, negative, final_steps, ...) so the v0.2.4 extraction is a
     mechanical replace with no semantic shift.
+
+    ``loras`` carries the COMPAT-FILTERED LoRA stack that mflux actually
+    saw — populated by :func:`cmd_helpers.build_iterations` after
+    ``filter_compatible_loras``. ``run_one_iteration`` serialises this
+    into the v=3 history entry so ``imgen replay`` can faithfully
+    reconstruct the exact LoRA stack (Architect-CRITICAL #1 from the
+    v0.6 pre-tag review). Default ``()`` keeps v0.5-era callers
+    constructing Iteration without breaking — they get a text-only run.
     """
     style_name: str
     prompt: str
@@ -109,6 +117,7 @@ class Iteration:
     final_strength: float
     output_path: Path
     cmd: list[str]
+    loras: tuple = ()   # tuple[styles.LoraRef, ...] — forward ref to dodge cycle
 
     # Same opt-out reasoning as BatchContext: `cmd: list[str]` is not
     # hashable, so a caller using Iteration as a set/dict-key would

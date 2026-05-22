@@ -71,4 +71,22 @@ MFLUX_PIN = "mflux==0.17.5"
 #                          / "empty_input" / "empty_llm_output"
 #                          / "invariant_violated" / "runner_error"
 #                          / "not_supported_by_backend"
-HISTORY_SCHEMA_VERSION = 2
+#
+# v=3 (v0.6): added optional ``loras`` field recording the LoRA stack
+# mflux actually saw for the iteration. Architect-CRITICAL #1 from the
+# v0.6 pre-tag review: without persistence, ``imgen replay`` silently
+# diverged on LoRA selection (style's current built-in LoRAs got
+# silently re-injected instead of the originally-applied stack, and
+# original --lora / --no-lora opt-outs were lost).
+#
+#   loras (list[dict]):    list of LoraRef-shaped dicts, one per LoRA
+#                          mflux saw on the iteration. Each dict has
+#                          ``ref`` (str), ``weight`` (float),
+#                          ``compatible_with`` (list[str]), and
+#                          ``trigger`` (str|null). Empty list = no
+#                          LoRAs ran (either text-only style or
+#                          --no-lora opt-out). Absent (v<3 entries) =
+#                          unknown, replay falls back to current
+#                          style's LoRA mapping. Read-compatible
+#                          additive migration; no rewrite pass.
+HISTORY_SCHEMA_VERSION = 3

@@ -104,7 +104,11 @@ def test_iteration_field_order_matches_spec():
     might build via *args). Lock it.
 
     Order: style_name, prompt, negative, final_steps, final_quantize,
-    final_guidance, final_strength, output_path, cmd.
+    final_guidance, final_strength, output_path, cmd, loras.
+
+    ``loras`` (v0.6) was appended at the end with default ``()`` so
+    v0.5-era positional construction (9-arg form) still works without
+    touching the field tuple.
     """
     import dataclasses
     fields = [f.name for f in dataclasses.fields(Iteration)]
@@ -118,7 +122,17 @@ def test_iteration_field_order_matches_spec():
         "final_strength",
         "output_path",
         "cmd",
+        "loras",
     ]
+
+
+def test_iteration_loras_defaults_to_empty_tuple():
+    """v0.6 added ``loras: tuple[LoraRef, ...] = ()`` to Iteration. The
+    default keeps v0.5-era callers (constructing without the field)
+    producing a text-only iteration. Lock-in test against accidental
+    default change."""
+    it = _make_iteration()
+    assert it.loras == ()
 
 
 def test_iteration_is_explicitly_unhashable():

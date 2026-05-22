@@ -280,7 +280,7 @@ def test_enhance_history_v2_fields_recorded_per_iteration(
     entries = load_history()
     assert len(entries) == 2  # 2 inputs × 1 style
     for e in entries:
-        assert e["v"] == HISTORY_SCHEMA_VERSION == 2
+        assert e["v"] == HISTORY_SCHEMA_VERSION
         assert e["enhanced"] is True
         assert e["enhance_model"] == "mlx-community/Qwen2.5-7B-Instruct-4bit"
         assert e["enhance_fallback_reason"] is None
@@ -318,7 +318,7 @@ def test_no_enhance_skips_llm_for_whole_batch(
 
     from imgen.history import load_history
     for e in load_history():
-        assert e["v"] == 2
+        assert e["v"] == HISTORY_SCHEMA_VERSION
         assert e["enhanced"] is False
         assert e["enhance_fallback_reason"] == "user_opt_out"
         assert e["enhance_model"] is None

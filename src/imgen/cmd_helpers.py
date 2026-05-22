@@ -122,9 +122,18 @@ def resolve_effective_loras(
 
     Precedence:
 
-    * ``no_lora=True`` → empty tuple. Mutex with non-None ``cli_lora`` is
-      enforced at the argparse layer; if a caller bypasses argparse,
-      ``no_lora`` wins (the explicit "drop all" signal).
+    * ``no_lora=True`` → DROP style LoRAs but KEEP ``cli_lora`` if any.
+      The CLI argparse layer enforces ``--lora`` and ``--no-lora`` mutex,
+      so the user can never get here with both set from the command
+      line. The non-empty-cli case is reached via two programmatic
+      callers: (a) ``replay_entry`` reconstructs the exact LoRA stack
+      from a v=3 history entry by passing ``no_lora=True``
+      + ``cli_lora=[stored_loras]`` so the style's CURRENT built-in
+      LoRAs don't sneak in if the user upgraded imgen between original
+      run and replay; (b) future user-style with ``loras=[]`` declared
+      explicitly to override a built-in. Without this carve-out
+      ``no_lora=True + cli_lora=[X]`` would return empty and silently
+      drop the replay reconstruction — a Architect-CRITICAL #1 hazard.
     * Otherwise the style's ``preset.get("loras", ())`` provides the
       base stack; ``cli_lora`` (if non-None) is APPENDED. Order in
       the final tuple = style LoRAs first, CLI LoRAs after. mflux
@@ -135,7 +144,7 @@ def resolve_effective_loras(
     tuple when both sources are empty / disabled.
     """
     if no_lora:
-        return ()
+        return tuple(cli_lora) if cli_lora else ()
     style_loras = tuple(preset.get("loras", ()))
     if not cli_lora:
         return style_loras
@@ -152,9 +161,20 @@ def prepend_trigger_words(
     prompt to activate (e.g. "Pixar 3D" for the Canopus-Pixar-3D-Flux-
     LoRA — without that token in the prompt, the LoRA's weight delta
     has minimal effect even when loaded). This helper checks each
-    LoRA's trigger against the existing prompt (case-insensitive
-    substring); for any missing triggers, prepends them comma-
-    separated at the START of the prompt so the LoRA fires.
+    LoRA's trigger against the existing prompt (case-insensitive,
+    word-boundary anchored); for any missing triggers, prepends them
+    comma-separated at the START of the prompt so the LoRA fires.
+
+    Word-boundary anchoring (v0.6 python-reviewer IMP-2): a short
+    trigger like ``"ani"`` (hypothetical user LoRA) would have falsely
+    matched any prompt containing ``"animation"`` / ``"anime"`` /
+    ``"fanatical"`` under the v0.5 unanchored ``substring in`` check.
+    Built-in triggers (``"Animeo"`` / ``"Pixar 3D"`` / ``"Ghibli style"``)
+    are long enough that the regression was latent, but the surface is
+    public-via-user-styles. ``re.search(r"\\b{trigger}\\b", ...)``
+    requires the trigger to start/end at a word boundary — handles
+    multi-word triggers fine (``"Pixar 3D"`` matches in a prompt only
+    when preceded + followed by non-word characters or string edges).
 
     Triggers already present in the prompt (because the style preset
     or user's ``--custom-prompt`` already mentions them) are left
@@ -164,8 +184,9 @@ def prepend_trigger_words(
 
     Pure: no I/O. Returns the (possibly-prepended) prompt string.
     """
+    import re
+
     needed: list[str] = []
-    prompt_lower = prompt.lower()
     seen: set[str] = set()
     for lora in loras:
         if not lora.trigger:
@@ -174,7 +195,15 @@ def prepend_trigger_words(
         if not trig:
             continue
         trig_lower = trig.lower()
-        if trig_lower in prompt_lower:
+        # Word-boundary match — \b in re.IGNORECASE anchors at the
+        # transitions between word chars (\w = [a-zA-Z0-9_]) and
+        # non-word chars. ``re.escape`` defends against trigger phrases
+        # that happen to contain regex meta-characters (``.`` / ``+``
+        # / ``(`` / ...). Multi-word triggers like ``"Pixar 3D"`` work
+        # because ``\b`` anchors at the outer transitions; internal
+        # whitespace inside the trigger matches the same whitespace
+        # in the prompt verbatim.
+        if re.search(rf"\b{re.escape(trig)}\b", prompt, flags=re.IGNORECASE):
             continue
         if trig_lower in seen:
             continue  # de-dup across multiple LoRAs sharing a trigger
@@ -525,6 +554,24 @@ def run_one_iteration(
         # style invocations (preserves v0.2.x shape).
         "batch_id": ctx.batch_id,
         "batch_index": f"{idx}/{total}" if is_batch else None,
+        # v0.6 schema v=3: COMPAT-FILTERED LoRA stack that mflux actually
+        # saw on this iteration. Architect-CRITICAL #1 from the v0.6
+        # pre-tag review — without this, ``imgen replay <id>`` silently
+        # diverges on LoRA selection (style's current built-ins get
+        # re-injected and the original --lora / --no-lora opt-outs lost).
+        # Stored as a list of dicts (LoraRef is frozen+slots; replay
+        # reconstructs via LoraRef(**dict)). Empty list = text-only run
+        # (either no style LoRAs + no CLI LoRAs, or --no-lora dropped
+        # the whole stack).
+        "loras": [
+            {
+                "ref": lora.ref,
+                "weight": lora.weight,
+                "compatible_with": list(lora.compatible_with),
+                "trigger": lora.trigger,
+            }
+            for lora in it.loras
+        ],
     }
 
     # v0.5: optional LLM enhancer recording. Fields land only when the
@@ -913,6 +960,11 @@ def build_iterations(
             final_strength=final_strength,
             output_path=output_path,
             cmd=cmd,
+            # The compat-filtered stack — incompatible LoRAs already
+            # warn-and-skipped by filter_compatible_loras above. This is
+            # exactly what landed on the argv, and what v=3 history
+            # records for replay determinism.
+            loras=compatible_loras,
         ))
 
     return iterations

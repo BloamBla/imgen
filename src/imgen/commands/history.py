@@ -11,6 +11,7 @@ from pathlib import Path
 from ..colors import C, dim, die, info
 from ..defaults import DEFAULTS, HISTORY_SCHEMA_VERSION
 from ..history import load_history
+from ..styles import LoraRef
 from .generate import cmd_generate
 
 # Fields the replay Namespace must carry so cmd_generate doesn't have to
@@ -45,6 +46,64 @@ _REPLAY_DEFAULTS = {
     "enhance_temperature": None,
     "imgen_config_enhance": {},
 }
+
+
+def _rehydrate_loras_from_entry(
+    entry: dict,
+) -> tuple[list[LoraRef] | None, bool]:
+    """Reconstruct (cli_lora, no_lora) Namespace fields from a v=3
+    history entry's ``loras`` list.
+
+    Replay determinism rule (v0.6 onwards): a history entry's stored
+    ``loras`` list is the GROUND TRUTH for what mflux saw on the
+    original run. To reproduce, replay must pass exactly that list
+    to ``build_iterations`` and SUPPRESS the style's current built-in
+    LoRA mapping (which may have changed since the original run — e.g.
+    a `pip upgrade` brought new built-in LoRA picks).
+
+    Mapping:
+
+    * v=3 entry with ``loras=[]`` (text-only run) → ``(None, True)``:
+      ``--no-lora`` semantics, no CLI LoRAs. Style built-ins suppressed.
+    * v=3 entry with ``loras=[...]`` (LoRAs were applied) →
+      ``([LoraRef(...), ...], True)``: ``--no-lora`` carve-out keeps
+      ``cli_lora`` since :func:`resolve_effective_loras` was updated
+      so ``no_lora=True + cli_lora=[X]`` returns ``(X,)``.
+    * v<3 entry (no ``loras`` field) → ``(None, False)``: pre-v0.6
+      shape with no LoRA info recorded; replay falls back to the
+      style's CURRENT LoRA stack. This is best-effort for old
+      entries — not bit-deterministic if the style's LoRA mapping
+      changed, but the v0.5 behaviour was the same lossy fallback,
+      so no regression.
+
+    Returns ``(cli_lora, no_lora)`` to be passed via
+    :data:`_REPLAY_DEFAULTS` override.
+    """
+    if "loras" not in entry:
+        # v<3 entry — pre-v0.6, no LoRA info recorded. Replay falls
+        # back to whatever the style currently ships with.
+        return None, False
+    raw = entry["loras"]
+    if not isinstance(raw, list):
+        # Defensive: a hand-edited history.jsonl with a typo'd shape
+        # shouldn't crash replay. Fall back to "no LoRA info" so the
+        # generation still runs.
+        return None, False
+    loras: list[LoraRef] = []
+    for item in raw:
+        if not isinstance(item, dict) or "ref" not in item:
+            continue
+        loras.append(LoraRef(
+            ref=str(item["ref"]),
+            weight=float(item.get("weight", 1.0)),
+            compatible_with=tuple(item.get("compatible_with", ("flux-1",))),
+            trigger=item.get("trigger"),
+        ))
+    # Always pin no_lora=True for v=3 entries so the style's current
+    # built-in LoRAs don't sneak back in alongside the stored stack.
+    # When loras=[] (text-only original run), no_lora=True alone gives
+    # the same empty stack via the resolve_effective_loras carve-out.
+    return loras or None, True
 
 
 def cmd_history(args) -> int:
@@ -101,6 +160,12 @@ def replay_entry(entry: dict) -> int:
     # (python I2 from v0.2.3 review)
     saved_style = entry.get("style") or DEFAULTS["style"]
     style_list = [saved_style] if (saved_style and not entry.get("custom_prompt")) else None
+    # v0.6: rehydrate the LoRA stack from the entry's stored snapshot.
+    # See _rehydrate_loras_from_entry — for v=3 entries this faithfully
+    # reproduces the original mflux invocation; for v<3 entries it
+    # falls back to the style's current LoRA mapping (best-effort,
+    # matches v0.5 behaviour).
+    cli_lora, no_lora = _rehydrate_loras_from_entry(entry)
     args = argparse.Namespace(
         image=image,
         style=style_list,
@@ -119,6 +184,12 @@ def replay_entry(entry: dict) -> int:
         no_open=False,
         dry_run=False,
         force=False,
+        # v0.6: LoRA rehydration. Replay reads the v=3 ``loras`` field
+        # and pins the stack at the original run's snapshot, suppressing
+        # whatever the style currently ships. Pre-v0.6 entries default
+        # to "no CLI override, no opt-out" → style's current LoRAs apply.
+        lora=cli_lora,
+        no_lora=no_lora,
         # Explicit fields cmd_generate would otherwise read via getattr-
         # with-default. Pinning them here means a future required arg
         # added to cmd_generate fails replay loudly instead of silently

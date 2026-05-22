@@ -136,14 +136,22 @@ def _lora_ref_arg(s: str):
             "--lora value must be non-empty"
         )
 
-    # Try to split a trailing ``:WEIGHT``. If the rightmost ``:`` is
-    # followed by a parseable float, treat as weight; otherwise the
-    # whole string is the ref (handles absolute-path edge cases where
-    # the path itself might contain a colon — Windows-style, unlikely
-    # on macOS but defensive).
+    # Try to split a trailing ``:WEIGHT`` — ONLY for non-absolute refs.
+    # v0.6 python-reviewer IMP-1: an absolute path like
+    # ``/Users/x/lora-v1.0:2024`` (timestamped folder) or
+    # ``/Volumes/.timemachine/disk:0.5`` ends in ``:<digits>``; the v0.5
+    # rightmost-colon split would silently strip the suffix and load a
+    # DIFFERENT file than the user pointed at. macOS allows ``:`` in
+    # filenames at the APFS layer, so this is reachable in practice.
+    # Restrict the split to refs that DON'T start with ``/`` — HF repo
+    # ids never contain ``:`` (only alphanumerics + ``-_/.``), so the
+    # split is safe and unambiguous for the HF-id case. Absolute paths
+    # must use the upcoming styles.d/*.toml ``[[loras]] weight = ...``
+    # shape if they need a non-default weight; CLI weight syntax stays
+    # HF-only.
     ref = raw
     weight = 1.0
-    if ":" in raw:
+    if not raw.startswith("/") and ":" in raw:
         head, _, tail = raw.rpartition(":")
         try:
             candidate_weight = float(tail)
@@ -153,6 +161,23 @@ def _lora_ref_arg(s: str):
             if head.strip():
                 ref = head.strip()
                 weight = candidate_weight
+
+    # v0.6 security-reviewer IMP-1: reject flag-shaped refs.
+    # ``--lora "--config /etc/passwd"`` would land verbatim on mflux's
+    # argv (build_mflux_cmd emits ``--lora-paths <ref>``); mflux's own
+    # argparser may interpret a ``--``-prefixed token as an argparse
+    # flag rather than a positional value, masking legitimate args
+    # (``--negative-prompt``, ``--seed``, etc.) the iteration was
+    # supposed to set. Absolute paths starting with ``/`` are fine —
+    # any other ``-``-prefix is a flag shape and gets rejected at
+    # validation time before it can reach mflux. Symmetric defence
+    # with v0.4's ``_validate_binary_field`` posture in backends.py.
+    if ref.startswith("-"):
+        raise argparse.ArgumentTypeError(
+            "--lora ref must not start with '-' (flag-shaped refs are "
+            "rejected to prevent argv injection into mflux). Use an "
+            "absolute path or HF repo id."
+        )
 
     if len(ref) > _MAX_LEN:
         raise argparse.ArgumentTypeError(
@@ -530,6 +555,20 @@ def _lora_hf_cache_dir(repo: str, hf_cache: Path) -> Path:
     Mirrors the same convention as ``doctor._hf_cache_dir_for``. Local
     absolute paths (LoraRef.ref can also be one) bypass the HF cache
     mapping — the ``ref`` IS the on-disk location.
+
+    Security note (v0.6 security-reviewer IMP-2): the only consumer
+    today is ``print_loras`` which calls ``cache_dir.is_dir()`` — a
+    stat-only probe with no read or write. Even if ``repo`` is
+    user-attacker-controlled and points at ``//host/share`` or
+    ``/Volumes/external``, the worst outcome is "this path is reported
+    as cached/not-cached in --list-loras" — information disclosure
+    bounded to "does that filesystem path exist", which same-uid
+    attackers can already determine via plain ``stat()``. Do NOT add
+    file-read consumers without first anchoring under ``HF_CACHE``.
+
+    The ``not repo`` branch is dead code reachable only by a hand-
+    constructed LoraRef bypassing the user-style + parser schemas
+    (both reject empty refs). Kept for symmetry with doctor's helper.
     """
     if not repo or repo.startswith("/"):
         return Path(repo) if repo else hf_cache

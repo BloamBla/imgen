@@ -242,7 +242,7 @@ def test_enhance_records_v2_history_fields(
     entries = load_history()
     assert len(entries) == 1
     e = entries[0]
-    assert e["v"] == HISTORY_SCHEMA_VERSION == 2
+    assert e["v"] == HISTORY_SCHEMA_VERSION
     assert e["enhanced"] is True
     assert e["enhance_model"] == "mlx-community/Qwen2.5-7B-Instruct-4bit"
     assert e["enhance_fallback_reason"] is None
@@ -312,7 +312,7 @@ def test_opt_out_history_records_reason(
 
     from imgen.history import load_history
     e = load_history()[0]
-    assert e["v"] == 2
+    assert e["v"] == HISTORY_SCHEMA_VERSION
     assert e["enhanced"] is False
     assert e["enhance_model"] is None  # nothing was used
     assert e["enhance_fallback_reason"] == "user_opt_out"
