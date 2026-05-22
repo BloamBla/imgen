@@ -16,6 +16,8 @@ Every run creates a timestamped folder under `~/Desktop/imgen/` — e.g. `~/Desk
 
 **Batch a folder** (v0.3.0+): `imgen batch <dir>` applies M styles to every supported image directly under `<dir>` (non-recursive — `ls <dir>` ≈ what gets batched). Same flat output layout — all N×M results in one timestamped folder, named `<input>-<style>.png`. iPhone HEIC inputs are auto-converted via `sips` before mflux sees them; the same HEIC handling also fixes single-file `imgen generate vacation.heic`. Confirm gate shows N inputs × M styles + ETA; skip with `-y/--yes`.
 
+**v0.3.2 defaults:** `--scope` is now `scene` by default (most photos are scenes, not portraits) — pass `--scope person` to focus on the subject and keep the background photorealistic. Also, mflux's `.metadata.json` sidecars are no longer written next to outputs (the data is already embedded in the PNG and stored in `~/.imgen/history.jsonl`), so the gallery folder stays clean.
+
 ## Requirements
 
 - **macOS on Apple Silicon** (M1/M2/M3/M4) — MLX does not support Intel
@@ -108,8 +110,8 @@ imgen <photo> --custom-prompt "..."            # free-form (visible in `ps auxww
 imgen <photo> --custom-prompt -                # ← read prompt from stdin (hidden from ps)
 imgen <photo> --prompt-file ~/prompts/x.txt    # ← read prompt from file (hidden from ps)
 imgen <photo> -s anime --preview               # fast mode (~3-10 min)
-imgen <photo> -s anime --scope person          # only restyle person, keep bg photorealistic
-imgen <photo> -s anime --scope scene           # restyle whole image
+imgen <photo> -s anime                         # v0.3.2: --scope=scene is the default — whole image restyled
+imgen <photo> -s anime --scope person          # opt into person-focus: keep background photorealistic
 imgen <photo> --backend qwen                   # use Qwen Edit (no HF token needed)
 imgen <photo> --force                          # skip resource preflight checks
 
@@ -164,7 +166,7 @@ Both paths cap at 64 KB; missing file, empty content, or specifying both `--cust
 | `--strength`        | 0-1    | How much to keep from original. 0.5-0.7 |
 | `--quantize` / `-q` | 3,4,5,6,8 | Lower = smaller/faster, more artifacts |
 | `--preview` / `-p`  | flag   | Q4, 8 steps, 768x — ~5x faster |
-| `--scope`           | person/scene | Modify prompt to focus on person or whole scene |
+| `--scope`           | person/scene | v0.3.2+: default `scene` (transforms whole image); pass `person` to keep background photorealistic |
 
 For 32 GB Macs, **Q8** is recommended for FLUX Kontext.
 

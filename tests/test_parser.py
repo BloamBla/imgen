@@ -90,3 +90,48 @@ def test_safe_output_path_rejects_non_image_extensions(bad):
     Pins security #8 v0.1.1 fix."""
     with pytest.raises(argparse.ArgumentTypeError):
         _safe_output_path(bad)
+
+
+# ── --scope default (v0.3.2) ───────────────────────────────────────────
+
+
+from imgen.parser import build_parser
+
+
+def test_generate_scope_defaults_to_scene():
+    """v0.3.2: ``--scope`` defaults to ``scene`` (was ``None`` in v0.3.1
+    and earlier). Most photos colleagues batch are scenes / group shots;
+    person-focus is the special case the user opts into explicitly."""
+    parser = build_parser()
+    args = parser.parse_args(["generate", "photo.jpg"])
+    assert args.scope == "scene"
+
+
+def test_batch_scope_defaults_to_scene():
+    """Same default applies to ``imgen batch <dir>``."""
+    parser = build_parser()
+    args = parser.parse_args(["batch", "/tmp/dir"])
+    assert args.scope == "scene"
+
+
+def test_generate_scope_person_explicit():
+    """Person-focus requires explicit opt-in."""
+    parser = build_parser()
+    args = parser.parse_args(["generate", "photo.jpg", "--scope", "person"])
+    assert args.scope == "person"
+
+
+def test_batch_scope_person_explicit():
+    parser = build_parser()
+    args = parser.parse_args(
+        ["batch", "/tmp/dir", "--scope", "person"]
+    )
+    assert args.scope == "person"
+
+
+def test_generate_scope_scene_explicit_still_works():
+    """Passing --scope scene explicitly resolves to the same default
+    (back-compat with users who already typed it before v0.3.2)."""
+    parser = build_parser()
+    args = parser.parse_args(["generate", "photo.jpg", "--scope", "scene"])
+    assert args.scope == "scene"

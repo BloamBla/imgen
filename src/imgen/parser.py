@@ -211,9 +211,10 @@ def _add_generate_args(
                    default=None,
                    help=f"Quantization (default {defaults['quantize']}, "
                         f"preview {PREVIEW_OVERRIDES['quantize']})")
-    p.add_argument("--scope", choices=["person", "scene"],
-                   help="person=transform person only (keep background); "
-                        "scene=transform whole image; default=balanced subject focus")
+    p.add_argument("--scope", choices=["person", "scene"], default="scene",
+                   help="scene=transform whole image (default — most photos "
+                        "are scenes, not portraits); person=keep background "
+                        "photorealistic and unchanged")
     p.add_argument("-p", "--preview", action="store_true",
                    help="Fast preview mode: smaller resolution, fewer steps, "
                         "lower quantization (~5x faster, lower quality)")
@@ -283,9 +284,9 @@ def _add_batch_args(
                    default=None,
                    help=f"Quantization (default {defaults['quantize']}, "
                         f"preview {PREVIEW_OVERRIDES['quantize']})")
-    p.add_argument("--scope", choices=["person", "scene"],
-                   help="person=transform person only (keep background); "
-                        "scene=transform whole image")
+    p.add_argument("--scope", choices=["person", "scene"], default="scene",
+                   help="scene=transform whole image (default); "
+                        "person=keep background photorealistic and unchanged")
     p.add_argument("-p", "--preview", action="store_true",
                    help="Fast preview mode applied uniformly across all "
                         "N×M generations (~5x faster, lower quality)")
