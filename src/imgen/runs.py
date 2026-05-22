@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import os
+import stat as _stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
@@ -269,10 +270,19 @@ def prune_old_batch_logs(
     removed_size = 0
     for log in LOGS_DIR.glob("*.log"):
         try:
-            # Snapshot stat() once — separate calls would let st_size
+            # lstat (NOT stat) so a user-dropped symlink under LOGS_DIR
+            # (e.g. evil.log → /etc/passwd) doesn't get its TARGET's size
+            # counted toward removed_size and its symlink entry doesn't
+            # get unlinked silently. S_ISREG filters out symlinks, dirs,
+            # special files — only regular files inside LOGS_DIR are
+            # batch logs we own. (security N2 from v0.2.4 review)
+            #
+            # Snapshot once — separate stat calls would let st_size
             # raise OSError after st_mtime succeeded, leaving the two
             # counters out of sync. (python C2 from v0.2.3 review)
-            st = log.stat()
+            st = log.lstat()
+            if not _stat.S_ISREG(st.st_mode):
+                continue
             if st.st_mtime < cutoff:
                 removed_size += st.st_size
                 if not dry_run:

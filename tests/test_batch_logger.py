@@ -275,3 +275,51 @@ def test_prune_boundary_kept(logs_dir):
     prune_old_batch_logs(days=30)
 
     assert boundary.exists()
+
+
+# ── symlink hardening (v0.2.5 — security N2 from v0.2.4 review) ────────
+
+
+def test_prune_skips_symlinks_even_if_target_is_old(logs_dir, tmp_path):
+    """A user-dropped symlink under LOGS_DIR must NOT be unlinked by
+    prune, regardless of the symlink target's mtime.
+
+    Scenario: malicious or accidental `~/.imgen/logs/foo.log →
+    /some/old/file`. Without lstat() the old target's stat would
+    drive `removed_size` (inflating freed-bytes reporting) AND
+    `log.unlink()` would silently delete the symlink entry. With
+    lstat() + S_ISREG, symlinks are skipped entirely."""
+    logs_dir.mkdir(mode=0o700)
+    # Target is a real file outside LOGS_DIR, made old enough to fail
+    # the < cutoff check if it were ever stat()'d.
+    target = tmp_path / "real_target.txt"
+    target.write_bytes(b"x")
+    past = target.stat().st_mtime - 60 * 86400
+    os.utime(target, (past, past))
+    link = logs_dir / "evil.log"
+    link.symlink_to(target)
+
+    removed, _ = prune_old_batch_logs(days=30)
+
+    assert link.is_symlink(), "symlink must survive prune"
+    assert link.exists(), "and its target chain must remain intact"
+    assert removed == 0, "symlinks must not be counted as pruned"
+
+
+def test_prune_skips_symlinks_pointing_at_recent_target(logs_dir, tmp_path):
+    """Even if the symlink itself is "old" (its target is fresh), we
+    skip it on principle — only regular files belong in LOGS_DIR."""
+    logs_dir.mkdir(mode=0o700)
+    target = tmp_path / "fresh_target.txt"
+    target.write_bytes(b"y")
+    link = logs_dir / "link.log"
+    link.symlink_to(target)
+    # Make the symlink entry itself "old" by adjusting its lstat times.
+    # On macOS lutimes is exposed via os.utime with follow_symlinks=False.
+    past = link.lstat().st_mtime - 60 * 86400
+    os.utime(link, (past, past), follow_symlinks=False)
+
+    removed, _ = prune_old_batch_logs(days=30)
+
+    assert link.is_symlink()
+    assert removed == 0
