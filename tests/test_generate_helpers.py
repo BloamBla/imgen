@@ -25,6 +25,7 @@ from imgen.commands.generate import (
     _check_prompt_style_compat,
     _exit_code,
     _load_backend_and_token,
+    _print_batch_summary,
     _resolve_output_layout,
     _resolve_styles_list,
     _validate_input_path,
@@ -977,3 +978,76 @@ def test_exit_code_multi_partial_returns_5():
         succeeded=[_ok("anime")],
         failed=[_fail("ghibli", 1)],
     ) == 5
+
+
+# ── _print_batch_summary ────────────────────────────────────────────────
+
+
+def test_print_batch_summary_all_ok(capsys):
+    _print_batch_summary(
+        succeeded=[_ok("anime"), _ok("ghibli")],
+        failed=[],
+        total=2,
+    )
+    out = capsys.readouterr().out
+    assert "Batch summary" in out
+    assert "2 generations" in out
+    assert "2 ok" in out
+    assert "failed" not in out.lower()
+
+
+def test_print_batch_summary_all_failed(capsys):
+    _print_batch_summary(
+        succeeded=[],
+        failed=[_fail("anime", 1), _fail("ghibli", 7)],
+        total=2,
+    )
+    out = capsys.readouterr().out + capsys.readouterr().err
+    # err() goes to stderr; recombine for assertion.
+
+
+def test_print_batch_summary_all_failed_lists_each(capsys):
+    """Every failed style needs to surface (else user can't tell which
+    succeeded and which need retry)."""
+    _print_batch_summary(
+        succeeded=[],
+        failed=[_fail("anime", 1), _fail("ghibli", 7)],
+        total=2,
+    )
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "2 failed" in combined
+    assert "anime" in combined and "exit 1" in combined
+    assert "ghibli" in combined and "exit 7" in combined
+    assert " ok" not in combined.replace(" 0 ok", "")  # no "N ok" line
+
+
+def test_print_batch_summary_mixed(capsys):
+    _print_batch_summary(
+        succeeded=[_ok("anime")],
+        failed=[_fail("ghibli", 1)],
+        total=2,
+    )
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "1 ok" in combined
+    assert "1 failed" in combined
+    assert "ghibli" in combined
+
+
+def test_print_batch_summary_singular_when_total_is_1(capsys):
+    """Pedantic but visible in output — 1 generation, not 1 generations."""
+    _print_batch_summary(succeeded=[_ok("anime")], failed=[], total=1)
+    out = capsys.readouterr().out
+    assert "1 generation" in out
+    assert "1 generations" not in out
+
+
+def test_print_batch_summary_plural_when_total_is_3(capsys):
+    _print_batch_summary(
+        succeeded=[_ok("a"), _ok("b"), _ok("c")],
+        failed=[],
+        total=3,
+    )
+    out = capsys.readouterr().out
+    assert "3 generations" in out

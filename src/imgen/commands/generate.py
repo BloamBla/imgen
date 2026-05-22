@@ -171,6 +171,27 @@ def _resolve_output_layout(
     return None, run_dir
 
 
+def _print_batch_summary(
+    succeeded: list[tuple[str, Path, int]],
+    failed: list[tuple[str, int, Path]],
+    total: int,
+) -> None:
+    """Render the end-of-batch summary block (multi-style only).
+
+    Caller gates on `multi` — single-style runs keep v0.2.x's lean
+    output where the per-image "Done in 3m 12s" line is the only signal.
+    Always lists every failed style so the user can re-run just those,
+    not the whole batch."""
+    print()
+    step(f"Batch summary ({total} generation{'s' if total != 1 else ''})")
+    if succeeded:
+        ok(f"{len(succeeded)} ok")
+    if failed:
+        err(f"{len(failed)} failed:")
+        for sn, rc, _ in failed:
+            print(f"   {C.DIM}• {sn}: exit {rc}{C.END}")
+
+
 def _exit_code(
     *,
     multi: bool,
@@ -718,14 +739,7 @@ def cmd_generate(args) -> int:
     # 17) End-of-batch summary (only for multi-style — single-style keeps
     # the v0.2.x lean output).
     if multi:
-        print()
-        step(f"Batch summary ({total} generation{'s' if total != 1 else ''})")
-        if succeeded:
-            ok(f"{len(succeeded)} ok")
-        if failed:
-            err(f"{len(failed)} failed:")
-            for sn, rc, _ in failed:
-                print(f"   {C.DIM}• {sn}: exit {rc}{C.END}")
+        _print_batch_summary(succeeded, failed, total)
 
     # 18) Exit code (single-style passthrough vs multi-style 0/1/5 map).
     return _exit_code(multi=multi, succeeded=succeeded, failed=failed)
