@@ -52,4 +52,23 @@ MFLUX_PIN = "mflux==0.17.5"
 # Bump when an entry field changes meaning. Old entries without "v" key
 # are treated as v=0 and still replay (best-effort .get throughout). An
 # entry with "v" > this constant is refused with a "run imgen upgrade" hint.
-HISTORY_SCHEMA_VERSION = 1
+#
+# v=2 (v0.5): added optional fields for LLM prompt enhancer recording.
+# Forward-compat: v=1 entries do NOT carry these fields — readers must
+# use ``entry.get(key, fallback)``. replay_entry treats absence of any
+# enhance_* field as "enhancement was off" which is the correct
+# historical interpretation for v0.4.x entries.
+#
+#   prompt_original (str): the pre-LLM prompt; equals ``prompt`` when
+#                          enhancement was off or fell back to original
+#   enhanced (bool):       True iff the LLM ran AND its output survived
+#                          invariant checks (so ``prompt`` differs from
+#                          ``prompt_original``)
+#   enhance_model (str|null): which LLM was used, e.g.
+#                          ``"mlx-community/Qwen2.5-7B-Instruct-4bit"``
+#   enhance_fallback_reason (str|null): None when ``enhanced=True``;
+#                          one of "user_opt_out" / "input_too_long"
+#                          / "empty_input" / "empty_llm_output"
+#                          / "invariant_violated" / "runner_error"
+#                          / "not_supported_by_backend"
+HISTORY_SCHEMA_VERSION = 2

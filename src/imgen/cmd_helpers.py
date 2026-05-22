@@ -57,11 +57,18 @@ import os
 import subprocess
 from pathlib import Path
 
+from dataclasses import replace as _dataclass_replace
+
 from .backends import Backend, build_mflux_cmd, get_backend
 from .checks import check_mflux, check_resources, check_venv
 from .colors import C, die, err, ok, step, warn
-from .config import effective_output_dir
+from .config import effective_enhance, effective_output_dir
 from .defaults import PREVIEW_OVERRIDES
+from .enhance import (
+    EnhanceResult,
+    enhance_iteration_prompts,
+    replace_prompt_in_cmd,
+)
 from .history import append_history
 from .images import apply_scope
 from .paths import DEFAULT_OUTPUT_DIR, SAFE_OUTPUT_EXTS, VENV_BIN
@@ -77,12 +84,14 @@ from .subprocess_helpers import run_with_stderr_redaction
 from .tokens import load_token
 
 __all__ = [
+    "apply_enhance_results_to_iterations",
     "build_iterations",
     "check_prompt_style_compat",
     "estimate_one_seconds",
     "exit_code",
     "format_duration",
     "load_backend_and_token",
+    "maybe_enhance_for_command",
     "open_results",
     "preflight_resources",
     "print_batch_summary",
@@ -230,6 +239,128 @@ def safe_append_history(entry: dict) -> None:
         warn(f"history entry not recorded: {type(e).__name__}: {e}")
 
 
+# ── v0.5: LLM prompt enhancer integration ──────────────────────────────
+
+
+def maybe_enhance_for_command(
+    *,
+    args,
+    backend_obj: Backend,
+    iterations: list[Iteration],
+) -> tuple[list[EnhanceResult], str | None]:
+    """Resolve enhance config, optionally run the LLM, return aligned results.
+
+    Returns ``(enhance_results, enhance_model)``:
+
+    * ``enhance_results`` — list of length ``len(iterations)``. Each
+      EnhanceResult carries either the enhanced prompt (was_enhanced
+      True) or the original prompt + a diagnostic fallback_reason.
+      When enhancement is disabled at the CLI/config level every
+      result is ``fallback_reason="user_opt_out"`` (no LLM invoked).
+    * ``enhance_model`` — the resolved model name when enhancement
+      ran, ``None`` when disabled (so history entries don't claim
+      an unused model).
+
+    Bridges the CLI/config seam (args.enhance + ``[enhance]`` section)
+    to the pure orchestrator :func:`enhance.enhance_iteration_prompts`.
+    Tests bypass this wrapper and call the orchestrator directly with
+    a mocked LLM callable.
+    """
+    config_enhance = getattr(args, "imgen_config_enhance", {})
+    eff = effective_enhance(
+        cli_enable=getattr(args, "enhance", None),
+        config_enhance=config_enhance,
+        cli_model=getattr(args, "enhance_model", None),
+        cli_temperature=getattr(args, "enhance_temperature", None),
+    )
+
+    if not eff["enabled"]:
+        # Build aligned skip-results so the run loop has something to
+        # splice into history. ``user_opt_out`` covers both "user passed
+        # --no-enhance" and "no flag, config default is false" — both
+        # are user-controlled non-activation.
+        results = [
+            EnhanceResult(
+                final_prompt=it.prompt,
+                was_enhanced=False,
+                fallback_reason="user_opt_out",
+                was_truncated=False,
+                raw_llm_output=None,
+            )
+            for it in iterations
+        ]
+        return results, None
+
+    step(f"Enhancing {len(iterations)} prompt(s) via {eff['model']} "
+         f"(temp={eff['temperature']}, max_tokens={eff['max_tokens']})...")
+    results = enhance_iteration_prompts(
+        iteration_prompts=[it.prompt for it in iterations],
+        system_prompt=backend_obj.enhance_system_prompt,
+        invariants=backend_obj.enhance_invariants,
+        model=eff["model"],
+        temperature=eff["temperature"],
+        max_tokens=eff["max_tokens"],
+        timeout_s=eff["timeout_s"],
+    )
+
+    # Surface a one-line summary so the user knows what happened —
+    # especially the fallback paths.
+    enhanced_n = sum(1 for r in results if r.was_enhanced)
+    if enhanced_n == len(results):
+        ok(f"Enhanced all {enhanced_n} prompt(s).")
+    elif enhanced_n == 0:
+        # Distinguish the all-runner-error case from per-prompt fallbacks
+        # — those signal mlx_lm load failure / timeout / crash and are
+        # the "your enhancer is broken, fix it" kind of feedback.
+        reasons = {r.fallback_reason for r in results}
+        if reasons == {"runner_error"}:
+            warn("Enhance runner failed; running with original prompts. "
+                 f"Reason: {results[0].raw_llm_output}")
+        else:
+            warn(f"No prompts enhanced. Reasons: {sorted(reasons)}")
+    else:
+        warn(f"Enhanced {enhanced_n}/{len(results)} prompt(s); "
+             f"fallback reasons: "
+             f"{sorted({r.fallback_reason for r in results if r.fallback_reason})}")
+
+    return results, eff["model"]
+
+
+def apply_enhance_results_to_iterations(
+    iterations: list[Iteration],
+    enhance_results: list[EnhanceResult],
+) -> list[Iteration]:
+    """Splice enhanced prompts back into the iteration plan.
+
+    Iteration is frozen+slots — we build NEW instances via
+    :func:`dataclasses.replace` rather than mutating. For each
+    iteration whose result was successfully enhanced, the new
+    iteration carries the LLM-expanded prompt AND a freshly patched
+    ``cmd`` (the ``--prompt`` argv slot is overwritten via
+    :func:`enhance.replace_prompt_in_cmd`). Skipped / fallback /
+    invariant-violated iterations are returned unchanged — their
+    final_prompt equals their original ``it.prompt`` anyway, so
+    rebuilding would be a no-op.
+
+    Asserts aligned lengths because misalignment would silently
+    write the wrong prompt to the wrong iteration — louder failure
+    is better.
+    """
+    if len(iterations) != len(enhance_results):
+        raise ValueError(
+            f"iteration / enhance-result count mismatch: "
+            f"{len(iterations)} iterations vs {len(enhance_results)} results"
+        )
+    out: list[Iteration] = []
+    for it, r in zip(iterations, enhance_results):
+        if r.was_enhanced and r.final_prompt != it.prompt:
+            new_cmd = replace_prompt_in_cmd(it.cmd, r.final_prompt)
+            out.append(_dataclass_replace(it, prompt=r.final_prompt, cmd=new_cmd))
+        else:
+            out.append(it)
+    return out
+
+
 # ── One iteration: the subprocess workhorse ─────────────────────────────
 
 
@@ -243,6 +374,9 @@ def run_one_iteration(
     logger: BatchLogger | None,
     succeeded: list[tuple[str, Path, int]],
     failed: list[tuple[str, int, Path]],
+    enhance_result: EnhanceResult | None = None,
+    enhance_model: str | None = None,
+    prompt_original: str | None = None,
 ) -> bool:
     """Execute one mflux iteration end-to-end.
 
@@ -302,6 +436,32 @@ def run_one_iteration(
         "batch_id": ctx.batch_id,
         "batch_index": f"{idx}/{total}" if is_batch else None,
     }
+
+    # v0.5: optional LLM enhancer recording. Fields land only when the
+    # enhancer was actually engaged this run (either ran or was opted-
+    # out at CLI level — both signal "user knew enhance is a thing").
+    # When enhance_result is None (legacy callers that haven't been
+    # updated to pass it), the history entry stays in v0.4.x shape
+    # except for the always-v=2 stamp added by append_history.
+    if enhance_result is not None:
+        # prompt_original is the PRE-enhance text — captured by the
+        # caller before iterations were rebuilt with enhanced prompts.
+        # If the caller doesn't pass it (defensive), we fall back to
+        # it.prompt which equals the enhanced version when enhancement
+        # ran successfully — not ideal but not corrupt either.
+        history_entry["prompt_original"] = (
+            prompt_original if prompt_original is not None else it.prompt
+        )
+        history_entry["enhanced"] = enhance_result.was_enhanced
+        # ``enhance_model`` is recorded ONLY when the LLM actually
+        # produced an enhanced prompt that made it through invariants.
+        # On opt-out / fallback / runner error we leave it null —
+        # claiming a model "was used" when its output was discarded
+        # would be misleading.
+        history_entry["enhance_model"] = (
+            enhance_model if enhance_result.was_enhanced else None
+        )
+        history_entry["enhance_fallback_reason"] = enhance_result.fallback_reason
 
     if logger is not None:
         logger.iteration_start(idx, total, style_name, started)

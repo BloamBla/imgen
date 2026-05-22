@@ -92,7 +92,8 @@ def main() -> int:
     except ConfigError as e:
         warn(f"~/.imgen/config.toml: {e}")
         warn("Falling back to built-in defaults. Fix the file or remove it.")
-        config = {"defaults": {}, "ui": {}}
+        # Keep all three sections so downstream code's .get() pattern works.
+        config = {"defaults": {}, "ui": {}, "enhance": {}}
 
     merged_defaults = effective_defaults(config["defaults"], DEFAULTS)
 
@@ -105,6 +106,9 @@ def main() -> int:
     # field name.
     args.imgen_merged_defaults = merged_defaults
     args.imgen_config_output_dir = config["defaults"].get("output_dir")
+    # v0.5: [enhance] section passed to cmd_generate / cmd_batch where
+    # effective_enhance() resolves it against CLI overrides.
+    args.imgen_config_enhance = config.get("enhance", {})
 
     # UI: [ui] open_in_preview = false → behave like --no-open by default
     if getattr(args, "no_open", False) is False:

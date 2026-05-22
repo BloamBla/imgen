@@ -175,3 +175,111 @@ def test_replay_entry_namespace_has_explicit_v021_fields(tmp_state_dir, monkeypa
     assert args.prompt_file is None
     assert hasattr(args, "imgen_merged_defaults"), \
         "replay Namespace missing imgen_merged_defaults"
+
+
+# ── v=2 schema migration (v0.5 — LLM prompt enhancer) ──────────────────
+
+
+def test_history_schema_version_is_2(tmp_state_dir):
+    """v0.5 bumps the schema to 2 for the enhancer fields. Lock-in
+    against accidental downgrade in a future commit."""
+    assert HISTORY_SCHEMA_VERSION == 2
+
+
+def test_v1_entries_still_pass_replay_schema_gate(tmp_state_dir, monkeypatch):
+    """A history.jsonl row written by v0.4.x carries v=1 and no
+    enhance_* fields. Replay must NOT refuse it as "newer schema" —
+    1 < 2 = past schema, treat as if enhancement was off."""
+    import imgen.commands.history as history_cmd
+
+    captured = {}
+
+    def fake_cmd_generate(args):
+        captured["args"] = args
+        return 0
+
+    monkeypatch.setattr(history_cmd, "cmd_generate", fake_cmd_generate)
+
+    v1_entry = {
+        "id": 42, "v": 1,
+        "input": "/photo.jpg",
+        "style": "anime",
+        "prompt": "Restyle this person as anime while preserving identity",
+        "backend": "flux", "quantize": 8,
+        "steps": 20, "guidance": 3.5, "strength": 0.55,
+    }
+    # Must not raise — schema gate passes (1 <= HISTORY_SCHEMA_VERSION=2).
+    history_cmd.replay_entry(v1_entry)
+    assert "args" in captured
+
+
+def test_v2_entry_with_enhance_fields_roundtrips(tmp_state_dir):
+    """Write a v=2 entry carrying the new enhance_* fields, read it
+    back via load_history(), verify every new field survives the
+    JSON round-trip with type intact (bool / str / None)."""
+    append_history({
+        "input": "/p.jpg",
+        "output": "/o.png",
+        "prompt": (
+            "Restyle this person as cel-shaded anime, vibrant studio "
+            "colors, while preserving facial identity"
+        ),
+        "prompt_original": (
+            "Restyle this person as anime while preserving identity"
+        ),
+        "enhanced": True,
+        "enhance_model": "mlx-community/Qwen2.5-7B-Instruct-4bit",
+        "enhance_fallback_reason": None,
+        "backend": "flux",
+    })
+    entries = load_history()
+    assert len(entries) == 1
+    e = entries[0]
+    assert e["v"] == 2
+    assert e["enhanced"] is True
+    assert e["enhance_model"] == "mlx-community/Qwen2.5-7B-Instruct-4bit"
+    assert e["enhance_fallback_reason"] is None
+    assert "cel-shaded" in e["prompt"]
+    assert "cel-shaded" not in e["prompt_original"]
+
+
+def test_v2_entry_with_fallback_records_reason(tmp_state_dir):
+    """When the LLM fell back (empty output / invariant violated /
+    runner crashed), the entry records `enhanced=False` plus the
+    diagnostic reason. ``prompt`` equals ``prompt_original``."""
+    raw = (
+        "Restyle this person as anime while preserving identity"
+    )
+    append_history({
+        "input": "/p.jpg",
+        "output": "/o.png",
+        "prompt": raw,
+        "prompt_original": raw,
+        "enhanced": False,
+        "enhance_model": "mlx-community/Qwen2.5-7B-Instruct-4bit",
+        "enhance_fallback_reason": "invariant_violated",
+        "backend": "flux",
+    })
+    entries = load_history()
+    assert entries[0]["enhanced"] is False
+    assert entries[0]["enhance_fallback_reason"] == "invariant_violated"
+    assert entries[0]["prompt"] == entries[0]["prompt_original"]
+
+
+def test_v2_entry_without_enhance_fields_is_legal(tmp_state_dir):
+    """When --enhance-prompt is OFF (default), the entry doesn't write
+    enhance_* fields at all — keeps the per-row JSON terse and matches
+    "no LLM was involved" semantics. v=2 stamping is unconditional
+    (every new entry gets v=2 even without enhance fields)."""
+    append_history({
+        "input": "/p.jpg",
+        "output": "/o.png",
+        "prompt": "Restyle this person as anime",
+        "backend": "flux",
+    })
+    entries = load_history()
+    assert entries[0]["v"] == 2
+    # Absence of the enhance_* keys is the "enhancer was off" signal.
+    assert "enhanced" not in entries[0]
+    assert "enhance_model" not in entries[0]
+    assert "prompt_original" not in entries[0]

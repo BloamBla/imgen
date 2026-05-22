@@ -176,7 +176,8 @@ def test_validate_ui_open_in_preview_must_be_bool():
 
 def test_load_validated_config_empty_file(tmp_path):
     result = load_validated_config(tmp_path / "missing.toml")
-    assert result == {"defaults": {}, "ui": {}}
+    # v0.5 added the `enhance` section. Missing file = all sections empty.
+    assert result == {"defaults": {}, "ui": {}, "enhance": {}}
 
 
 def test_load_validated_config_round_trip(tmp_path):

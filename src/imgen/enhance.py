@@ -32,19 +32,45 @@ Project rules:
 """
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 
 __all__ = [
+    "DEFAULT_ENHANCE_MODEL",
+    "DEFAULT_ENHANCE_TIMEOUT_S",
     "DEFAULT_MAX_INPUT_BYTES",
     "DEFAULT_MAX_OUTPUT_BYTES",
     "EnhanceResult",
+    "RunnerError",
     "apply_length_cap",
     "build_messages",
+    "build_runner_payload",
     "check_invariants",
     "decide_final_prompt",
+    "enhance_iteration_prompts",
     "extract_enhanced_text",
+    "parse_runner_response",
+    "replace_prompt_in_cmd",
+    "run_with_mlx_lm",
     "should_enhance",
 ]
+
+
+# Default model — mlx-community ships a 4-bit pre-quantized MLX-native
+# Qwen2.5-7B-Instruct that matches our memory budget on M2 Pro 32 GB
+# (~4.3 GB live alongside FLUX-Kontext's ~18 GB live = comfortable).
+# User-overridable via config.toml [enhance] model = "..." or
+# --enhance-model REF on the CLI.
+DEFAULT_ENHANCE_MODEL = "mlx-community/Qwen2.5-7B-Instruct-4bit"
+
+# Generous timeout: 120 s gives the runner enough room to load weights
+# (~10 s cold cache) + generate up to ~30 prompts in a batch (~3 s each)
+# even on a thermally-throttled M2 Pro. A timeout still fires if mlx_lm
+# hangs (memory thrash, kernel panic recovery).
+DEFAULT_ENHANCE_TIMEOUT_S = 120
 
 
 # Input cap: ~2 KB. The LLM-expanded version sits below 60 KB (mflux's
@@ -292,3 +318,309 @@ def decide_final_prompt(
         was_truncated=was_truncated,
         raw_llm_output=raw,
     )
+
+
+# ── Subprocess runner — wire protocol + spawn-and-read wrapper ──────────
+
+
+class RunnerError(Exception):
+    """Raised by :func:`run_with_mlx_lm` when the enhance_runner subprocess
+    cannot fulfil a batch — non-zero exit, crash, timeout, malformed
+    JSON, or count mismatch. Caller is expected to catch and fall back
+    to text-only generation for the entire batch (per-iteration fallback
+    is handled inside ``decide_final_prompt`` for individual LLM outputs,
+    not here — this exception means "the runner itself failed").
+    """
+
+
+def build_runner_payload(
+    *,
+    items: list[dict[str, str]],
+    model: str,
+    temperature: float,
+    max_tokens: int,
+) -> dict:
+    """Construct the JSON payload fed to enhance_runner via stdin.
+
+    ``items`` is a list of ``{"system": "...", "user": "..."}`` dicts
+    aligned with the prompts that need enhancement. The runner returns
+    a list of equal length in the same order — callers must keep that
+    alignment to splice results back into the iteration plan.
+
+    Returns a plain dict, JSON-serialisable. Lock-in test guards
+    against accidental non-JSON types creeping in (a Path, an Enum)
+    that would crash json.dumps at the wire boundary.
+    """
+    return {
+        "model": model,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "items": items,
+    }
+
+
+def parse_runner_response(raw: str, *, expected_count: int) -> list[str]:
+    """Decode the runner's stdout JSON into a list of output strings.
+
+    Raises :class:`RunnerError` on:
+      * malformed JSON (runner crashed mid-write / mixed stdout streams)
+      * top-level ``{"error": "..."}`` field (runner reported a clean
+        failure — model not found, mlx_lm OOM, etc.)
+      * missing ``results`` key (wire protocol violation)
+      * item in ``results`` missing ``output`` key
+      * results count != ``expected_count`` (mlx_lm dropped or
+        duplicated outputs — abort the whole batch rather than
+        produce mis-aligned enhancements)
+    """
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise RunnerError(f"invalid JSON from enhance_runner: {e}") from e
+    if "error" in data:
+        raise RunnerError(f"enhance_runner reported error: {data['error']}")
+    if "results" not in data:
+        raise RunnerError(
+            "enhance_runner response missing 'results' top-level key"
+        )
+    results = data["results"]
+    if not isinstance(results, list):
+        raise RunnerError(
+            f"enhance_runner 'results' must be a list, got {type(results).__name__}"
+        )
+    if len(results) != expected_count:
+        raise RunnerError(
+            f"enhance_runner expected {expected_count} items, got {len(results)} "
+            "(refusing to mis-align outputs to iterations)"
+        )
+    outputs: list[str] = []
+    for i, item in enumerate(results):
+        if not isinstance(item, dict) or "output" not in item:
+            raise RunnerError(
+                f"enhance_runner result item {i} missing 'output' field"
+            )
+        outputs.append(str(item["output"]))
+    return outputs
+
+
+def run_with_mlx_lm(
+    *,
+    items: list[dict[str, str]],
+    model: str,
+    temperature: float,
+    max_tokens: int,
+    timeout: float = DEFAULT_ENHANCE_TIMEOUT_S,
+    python_executable: str | None = None,
+    runner_script: str | Path | None = None,
+) -> list[str]:
+    """Spawn ``python -m imgen.enhance_runner``, send ``items`` as JSON
+    stdin, return ``[output_str_for_item_0, ...]``.
+
+    One subprocess invocation handles the WHOLE batch — mlx_lm.load
+    happens once, all generations share the loaded model, weights are
+    freed when the runner exits. This amortises the ~5-10 s cold-cache
+    load over N iterations.
+
+    ``timeout`` is wall-clock seconds; on expiry the subprocess is
+    killed and :class:`RunnerError` raised. Default 120 s is generous
+    for a small batch but still fires if mlx_lm hangs.
+
+    Test seam: ``python_executable`` + ``runner_script`` can be
+    overridden to point at a fake runner script. Production callers
+    pass nothing → defaults to ``sys.executable`` + the real
+    ``imgen.enhance_runner`` module via ``-m``.
+
+    Empty ``items`` list short-circuits — no subprocess at all. This
+    matters because an enhance-enabled run with all iterations having
+    empty prompts would otherwise pay the LLM-load cost for zero work.
+    """
+    if not items:
+        return []
+
+    py = python_executable or sys.executable
+    if runner_script is not None:
+        cmd = [py, str(runner_script)]
+    else:
+        cmd = [py, "-m", "imgen.enhance_runner"]
+
+    payload = build_runner_payload(
+        items=items,
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+    payload_json = json.dumps(payload, ensure_ascii=False)
+
+    try:
+        result = subprocess.run(
+            cmd,
+            input=payload_json,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,  # we inspect returncode ourselves for diagnostics
+        )
+    except subprocess.TimeoutExpired as e:
+        raise RunnerError(
+            f"enhance_runner timed out after {timeout}s "
+            "(LLM may be stuck or model load is taking unusually long)"
+        ) from e
+    except OSError as e:
+        raise RunnerError(f"enhance_runner spawn failed: {e}") from e
+
+    if result.returncode != 0 and not result.stdout.strip():
+        # Hard crash without JSON output (segfault, OOM-kill, exec
+        # failure, etc.) — no parse possible, surface what we have.
+        stderr_tail = (result.stderr or "").strip()[-500:]
+        raise RunnerError(
+            f"enhance_runner exited {result.returncode} without producing "
+            f"output. stderr tail: {stderr_tail!r}"
+        )
+
+    return parse_runner_response(result.stdout, expected_count=len(items))
+
+
+# ── Iteration-level orchestrator (used by cmd_generate / cmd_batch) ─────
+
+
+def replace_prompt_in_cmd(cmd: list[str], new_prompt: str) -> list[str]:
+    """Return a new mflux argv with the ``--prompt`` value swapped.
+
+    Iteration.cmd is built in :func:`backends.build_mflux_cmd` with
+    ``--prompt`` followed by the prompt string at a fixed position.
+    When the enhancer modifies the prompt post-construction, we patch
+    the argv rather than re-running build_mflux_cmd (which would
+    require carrying every keyword arg through the Iteration). Pure
+    function — never mutates ``cmd``.
+
+    If ``cmd`` does not contain ``--prompt`` (which would be a bug in
+    build_mflux_cmd, not a normal path), the input is returned
+    unchanged. Defensive: enhance should never crash the generation
+    flow, just degrade silently to no-op.
+    """
+    out = list(cmd)
+    try:
+        i = out.index("--prompt")
+    except ValueError:
+        return out  # no --prompt to replace; defensive no-op
+    if i + 1 >= len(out):
+        return out  # malformed argv; defensive no-op
+    out[i + 1] = new_prompt
+    return out
+
+
+def enhance_iteration_prompts(
+    *,
+    iteration_prompts: list[str],
+    system_prompt: str | None,
+    invariants: tuple[str, ...],
+    model: str,
+    temperature: float,
+    max_tokens: int,
+    timeout_s: float = DEFAULT_ENHANCE_TIMEOUT_S,
+    run_llm=run_with_mlx_lm,
+) -> list[EnhanceResult]:
+    """Top-level orchestrator: enhance a batch of iteration prompts.
+
+    One subprocess launch handles the whole batch — mlx_lm.load runs
+    ONCE, all N prompts share the loaded model. This amortises the
+    cold-cache load over an N-style or N×M-batch invocation.
+
+    Per-prompt fallback paths (all return aligned ``EnhanceResult``
+    entries; the returned list always has ``len(iteration_prompts)``):
+
+    * ``system_prompt is None`` (backend has no enhancer config) →
+      every result is ``fallback_reason="not_supported_by_backend"``
+    * a prompt fails :func:`should_enhance` (empty / too long) →
+      that one gets ``"empty_input"`` or ``"input_too_long"``,
+      others continue through the LLM
+    * the runner subprocess raises :class:`RunnerError` (model load
+      failed, timeout, crash) → ALL results get
+      ``fallback_reason="runner_error"`` with the error preserved
+      in ``raw_llm_output``. We don't want a partial enhancement
+      across a multi-style run.
+
+    ``run_llm`` is an injection seam for tests — pass a callable with
+    the same signature as :func:`run_with_mlx_lm` to skip the real
+    subprocess.
+    """
+    n = len(iteration_prompts)
+
+    # Backend has no system prompt → enhancer not wired for this
+    # backend. Fail-safe: don't try to call LLM with a generic
+    # instruction that might shape the prompt wrong.
+    if system_prompt is None:
+        return [
+            EnhanceResult(
+                final_prompt=p,
+                was_enhanced=False,
+                fallback_reason="not_supported_by_backend",
+                was_truncated=False,
+                raw_llm_output=None,
+            )
+            for p in iteration_prompts
+        ]
+
+    # Decide per-prompt whether it's enhancement-eligible.
+    enhanceable: list[int] = []  # indices of prompts to pass to LLM
+    pre_results: list[EnhanceResult | None] = [None] * n
+    for i, p in enumerate(iteration_prompts):
+        if not should_enhance(p, enabled=True):
+            # Stamp the right reason based on which gate tripped.
+            if not p.strip():
+                reason = "empty_input"
+            else:
+                reason = "input_too_long"
+            pre_results[i] = EnhanceResult(
+                final_prompt=p,
+                was_enhanced=False,
+                fallback_reason=reason,
+                was_truncated=False,
+                raw_llm_output=None,
+            )
+        else:
+            enhanceable.append(i)
+
+    # If nothing to enhance, skip the subprocess entirely.
+    if not enhanceable:
+        # All slots already filled by the pre-result loop above.
+        return [r for r in pre_results if r is not None]  # type: ignore[misc]
+
+    items = [
+        {"system": system_prompt, "user": iteration_prompts[i]}
+        for i in enhanceable
+    ]
+
+    try:
+        llm_outputs = run_llm(
+            items=items,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout_s,
+        )
+    except RunnerError as e:
+        # All-or-nothing fallback: a runner-level failure (model load,
+        # crash, timeout) returns ``runner_error`` for every iteration
+        # so the user sees consistent behaviour across the batch.
+        msg = str(e)
+        return [
+            EnhanceResult(
+                final_prompt=p,
+                was_enhanced=False,
+                fallback_reason="runner_error",
+                was_truncated=False,
+                raw_llm_output=msg,
+            )
+            for p in iteration_prompts
+        ]
+
+    # Stitch LLM outputs back into the result list at the correct slots.
+    for slot_idx, llm_output in zip(enhanceable, llm_outputs):
+        pre_results[slot_idx] = decide_final_prompt(
+            original=iteration_prompts[slot_idx],
+            enhanced_or_none=llm_output,
+            invariants=invariants,
+        )
+
+    # Every slot is filled by now.
+    return [r for r in pre_results if r is not None]  # type: ignore[misc]

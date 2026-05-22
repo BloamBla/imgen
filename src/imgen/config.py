@@ -34,12 +34,14 @@ __all__ = [
     "CONFIG_MAX_BYTES",
     "ConfigError",
     "DEFAULTS_SCHEMA",
+    "ENHANCE_SCHEMA",
     "UI_SCHEMA",
-    "load_config",
-    "validate_section",
-    "load_validated_config",
     "effective_defaults",
+    "effective_enhance",
     "effective_output_dir",
+    "load_config",
+    "load_validated_config",
+    "validate_section",
 ]
 
 # Cap config.toml size so a rogue/oversized file can't OOM tomllib.
@@ -119,6 +121,40 @@ UI_SCHEMA: dict[str, _SchemaEntry] = {
     ),
 }
 
+# v0.5: [enhance] section governs the LLM prompt enhancer.
+#
+# default = false  → enhancer is opt-in (--enhance-prompt enables it
+#                    on the CLI). Setting true here makes every run
+#                    enhance unless --no-enhance is passed.
+# model    = HF repo name passed to mlx_lm.load. Empty string rejected
+#            (would fail later at load anyway, fail-fast at config time).
+# temperature = sampler temp; 0.0 = greedy (deterministic, replay-friendly).
+# max_tokens  = LLM output cap. 200 is generous for ~60-80 token expansions.
+# timeout_s   = wall-clock cap on the runner subprocess; kills it if
+#               mlx_lm hangs.
+ENHANCE_SCHEMA: dict[str, _SchemaEntry] = {
+    "default": (
+        "bool (true / false)",
+        lambda v: isinstance(v, bool),
+    ),
+    "model": (
+        "non-empty string (HF repo or absolute path)",
+        lambda v: isinstance(v, str) and v.strip() != "",
+    ),
+    "temperature": (
+        "number 0.0..2.0",
+        lambda v: _is_number_not_bool(v) and 0.0 <= v <= 2.0,
+    ),
+    "max_tokens": (
+        "int 1..4096",
+        lambda v: _is_int_not_bool(v) and 1 <= v <= 4096,
+    ),
+    "timeout_s": (
+        "int 1..3600",
+        lambda v: _is_int_not_bool(v) and 1 <= v <= 3600,
+    ),
+}
+
 
 # ── Loaders + validator ──────────────────────────────────────────────────
 
@@ -181,6 +217,9 @@ def load_validated_config(path: Path) -> dict[str, dict[str, Any]]:
             "defaults", raw.get("defaults", {}), DEFAULTS_SCHEMA
         ),
         "ui": validate_section("ui", raw.get("ui", {}), UI_SCHEMA),
+        "enhance": validate_section(
+            "enhance", raw.get("enhance", {}), ENHANCE_SCHEMA
+        ),
     }
 
 
@@ -197,6 +236,52 @@ def effective_defaults(
     in config_defaults are added.
     """
     return {**module_defaults, **config_defaults}
+
+
+# Built-in defaults for the [enhance] section — used when config.toml is
+# absent / a key is missing. Picked to match the v0.5 design memo:
+# enhancer is opt-in (default=False), Qwen2.5-7B-4bit, deterministic
+# (temp=0.0), 200-token output cap, 120-second runner timeout.
+_ENHANCE_MODULE_DEFAULTS: dict[str, Any] = {
+    "default": False,
+    "model": "mlx-community/Qwen2.5-7B-Instruct-4bit",
+    "temperature": 0.0,
+    "max_tokens": 200,
+    "timeout_s": 120,
+}
+
+
+def effective_enhance(
+    cli_enable: bool | None,
+    config_enhance: dict[str, Any],
+    cli_model: str | None = None,
+    cli_temperature: float | None = None,
+) -> dict[str, Any]:
+    """Resolve the effective [enhance] settings for one CLI invocation.
+
+    Returns a dict with the same keys as ``ENHANCE_SCHEMA`` plus an
+    ``"enabled"`` boolean (the resolved on/off for this invocation).
+
+    Precedence (highest first):
+        * ``cli_enable`` — explicit ``--enhance-prompt`` (True) or
+          ``--no-enhance`` (False) on the CLI. None means "no CLI
+          override, use config".
+        * ``cli_model`` / ``cli_temperature`` — explicit CLI overrides
+          for specific fields. None means "use config".
+        * ``config_enhance`` — the validated ``[enhance]`` section
+          from config.toml; missing keys fall to module defaults.
+        * Module defaults — :data:`_ENHANCE_MODULE_DEFAULTS`.
+
+    Does not mutate ``config_enhance``.
+    """
+    merged: dict[str, Any] = {**_ENHANCE_MODULE_DEFAULTS, **config_enhance}
+    if cli_model is not None:
+        merged["model"] = cli_model
+    if cli_temperature is not None:
+        merged["temperature"] = cli_temperature
+    enabled = merged["default"] if cli_enable is None else cli_enable
+    merged["enabled"] = enabled
+    return merged
 
 
 def effective_output_dir(

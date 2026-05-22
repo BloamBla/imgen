@@ -28,9 +28,11 @@ import uuid
 from pathlib import Path
 
 from ..cmd_helpers import (
+    apply_enhance_results_to_iterations,
     build_iterations,
     check_prompt_style_compat,
     estimate_one_seconds,
+    maybe_enhance_for_command,
     exit_code,
     format_duration,
     load_backend_and_token,
@@ -214,6 +216,29 @@ def cmd_generate(args) -> int:
             seed=seed,
         )
 
+        # v0.5: capture pre-enhance prompts BEFORE rebuilding iterations
+        # with LLM-expanded versions. cmd_generate's history writer reads
+        # this list to record `prompt_original` in v=2 entries, so the
+        # original survives even when iterations[i].prompt becomes the
+        # enhanced version below. Empty list when enhancer is disabled
+        # (no rebuild happens) — kept aligned with iterations so the
+        # zip in the run loop never desyncs.
+        prompts_pre_enhance = [it.prompt for it in iterations]
+
+        # v0.5: optionally enhance prompts via local Qwen2.5-7B. Runs
+        # BEFORE dry-run + before confirm gate so the displayed cmd
+        # (dry-run) and the actually-executed cmd are identical. The
+        # helper handles disabled / runner-error / per-prompt fallback
+        # paths and always returns a list aligned with iterations.
+        enhance_results, enhance_model = maybe_enhance_for_command(
+            args=args,
+            backend_obj=be,
+            iterations=iterations,
+        )
+        iterations = apply_enhance_results_to_iterations(
+            iterations, enhance_results,
+        )
+
         # is_batch threshold: "are we doing more than one image in this
         # invocation?" v0.2.x → len(iterations) >= 2 (single input × M
         # styles); v0.3.0 → N*M >= 2 (N inputs × M styles). Renamed from
@@ -334,6 +359,12 @@ def cmd_generate(args) -> int:
             )
 
             for idx, it in enumerate(iterations, start=1):
+                # v0.5: thread enhance metadata through so history_entry
+                # gets prompt_original + enhanced + enhance_model +
+                # enhance_fallback_reason. idx is 1-based; enhance_results
+                # is 0-based; same with prompts_pre_enhance.
+                e_result = enhance_results[idx - 1]
+                e_pre = prompts_pre_enhance[idx - 1]
                 cont = run_one_iteration(
                     it=it,
                     idx=idx,
@@ -343,6 +374,9 @@ def cmd_generate(args) -> int:
                     logger=logger,
                     succeeded=succeeded,
                     failed=failed,
+                    enhance_result=e_result,
+                    enhance_model=enhance_model,
+                    prompt_original=e_pre,
                 )
                 if not cont:
                     return 130

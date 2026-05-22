@@ -240,6 +240,7 @@ def _add_generate_args(
     p.add_argument("--force", action="store_true",
                    help="Skip resource checks (RAM, parallel mflux, etc.) "
                         "and try anyway. Use at your own risk.")
+    _add_enhance_args(p)
 
 
 def _add_batch_args(
@@ -314,6 +315,43 @@ def _add_batch_args(
     p.add_argument("--force", action="store_true",
                    help="Skip resource checks (RAM, parallel mflux, etc.) "
                         "and try anyway. Use at your own risk.")
+    _add_enhance_args(p)
+
+
+def _add_enhance_args(p: argparse.ArgumentParser) -> None:
+    """v0.5 LLM prompt enhancer flags. Shared by generate + batch.
+
+    The enabled flag is a mutex pair (``--enhance-prompt`` /
+    ``--no-enhance``) both writing to ``args.enhance``. ``None`` = no
+    CLI override, fall back to ``[enhance] default`` from config.
+    """
+    group = p.add_argument_group(
+        "Prompt enhancer (v0.5)",
+        "Pipe the constructed prompt through a local LLM "
+        "(Qwen2.5-7B-Instruct-4bit by default) to expand it into a "
+        "richer, model-tuned version before mflux sees it. Opt-in.",
+    )
+    enable = group.add_mutually_exclusive_group()
+    enable.add_argument(
+        "--enhance-prompt", dest="enhance", action="store_true", default=None,
+        help="Expand the prompt via the local LLM before generating.",
+    )
+    enable.add_argument(
+        "--no-enhance", dest="enhance", action="store_false", default=None,
+        help="Disable the enhancer for this run (overrides "
+             "`[enhance] default = true` in config.toml).",
+    )
+    group.add_argument(
+        "--enhance-model", type=str, default=None, metavar="REF",
+        help="HF repo or local path for the enhancer LLM (overrides "
+             "[enhance] model in config.toml).",
+    )
+    group.add_argument(
+        "--enhance-temperature", type=_float_range(0.0, 2.0), default=None,
+        metavar="T",
+        help="Sampler temperature for the enhancer (0.0 = greedy = "
+             "deterministic; default 0.0 for replay reproducibility).",
+    )
 
 
 def print_styles() -> int:
