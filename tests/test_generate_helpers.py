@@ -20,6 +20,7 @@ import pytest
 from types import SimpleNamespace
 
 from imgen.commands.generate import (
+    _check_prompt_style_compat,
     _resolve_styles_list,
     _validate_input_path,
 )
@@ -164,3 +165,125 @@ def test_resolve_styles_list_output_file_with_default_single_ok():
         merged_defaults={"style": "anime"},
     )
     assert result == ["anime"]
+
+
+# ── _check_prompt_style_compat ──────────────────────────────────────────
+
+
+@pytest.fixture
+def fake_styles(monkeypatch):
+    """Stub get_style with a controlled registry per test.
+
+    Lets us mix prompt-bearing and param-only styles without touching
+    the real built-in registry or styles.d/. The helper imports
+    get_style locally; patch at the call site
+    (imgen.commands.generate.get_style)."""
+    registry: dict = {}
+
+    def fake_get_style(name: str) -> dict:
+        if name not in registry:
+            raise KeyError(f"Unknown style '{name}'")
+        return registry[name]
+
+    monkeypatch.setattr(
+        "imgen.commands.generate.get_style", fake_get_style
+    )
+    return registry
+
+
+def test_check_prompt_style_compat_custom_prompt_with_param_only_ok(fake_styles):
+    """Param-only style (no `prompt` key) + custom-prompt is the
+    legitimate combo: style contributes guidance/strength/etc., CLI
+    contributes prompt text."""
+    fake_styles["paramonly"] = {"strength": 0.6}  # no `prompt` key
+
+    # Must not raise — returns None on success.
+    _check_prompt_style_compat(
+        styles_list=["paramonly"],
+        effective_custom_prompt="my custom prompt",
+    )
+
+
+def test_check_prompt_style_compat_custom_prompt_with_prompt_bearing_rejected(
+    fake_styles, capsys
+):
+    """Style that ships its own prompt can't combine with --custom-prompt
+    — would be two prompts fighting for the slot."""
+    fake_styles["anime"] = {"prompt": "anime portrait", "strength": 0.6}
+
+    with pytest.raises(SystemExit) as exc_info:
+        _check_prompt_style_compat(
+            styles_list=["anime"],
+            effective_custom_prompt="my custom prompt",
+        )
+    assert exc_info.value.code == 2
+    err = capsys.readouterr().err
+    assert "can't combine with --custom-prompt" in err
+    assert "anime" in err
+
+
+def test_check_prompt_style_compat_lists_all_offenders_in_multi_style(
+    fake_styles, capsys
+):
+    """User should see every clashing style at once, not have to fix
+    one and re-run to discover the next."""
+    fake_styles["anime"] = {"prompt": "anime portrait", "strength": 0.6}
+    fake_styles["ghibli"] = {"prompt": "ghibli scene", "strength": 0.5}
+    fake_styles["paramonly"] = {"strength": 0.7}
+
+    with pytest.raises(SystemExit):
+        _check_prompt_style_compat(
+            styles_list=["anime", "paramonly", "ghibli"],
+            effective_custom_prompt="custom",
+        )
+    err = capsys.readouterr().err
+    assert "anime" in err
+    assert "ghibli" in err
+    # paramonly is fine — should NOT be listed as an offender
+    assert "paramonly" not in err.split("can't combine")[1].split(".")[0]
+
+
+def test_check_prompt_style_compat_no_prompt_with_prompt_bearing_style_ok(
+    fake_styles,
+):
+    """No custom prompt + style with its own prompt = v0.1.x default
+    path. Must remain unchanged."""
+    fake_styles["anime"] = {"prompt": "anime portrait", "strength": 0.6}
+
+    _check_prompt_style_compat(
+        styles_list=["anime"],
+        effective_custom_prompt=None,
+    )
+
+
+def test_check_prompt_style_compat_no_prompt_with_param_only_rejected(
+    fake_styles, capsys
+):
+    """Param-only style (e.g. user-added in styles.d/) needs a CLI
+    prompt — no prompt + no style prompt = nothing to feed mflux."""
+    fake_styles["paramonly"] = {"strength": 0.6}
+
+    with pytest.raises(SystemExit) as exc_info:
+        _check_prompt_style_compat(
+            styles_list=["paramonly"],
+            effective_custom_prompt=None,
+        )
+    assert exc_info.value.code == 2
+    err = capsys.readouterr().err
+    assert "without a prompt" in err
+    assert "paramonly" in err
+
+
+def test_check_prompt_style_compat_empty_string_prompt_treated_as_missing(
+    fake_styles,
+):
+    """A style with `prompt: ""` is effectively param-only — falsy
+    string in `if get_style(s).get("prompt")` matches the predicate."""
+    fake_styles["empty"] = {"prompt": "", "strength": 0.5}
+
+    # No CLI prompt + falsy style prompt → reject (matches mutex semantics).
+    with pytest.raises(SystemExit):
+        _check_prompt_style_compat(
+            styles_list=["empty"],
+            effective_custom_prompt=None,
+        )

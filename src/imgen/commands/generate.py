@@ -109,6 +109,37 @@ def _confirm_batch(
     return ans in ("y", "yes")
 
 
+def _check_prompt_style_compat(
+    styles_list: list[str],
+    effective_custom_prompt: str | None,
+) -> None:
+    """Reject incompatible (prompt, style) combinations upfront.
+
+    Strict mutex: every listed style must either HAVE its own ``prompt``
+    (then no --custom-prompt allowed) OR be param-only (then a CLI
+    prompt is required). Mixed lists fail with the full offender list so
+    the user can split into two invocations in one shot, not iteratively.
+
+    Raises SystemExit(2) on incompatibility. Returns None on success.
+    """
+    if effective_custom_prompt:
+        prompt_bearing = [s for s in styles_list if get_style(s).get("prompt")]
+        if prompt_bearing:
+            die(f"Style(s) with their own prompt can't combine with "
+                f"--custom-prompt / --prompt-file: {', '.join(prompt_bearing)}.",
+                code=2,
+                hint="Split into two invocations, or use only param-only "
+                     "styles (from ~/.imgen/styles.d/, no `prompt` field).")
+    else:
+        missing_prompt = [s for s in styles_list if not get_style(s).get("prompt")]
+        if missing_prompt:
+            die(f"Style(s) without a prompt: {', '.join(missing_prompt)}. "
+                "Pass --custom-prompt (or --prompt-file) to supply one.",
+                code=2,
+                hint="Param-only styles in ~/.imgen/styles.d/ need a "
+                     "CLI-supplied prompt.")
+
+
 def _resolve_styles_list(args, merged_defaults: dict) -> list[str]:
     """Resolve --style into a list of preset names.
 
@@ -188,26 +219,7 @@ def cmd_generate(args) -> int:
         die(str(e), code=2)
 
     # 3a) Pre-flight mutex per style (multi-style: ALL items must agree).
-    # Strict rule: if a custom prompt is set, every listed style must be
-    # param-only (no `prompt:` key). If no custom prompt, every listed
-    # style must HAVE a prompt. Mixed lists → reject with offender list
-    # so the user splits into two invocations.
-    if effective_custom_prompt:
-        prompt_bearing = [s for s in styles_list if get_style(s).get("prompt")]
-        if prompt_bearing:
-            die(f"Style(s) with their own prompt can't combine with "
-                f"--custom-prompt / --prompt-file: {', '.join(prompt_bearing)}.",
-                code=2,
-                hint="Split into two invocations, or use only param-only "
-                     "styles (from ~/.imgen/styles.d/, no `prompt` field).")
-    else:
-        missing_prompt = [s for s in styles_list if not get_style(s).get("prompt")]
-        if missing_prompt:
-            die(f"Style(s) without a prompt: {', '.join(missing_prompt)}. "
-                "Pass --custom-prompt (or --prompt-file) to supply one.",
-                code=2,
-                hint="Param-only styles in ~/.imgen/styles.d/ need a "
-                     "CLI-supplied prompt.")
+    _check_prompt_style_compat(styles_list, effective_custom_prompt)
 
     # 3b) Scope on custom prompts is a no-op — warn once, not per style.
     if args.scope and effective_custom_prompt:
