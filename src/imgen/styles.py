@@ -181,6 +181,21 @@ BUILTIN_STYLES: dict[str, dict] = {
             "Pixar-style 3D-animated environment with soft volumetric "
             "lighting, painterly textures, and cinematic depth-of-field"
         ),
+        # v0.6: Canopus-Pixar-3D-Flux-LoRA (openrail-m). Trigger
+        # "Pixar 3D" is required for the LoRA's weight delta to fire —
+        # prepend_trigger_words handles that automatically when the
+        # prompt doesn't already contain it. The built-in prompt above
+        # uses "Pixar 3D animated" so the trigger is implicitly there;
+        # the trigger field still set so user --custom-prompt overrides
+        # that drop "Pixar 3D" wording still activate the LoRA.
+        "loras": (
+            LoraRef(
+                ref="prithivMLmods/Canopus-Pixar-3D-Flux-LoRA",
+                weight=0.8,
+                compatible_with=("flux-1",),
+                trigger="Pixar 3D",
+            ),
+        ),
     },
 
     "anime": {
@@ -207,6 +222,18 @@ BUILTIN_STYLES: dict[str, dict] = {
             ", and transform the background and surroundings into a "
             "hand-painted anime cel-shaded environment with vibrant "
             "skies, soft cloud shapes, and detailed illustrated scenery"
+        ),
+        # v0.6: strangerzonehf/Flux-Animeo-v1-LoRA (Apache-2.0).
+        # Trigger word "Animeo" must appear in the prompt to fire — the
+        # base prompt above doesn't use it, so prepend_trigger_words
+        # inserts it at command-build time.
+        "loras": (
+            LoraRef(
+                ref="strangerzonehf/Flux-Animeo-v1-LoRA",
+                weight=0.8,
+                compatible_with=("flux-1",),
+                trigger="Animeo",
+            ),
         ),
     },
 
@@ -269,6 +296,20 @@ BUILTIN_STYLES: dict[str, dict] = {
             ", and transform the background and surroundings into a "
             "Studio Ghibli watercolor environment with soft pastel "
             "skies, lush painterly nature, and warm atmospheric haze"
+        ),
+        # v0.6: openfree/flux-chatgpt-ghibli-lora — fallback pick per
+        # design memo. The primary candidate alvarobartt/ghibli-
+        # characters-flux-lora carried a "TBD pending license check"
+        # marker, so we ship the well-established openfree LoRA which
+        # has clearer licensing. Trigger phrase "Ghibli style"
+        # activates the weight delta; auto-prepended if absent.
+        "loras": (
+            LoraRef(
+                ref="openfree/flux-chatgpt-ghibli-lora",
+                weight=0.8,
+                compatible_with=("flux-1",),
+                trigger="Ghibli style",
+            ),
         ),
     },
 

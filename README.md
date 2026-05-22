@@ -8,6 +8,7 @@ imgen photo.jpg --style anime
 imgen photo.jpg --style simpsons --preview   # ~3 min fast test
 imgen photo.jpg --custom-prompt "Mona Lisa painting style"
 imgen photo.jpg --style anime --enhance-prompt   # smarter prompts → better results
+imgen photo.jpg --style anime --no-lora          # A/B vs the built-in LoRA (anime/pixar/ghibli ship one)
 imgen batch ~/Desktop/holiday --style anime,ghibli   # every photo in folder × every style
 ```
 
@@ -141,6 +142,8 @@ imgen <photo> -s anime --preview               # fast mode (~3-10 min)
 imgen <photo> -s anime                         # default --scope=scene — restyle whole image
 imgen <photo> -s anime --scope person          # keep background photorealistic, restyle person only
 imgen <photo> -s anime --enhance-prompt        # smarter prompts via local AI (see "Smart prompts" below)
+imgen <photo> -s anime --no-lora               # A/B against the style's built-in LoRA (see "LoRAs" below)
+imgen <photo> -s pencil --lora REF[:WEIGHT]    # attach an extra LoRA; REF = HF repo or local .safetensors
 imgen <photo> --backend qwen                   # use Qwen Edit (no HF token needed)
 imgen <photo> --force                          # skip resource preflight checks
 
@@ -156,6 +159,7 @@ imgen batch <dir> --dry-run                    # show every mflux command withou
 imgen doctor                                   # env + RAM forecast + cached models + backends + enhancer
 imgen --list-styles                            # show presets
 imgen --list-backends                          # show built-in + user backends from ~/.imgen/backends.d/
+imgen --list-loras                             # show LoRAs each style ships with + HF cache state
 imgen --dry-run <photo> -s anime               # show mflux command, don't run
 imgen -v   /   imgen --version                 # print version
 
@@ -210,6 +214,8 @@ If you want to re-run with the same args, re-invoke `imgen` with the same flags 
 | `--preview` / `-p`  | flag   | Q4, 8 steps, 768x — ~5x faster |
 | `--scope`           | person/scene | default `scene` — restyle whole image with identity preserved; `person` keeps background unchanged |
 | `--enhance-prompt`  | flag         | Expand the prompt via local AI before generating. See "Smart prompts" below |
+| `--lora`            | REF[:WEIGHT] | Attach a LoRA weight delta on top of the style's stack (repeatable). See "LoRAs" below |
+| `--no-lora`         | flag         | Drop the style's built-in LoRA stack — run the base model only |
 
 For 32 GB Macs, **Q8** is recommended for FLUX Kontext.
 
@@ -288,6 +294,123 @@ timeout_s = 120
 ```
 
 Smaller models (3B) are faster but produce flatter expansions. Larger (14B) won't fit alongside FLUX on 32 GB. The 7B 4-bit default is the sweet spot for M2/M3 Macs.
+
+## LoRAs (`--lora`)
+
+A LoRA is a small weight delta — typically 50-300 MB — trained on top of a base diffusion model to nudge it toward a specific style. Used at generation time, a LoRA *layers* on top of the base model, no full re-training, no need to swap models between styles.
+
+Three built-in styles ship with a curated LoRA:
+
+| Style    | LoRA                                                | Weight | Trigger     |
+|----------|-----------------------------------------------------|--------|-------------|
+| `anime`  | `strangerzonehf/Flux-Animeo-v1-LoRA`                | 0.8    | `Animeo`      |
+| `pixar`  | `prithivMLmods/Canopus-Pixar-3D-Flux-LoRA`          | 0.8    | `Pixar 3D`    |
+| `ghibli` | `openfree/flux-chatgpt-ghibli-lora`                 | 0.8    | `Ghibli style`|
+
+`simpsons`, `vangogh`, and `pencil` stay text-only — either no quality LoRA exists on HuggingFace (Simpsons IP-blocked; vangogh's available impressionism LoRAs didn't beat text-only in side-by-side comparison) or the style is already strong in FLUX's base training (pencil).
+
+`imgen --list-loras` shows the active mapping plus which LoRAs are already cached locally vs. about to download:
+
+```
+$ imgen --list-loras
+Available LoRAs
+  Styles shipping LoRAs:
+    anime          strangerzonehf/Flux-Animeo-v1-LoRA       @0.80  [flux-1] trigger="Animeo"        (cached)
+    ghibli         openfree/flux-chatgpt-ghibli-lora        @0.80  [flux-1] trigger="Ghibli style"  (not downloaded)
+    pixar          prithivMLmods/Canopus-Pixar-3D-Flux-LoRA @0.80  [flux-1] trigger="Pixar 3D"      (cached)
+  Text-only styles (no LoRA): pencil, simpsons, vangogh
+```
+
+### A/B against the base model
+
+To compare the LoRA-flavoured anime against the text-only baseline:
+
+```bash
+imgen photo.jpg --style anime                   # built-in: with the Animeo LoRA
+imgen photo.jpg --style anime --no-lora         # text-only baseline (no LoRA)
+```
+
+Both runs write into the same timestamped `~/Desktop/imgen/<ts>/` folder, named `<input>-anime.png` — you'll have to move or rename the first before launching the second. Quick A/B without renaming:
+
+```bash
+imgen photo.jpg --style anime --output ~/Desktop/anime-with-lora.png
+imgen photo.jpg --style anime --no-lora --output ~/Desktop/anime-text-only.png
+```
+
+### Attach an ad-hoc LoRA
+
+Layer an additional LoRA on top of the style's stack (or any style's stack — including text-only ones):
+
+```bash
+imgen photo.jpg --style anime --lora "alvarobartt/flux-watercolor-lora:0.6"
+imgen photo.jpg --style pencil --lora "/Users/me/loras/sketch-extra.safetensors:0.5"
+```
+
+`--lora REF[:WEIGHT]` is repeatable — pass it multiple times to stack:
+
+```bash
+imgen photo.jpg --style anime \
+    --lora "strangerzonehf/Flux-Animeo-v1-LoRA:0.8" \
+    --lora "Shakker-Labs/FLUX.1-Kontext-dev-LoRA-Flat-Cartoon-Style:0.3"
+```
+
+Style-declared LoRAs come first in argv, your CLI additions are appended after — order matters for some LoRA combinations, but rarely.
+
+`REF` is either a HuggingFace repo id (`author/name`) or an absolute path to a local `.safetensors` file. mflux accepts both. Optional `:WEIGHT` is a float; 1.0 is full strength. The colon split is rightmost-only so paths with embedded colons (e.g. macOS Time Machine snapshot paths) parse correctly.
+
+### Trigger words
+
+Many style LoRAs only activate when a specific phrase appears in the prompt — that phrase was used to label the LoRA's training set, and the model learnt to associate the weight delta with that token. `imgen` auto-prepends each LoRA's trigger to the prompt if it's not already there. For example:
+
+```bash
+imgen photo.jpg --style anime
+# Effective prompt: "Animeo, Restyle this person as a Japanese anime character, ..."
+```
+
+Triggers shown in `imgen --list-loras` (the `trigger=` column). If you set `--custom-prompt` and your custom text already includes the trigger phrase, `imgen` leaves it alone — no duplication. If you stack multiple LoRAs with different triggers, all triggers are prepended in stack order.
+
+### Persist a custom LoRA stack via styles.d
+
+If you want a LoRA stack always-on for one style without typing `--lora` every time, declare it in a user style TOML at `~/.imgen/styles.d/`. The shape mirrors the built-in dict — see [User-defined styles](#user-defined-styles) above. Example:
+
+```toml
+# ~/.imgen/styles.d/anime_strong.toml — anime with two LoRAs stacked
+prompt = "Restyle this person as a Japanese anime character, while preserving the facial identity, hairstyle, body proportions, and pose, with cel-shaded illustration, vibrant colors, clean shading, and manga aesthetic"
+negative = "realistic photo, 3d render, deformed face, bad anatomy, blurry, watermark, text"
+guidance = 4.0
+strength = 0.60
+
+[[loras]]
+ref = "strangerzonehf/Flux-Animeo-v1-LoRA"
+weight = 0.9
+compatible_with = ["flux-1"]
+trigger = "Animeo"
+
+[[loras]]
+ref = "Shakker-Labs/FLUX.1-Kontext-dev-LoRA-Flat-Cartoon-Style"
+weight = 0.4
+compatible_with = ["flux-1"]
+```
+
+Use it via `imgen photo.jpg --style anime_strong`. The `compatible_with` list controls which backends the LoRA can attach to (see below); `trigger` is optional but lets `imgen` auto-prepend the activation phrase.
+
+### Compatibility groups
+
+LoRAs are architecture-bound. A LoRA trained for FLUX.1 will NOT load on Qwen-Image-Edit, and vice versa. `imgen` declares a `lora_compat_group` on each backend (`"flux-1"` for the default `flux` backend; `"qwen"` for `qwen`); when a LoRA's `compatible_with` list doesn't include the active backend's group, `imgen` warns once and skips the LoRA, then continues with the rest of the stack (or fully text-only if all LoRAs are incompatible). It doesn't crash and doesn't silently apply a mismatched LoRA.
+
+In practice all three built-in LoRAs are flux-1 only. Switching `--backend qwen` produces a warn-and-skip plus a text-only generation for those styles. Qwen-side LoRAs do exist; you'd attach them ad-hoc via `--lora REF` with `compatible_with = ["qwen"]` in a user style TOML.
+
+### License model
+
+**`imgen` ships no LoRA weights of its own.** The built-in style mappings reference HuggingFace repos by id, and `mflux` (via `huggingface_hub`) downloads them on first use into `~/.cache/huggingface/hub/` — the same cache that holds FLUX itself. `imgen clean --all` clears the whole HF cache including LoRAs.
+
+Built-in LoRA picks were filtered to permissive licenses (Apache-2.0, MIT, CC0, openrail-m). Specifically:
+
+- **`Flux-Animeo-v1-LoRA`** — Apache-2.0. Free for commercial and personal use.
+- **`Canopus-Pixar-3D-Flux-LoRA`** — CreativeML OpenRAIL-M. Free for personal use; commercial use should review the OpenRAIL-M use-case restrictions (no defamatory content, no targeted harassment, etc.).
+- **`flux-chatgpt-ghibli-lora`** — see the HF repo for the up-to-date license; the underlying FLUX.1-dev base is non-commercial (FLUX-NC), so practical Ghibli commercial use is gated by that anyway.
+
+`--lora` references you supply yourself are entirely your responsibility — `imgen` doesn't check upstream licenses. The same applies to user `styles.d/*.toml` LoRA entries.
 
 ## Backends
 

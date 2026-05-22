@@ -227,3 +227,80 @@ def test_parse_style_list_single_whitespace_item_raises():
     """`--style ' '` is empty after strip, treat as empty."""
     with pytest.raises(ValueError):
         parse_style_list("   ")
+
+
+# ── v0.6: built-in LoRA mappings (anime / pixar / ghibli) ──────────────
+
+# Locked picks per project-v050-v060-design memo (2026-05-22). The exact
+# HF repo IDs + weights + triggers are lock-in tests so a typo or a
+# silent "let me try this other LoRA" never reaches a tagged release
+# without surfacing in CI first.
+#
+# simpsons / vangogh / pencil INTENTIONALLY stay text-only — design
+# memo concluded no quality LoRA exists on HF for those three (Simpsons
+# IP-blocked, pencil well-trained in FLUX base, vangogh only loose
+# impressionism matches that didn't beat text-only in research).
+
+
+def test_anime_ships_animeo_lora_at_0p8():
+    from imgen.styles import LoraRef
+    loras = STYLES["anime"].get("loras", ())
+    assert len(loras) == 1
+    assert loras[0] == LoraRef(
+        ref="strangerzonehf/Flux-Animeo-v1-LoRA",
+        weight=0.8,
+        compatible_with=("flux-1",),
+        trigger="Animeo",
+    )
+
+
+def test_pixar_ships_canopus_pixar_3d_lora_at_0p8():
+    from imgen.styles import LoraRef
+    loras = STYLES["pixar"].get("loras", ())
+    assert len(loras) == 1
+    assert loras[0] == LoraRef(
+        ref="prithivMLmods/Canopus-Pixar-3D-Flux-LoRA",
+        weight=0.8,
+        compatible_with=("flux-1",),
+        trigger="Pixar 3D",
+    )
+
+
+def test_ghibli_ships_openfree_ghibli_lora_at_0p8():
+    """openfree/flux-chatgpt-ghibli-lora is the design-memo FALLBACK
+    pick — the primary alvarobartt/ghibli-characters-flux-lora carried
+    a "TBD pending license check" marker so we ship the well-
+    established openfree LoRA with clearer licensing for v0.6 cut."""
+    from imgen.styles import LoraRef
+    loras = STYLES["ghibli"].get("loras", ())
+    assert len(loras) == 1
+    assert loras[0] == LoraRef(
+        ref="openfree/flux-chatgpt-ghibli-lora",
+        weight=0.8,
+        compatible_with=("flux-1",),
+        trigger="Ghibli style",
+    )
+
+
+@pytest.mark.parametrize("name", ["simpsons", "vangogh", "pencil"])
+def test_text_only_built_ins_have_no_loras(name):
+    """Design-memo decision: these three styles ship without any LoRA
+    in v0.6. simpsons is IP-blocked on HF; vangogh's available
+    impressionism LoRAs didn't beat text-only in research; pencil
+    sketch is already strong in FLUX base training. Lock-in test —
+    if a future commit accidentally adds a LoRA to one of these,
+    the A/B-gated curation policy from the design memo gets violated
+    silently."""
+    assert STYLES[name].get("loras", ()) == ()
+
+
+@pytest.mark.parametrize("name", ["anime", "pixar", "ghibli"])
+def test_built_in_loras_target_flux_1_only(name):
+    """Built-in LoRAs in v0.6 are all FLUX.1-dev / Kontext compatible
+    (lora_compat_group "flux-1"). Qwen backend gets text-only for all
+    built-ins per design memo (HF ecosystem for Qwen style LoRAs is
+    sparse; user can attach Qwen LoRAs ad-hoc via CLI --lora)."""
+    for lora in STYLES[name].get("loras", ()):
+        assert "flux-1" in lora.compatible_with, \
+            f"{name}: LoRA {lora.ref} missing flux-1 compat — Qwen-side " \
+            f"styles ship text-only per v0.6 design"

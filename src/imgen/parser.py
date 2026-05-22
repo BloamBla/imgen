@@ -14,7 +14,7 @@ from . import __version__
 from .backends import BUILTIN_BACKENDS, get_backend, list_backends
 from .colors import C, step
 from .defaults import DEFAULTS, MFLUX_PIN, PREVIEW_OVERRIDES
-from .paths import DEFAULT_OUTPUT_DIR, SAFE_OUTPUT_EXTS
+from .paths import DEFAULT_OUTPUT_DIR, HF_CACHE, SAFE_OUTPUT_EXTS
 from .styles import get_style, list_styles, parse_style_list
 
 
@@ -202,6 +202,9 @@ def build_parser(
                    help="List style presets and exit")
     p.add_argument("--list-backends", action="store_true",
                    help="List image-gen backends (built-in + ~/.imgen/backends.d/) and exit")
+    p.add_argument("--list-loras", action="store_true",
+                   help="List LoRA weight deltas referenced by built-in + user "
+                        "styles, with HF cache status, and exit")
     # v0.3.5: `-v` short flag added — `node -v`/`npm -v`/`pip -V` all
     # use a single letter for version; users naturally try `imgen -v`
     # first and were getting "unrecognized arguments". `-v` doesn't
@@ -518,4 +521,66 @@ def print_backends() -> int:
             secret_marker = f"  [secret: ${be.secret_env_var} ({req})]"
         print(f"  {C.BOLD}{name:14}{C.END} "
               f"{C.DIM}({be.binary}{origin}){C.END}{secret_marker}")
+    return 0
+
+
+def _lora_hf_cache_dir(repo: str, hf_cache: Path) -> Path:
+    """Return the ``models--<author>--<name>`` directory for an HF repo.
+
+    Mirrors the same convention as ``doctor._hf_cache_dir_for``. Local
+    absolute paths (LoraRef.ref can also be one) bypass the HF cache
+    mapping — the ``ref`` IS the on-disk location.
+    """
+    if not repo or repo.startswith("/"):
+        return Path(repo) if repo else hf_cache
+    return hf_cache / ("models--" + repo.replace("/", "--"))
+
+
+def print_loras(hf_cache: Path | None = None) -> int:
+    """Handler for the top-level --list-loras flag (v0.6).
+
+    Walks every style in the merged registry and surfaces its
+    ``loras`` tuple (empty for text-only styles). For each LoRA shows
+    the HF repo / local path, weight, optional trigger phrase, compat
+    group(s), and whether the weights are already cached locally so
+    the user can predict cold-download cost.
+
+    ``hf_cache`` parameter exists for tests (so they can point at a
+    tmp directory and not depend on the real ``~/.cache/huggingface/
+    hub/`` state). Production calls with ``None`` → ``HF_CACHE``.
+    """
+    if hf_cache is None:
+        hf_cache = HF_CACHE
+    step("Available LoRAs")
+
+    text_only: list[str] = []
+    with_loras: list[tuple[str, tuple]] = []
+    for name in list_styles():
+        preset = get_style(name)
+        loras = preset.get("loras", ())
+        if loras:
+            with_loras.append((name, loras))
+        else:
+            text_only.append(name)
+
+    if with_loras:
+        print(f"  {C.BOLD}Styles shipping LoRAs:{C.END}")
+        for style_name, loras in with_loras:
+            for lora in loras:
+                cache_dir = _lora_hf_cache_dir(lora.ref, hf_cache)
+                cached = "cached" if cache_dir.is_dir() else "not downloaded"
+                trigger = f' trigger="{lora.trigger}"' if lora.trigger else ""
+                compat = ",".join(lora.compatible_with)
+                print(f"    {C.BOLD}{style_name:14}{C.END} "
+                      f"{lora.ref} "
+                      f"{C.DIM}@{lora.weight:.2f}  [{compat}]{trigger}  "
+                      f"({cached}){C.END}")
+    if text_only:
+        print(f"  {C.BOLD}Text-only styles (no LoRA):{C.END} "
+              f"{C.DIM}{', '.join(text_only)}{C.END}")
+    print()
+    print(f"  {C.DIM}Override per-invocation with "
+          f"--lora REF[:WEIGHT] (repeatable) or --no-lora.{C.END}")
+    print(f"  {C.DIM}User styles in ~/.imgen/styles.d/*.toml may declare "
+          f"[[loras]] entries — see README.{C.END}")
     return 0

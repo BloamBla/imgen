@@ -287,3 +287,76 @@ def test_print_backends_marks_custom_and_secret(tmp_path, monkeypatch, capsys):
         assert "required" in out
     finally:
         backends_mod.reset_backends_cache()
+
+
+# ── v0.6: --list-loras discovery flag ─────────────────────────────────
+
+
+def test_list_loras_flag_parsed():
+    parser = build_parser()
+    args = parser.parse_args(["--list-loras"])
+    assert args.list_loras is True
+
+
+def test_print_loras_shows_built_in_mappings(tmp_path, capsys):
+    """`--list-loras` surfaces every built-in style's LoRA mapping with
+    repo ref, weight, trigger word, and cache state. HF cache is
+    pointed at an empty tmp dir so every entry shows 'not downloaded'."""
+    from imgen.parser import print_loras
+    rc = print_loras(hf_cache=tmp_path)
+    out = capsys.readouterr().out
+    assert rc == 0
+    # All three built-in LoRA-shipping styles surface their refs.
+    assert "strangerzonehf/Flux-Animeo-v1-LoRA" in out
+    assert "prithivMLmods/Canopus-Pixar-3D-Flux-LoRA" in out
+    assert "openfree/flux-chatgpt-ghibli-lora" in out
+    # Weight is shown with 2-decimal precision.
+    assert "@0.80" in out
+    # Triggers shown for activation discoverability.
+    assert "Animeo" in out
+    assert "Pixar 3D" in out
+    assert "Ghibli style" in out
+    # flux-1 compat group shown.
+    assert "flux-1" in out
+
+
+def test_print_loras_lists_text_only_styles_separately(tmp_path, capsys):
+    """Styles without `loras` are surfaced as a comma-list under a
+    `Text-only styles` section so the user knows what's NOT going to
+    download anything."""
+    from imgen.parser import print_loras
+    print_loras(hf_cache=tmp_path)
+    out = capsys.readouterr().out
+    assert "Text-only" in out
+    for style in ("pencil", "simpsons", "vangogh"):
+        assert style in out
+
+
+def test_print_loras_marks_cached_when_hf_dir_present(tmp_path, capsys):
+    """When the HF cache contains the LoRA's `models--<author>--<name>`
+    directory, the line reads `(cached)`; an absent dir reads
+    `(not downloaded)`. Lets the user see cold-download cost up front."""
+    from imgen.parser import print_loras
+    # Pre-create the cache layout for one LoRA only.
+    cached_dir = tmp_path / "models--strangerzonehf--Flux-Animeo-v1-LoRA"
+    cached_dir.mkdir()
+    print_loras(hf_cache=tmp_path)
+    out = capsys.readouterr().out
+    # Line containing the cached LoRA must say `(cached)`.
+    for line in out.splitlines():
+        if "Flux-Animeo-v1-LoRA" in line:
+            assert "(cached)" in line
+        elif "Canopus-Pixar" in line:
+            assert "(not downloaded)" in line
+
+
+def test_print_loras_help_footer_mentions_lora_flag_and_styles_d(tmp_path, capsys):
+    """Tail of output points users at the --lora flag and styles.d/
+    extension surface — discoverability for both ad-hoc and persistent
+    LoRA additions."""
+    from imgen.parser import print_loras
+    print_loras(hf_cache=tmp_path)
+    out = capsys.readouterr().out
+    assert "--lora" in out
+    assert "--no-lora" in out
+    assert "~/.imgen/styles.d/" in out
