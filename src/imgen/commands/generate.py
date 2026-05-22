@@ -171,6 +171,35 @@ def _resolve_output_layout(
     return None, run_dir
 
 
+def _exit_code(
+    *,
+    multi: bool,
+    succeeded: list[tuple[str, Path, int]],
+    failed: list[tuple[str, int, Path]],
+) -> int:
+    """Map (multi, succeeded, failed) → process exit code.
+
+    Single-style preserves v0.2.x semantics: mflux's returncode passes
+    through so scripts that branch on exit code keep working. Multi-style
+    uses distinct codes so callers can tell apart all-ok / all-failed /
+    partial without parsing output:
+
+      * all ok   → 0
+      * all failed → 1
+      * partial  → 5  (distinct from user-input=2, missing-tool=3,
+                        resource=4 — keeps grep-by-code scripting clean)
+    """
+    if not multi:
+        if failed:
+            return failed[0][1]
+        return 0
+    if failed and not succeeded:
+        return 1
+    if failed:
+        return 5
+    return 0
+
+
 def _build_iterations(
     *,
     styles_list: list[str],
@@ -698,19 +727,5 @@ def cmd_generate(args) -> int:
             for sn, rc, _ in failed:
                 print(f"   {C.DIM}• {sn}: exit {rc}{C.END}")
 
-    # 18) Exit code. Single-style: mflux's returncode passes through
-    # (preserves v0.2.x scripted-usage). Multi-style:
-    #   - all ok → 0
-    #   - all failed → 1
-    #   - mixed (some ok, some failed) → 5 (distinct from user-input 2,
-    #     missing-tool 3, resource 4 — keeps grep-by-code scripting clean)
-    if not multi:
-        # Single-style: succeeded has 1 if ok, 0 if failed. Pass through.
-        if failed:
-            return failed[0][1]
-        return 0
-    if failed and not succeeded:
-        return 1
-    if failed:
-        return 5
-    return 0
+    # 18) Exit code (single-style passthrough vs multi-style 0/1/5 map).
+    return _exit_code(multi=multi, succeeded=succeeded, failed=failed)

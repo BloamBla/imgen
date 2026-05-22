@@ -23,6 +23,7 @@ from imgen.backends import BACKENDS
 from imgen.commands.generate import (
     _build_iterations,
     _check_prompt_style_compat,
+    _exit_code,
     _load_backend_and_token,
     _resolve_output_layout,
     _resolve_styles_list,
@@ -920,3 +921,59 @@ def test_build_iterations_cmd_is_list_of_str(fake_styles, tmp_path):
     assert isinstance(its[0].cmd, list)
     assert all(isinstance(arg, str) for arg in its[0].cmd)
     assert "/fake/bin/mflux-generate-kontext" in its[0].cmd
+
+
+# ── _exit_code ──────────────────────────────────────────────────────────
+
+
+def _ok(name: str) -> tuple[str, Path, int]:
+    """succeeded-list entry shape: (style_name, output_path, duration_s)."""
+    return (name, Path(f"/tmp/{name}.png"), 1)
+
+
+def _fail(name: str, rc: int) -> tuple[str, int, Path]:
+    """failed-list entry shape: (style_name, returncode, output_path)."""
+    return (name, rc, Path(f"/tmp/{name}.png"))
+
+
+def test_exit_code_single_style_success_returns_0():
+    """v0.1.x contract: single-style + ok → exit 0."""
+    assert _exit_code(multi=False, succeeded=[_ok("anime")], failed=[]) == 0
+
+
+def test_exit_code_single_style_failure_passes_through_returncode():
+    """v0.1.x contract: single-style + failure → caller gets mflux's
+    own returncode (so scripts can grep by exit code)."""
+    assert _exit_code(
+        multi=False,
+        succeeded=[],
+        failed=[_fail("anime", 42)],
+    ) == 42
+
+
+def test_exit_code_multi_all_ok_returns_0():
+    assert _exit_code(
+        multi=True,
+        succeeded=[_ok("anime"), _ok("ghibli")],
+        failed=[],
+    ) == 0
+
+
+def test_exit_code_multi_all_failed_returns_1():
+    """All M iterations failed → exit 1 (generic batch failure)."""
+    assert _exit_code(
+        multi=True,
+        succeeded=[],
+        failed=[_fail("anime", 1), _fail("ghibli", 1)],
+    ) == 1
+
+
+def test_exit_code_multi_partial_returns_5():
+    """Mixed batch (some ok, some failed) → exit 5 — distinct from
+    user-input 2, missing-tool 3, resource 4 — keeps grep-by-code
+    scripting clean for callers."""
+    assert _exit_code(
+        multi=True,
+        succeeded=[_ok("anime")],
+        failed=[_fail("ghibli", 1)],
+    ) == 5
