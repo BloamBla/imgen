@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .backends import list_backends
+from .backends import BUILTIN_BACKENDS, get_backend, list_backends
 from .colors import C, step
 from .defaults import DEFAULTS, MFLUX_PIN, PREVIEW_OVERRIDES
 from .paths import DEFAULT_OUTPUT_DIR, SAFE_OUTPUT_EXTS
@@ -101,6 +101,8 @@ def build_parser(
     # Top-level utility flags
     p.add_argument("--list-styles", action="store_true",
                    help="List style presets and exit")
+    p.add_argument("--list-backends", action="store_true",
+                   help="List image-gen backends (built-in + ~/.imgen/backends.d/) and exit")
     # v0.3.5: `-v` short flag added — `node -v`/`npm -v`/`pip -V` all
     # use a single letter for version; users naturally try `imgen -v`
     # first and were getting "unrecognized arguments". `-v` doesn't
@@ -324,4 +326,25 @@ def print_styles() -> int:
               f"{C.DIM}(guidance={preset.get('guidance')}, "
               f"strength={preset.get('strength')}){C.END}")
         print(f"             {prompt[:80]}...")
+    return 0
+
+
+def print_backends() -> int:
+    """Handler for the top-level --list-backends flag (v0.4).
+
+    Shows every entry in the merged registry. Built-in vs custom is
+    indicated with a marker; backends with a declared secret env var
+    surface that too so the user knows which env vars they need set
+    before running.
+    """
+    step("Available backends")
+    for name in list_backends():
+        be = get_backend(name)
+        origin = "" if name in BUILTIN_BACKENDS else " (custom)"
+        secret_marker = ""
+        if be.secret_env_var is not None:
+            req = "required" if be.secret_required else "optional"
+            secret_marker = f"  [secret: ${be.secret_env_var} ({req})]"
+        print(f"  {C.BOLD}{name:14}{C.END} "
+              f"{C.DIM}({be.binary}{origin}){C.END}{secret_marker}")
     return 0

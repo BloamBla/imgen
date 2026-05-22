@@ -51,7 +51,7 @@ from .commands import (
 )
 from .config import ConfigError, effective_defaults, load_validated_config
 from .defaults import DEFAULTS
-from .parser import build_parser, print_styles
+from .parser import build_parser, print_backends, print_styles
 from .paths import CONFIG_FILE
 
 _KNOWN_SUBCOMMANDS = {
@@ -114,6 +114,8 @@ def main() -> int:
     # Top-level info actions: handled before subcommand dispatch
     if getattr(args, "list_styles", False):
         return print_styles()
+    if getattr(args, "list_backends", False):
+        return print_backends()
 
     if not args.command:
         parser.print_help()

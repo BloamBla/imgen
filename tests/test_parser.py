@@ -222,3 +222,64 @@ def test_parser_rejects_unknown_backend(tmp_path, monkeypatch):
             )
     finally:
         backends_mod.reset_backends_cache()
+
+
+# ── --list-backends action (v0.4 sibling to --list-styles) ──────────────
+
+
+def test_list_backends_flag_parsed():
+    parser = build_parser()
+    args = parser.parse_args(["--list-backends"])
+    assert args.list_backends is True
+
+
+def test_print_backends_shows_builtins(tmp_path, monkeypatch, capsys):
+    """`--list-backends` action lists every backend (built-in + custom)
+    with binary, custom marker, and secret marker if declared."""
+    from imgen.parser import print_backends
+    import imgen.backends as backends_mod
+    import imgen.paths as paths_mod
+    state = tmp_path / ".imgen"
+    state.mkdir()
+    (state / "backends.d").mkdir()
+    monkeypatch.setattr(paths_mod, "STATE_DIR", state)
+    backends_mod.reset_backends_cache()
+    try:
+        rc = print_backends()
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "flux" in out
+        assert "qwen" in out
+        assert "mflux-generate-kontext" in out
+    finally:
+        backends_mod.reset_backends_cache()
+
+
+def test_print_backends_marks_custom_and_secret(tmp_path, monkeypatch, capsys):
+    """User backend with [secret] gets both the `(custom)` marker and
+    the `[secret: $ENV_VAR (required)]` suffix."""
+    from imgen.parser import print_backends
+    import imgen.backends as backends_mod
+    import imgen.paths as paths_mod
+    state = tmp_path / ".imgen"
+    state.mkdir()
+    backends_dir = state / "backends.d"
+    backends_dir.mkdir()
+    (backends_dir / "fancy.toml").write_text(
+        'binary = "fancy-bin"\n'
+        'image_flag = "--image-path"\n'
+        '\n[secret]\n'
+        'env_var = "FANCY_API_KEY"\n'
+        'required = true\n'
+    )
+    monkeypatch.setattr(paths_mod, "STATE_DIR", state)
+    backends_mod.reset_backends_cache()
+    try:
+        print_backends()
+        out = capsys.readouterr().out
+        assert "fancy" in out
+        assert "(custom)" in out
+        assert "FANCY_API_KEY" in out
+        assert "required" in out
+    finally:
+        backends_mod.reset_backends_cache()
