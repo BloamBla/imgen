@@ -292,6 +292,164 @@ def validate_user_backend_schema(data: dict, source: Path) -> Backend:
     )
 
 
+# ── Loader (file → Backend) ─────────────────────────────────────────────
+
+
+def load_user_backend_file(path: Path) -> Backend:
+    """Parse + validate one ~/.imgen/backends.d/*.toml file.
+
+    Size-capped + atomically-failed: oversize file or TOML parse error
+    raise UserBackendError instead of slurping into memory or failing
+    midway through validation. Mirrors load_user_style_file shape.
+    """
+    try:
+        size = path.stat().st_size
+    except OSError as e:
+        raise UserBackendError(f"{path}: {e}") from e
+    if size > USER_BACKEND_MAX_BYTES:
+        raise UserBackendError(
+            f"{path}: too large ({size} bytes; cap "
+            f"{USER_BACKEND_MAX_BYTES})"
+        )
+    try:
+        with path.open("rb") as f:
+            raw = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        raise UserBackendError(f"{path}: {e}") from e
+    return validate_user_backend_schema(raw, path)
+
+
+# ── Directory scanner ───────────────────────────────────────────────────
+
+
+def _is_safe_backend_stem(stem: str) -> bool:
+    """Same byte-range filter as styles._is_safe_stem — duplicated per
+    v0.4 design (two callers now, three triggers the v0.5 extraction
+    to a shared _safe.py module). Reject C0/DEL/C1 in filename stems
+    because the stem becomes the backend name and rides into argv,
+    --list-backends output, doctor reports, and log files."""
+    return not _has_control_bytes(stem)
+
+
+def load_user_backends_dir(dir_path: Path) -> dict[str, Backend]:
+    """Scan a directory for `*.toml`; return {filename_stem: Backend}.
+
+    Alphabetical order so collision-suffix numbering is deterministic.
+    A single bad file (parse error, schema violation, unsafe stem)
+    warns and continues — never kills the load of the rest.
+    """
+    from .colors import warn
+
+    if not dir_path.exists() or not dir_path.is_dir():
+        return {}
+    result: dict[str, Backend] = {}
+    for path in sorted(dir_path.iterdir()):
+        if path.suffix != ".toml" or not path.is_file():
+            continue
+        if not _is_safe_backend_stem(path.stem):
+            warn(f"Skipping {path.name!r}: control bytes in filename "
+                 "(unsafe to use as a backend name)")
+            continue
+        try:
+            result[path.stem] = load_user_backend_file(path)
+        except UserBackendError as e:
+            warn(f"Skipping {path.name}: {e}")
+            continue
+    return result
+
+
+# ── Merge (collision policy: built-ins win, suffix _0001) ───────────────
+
+
+_SUFFIX_RE = re.compile(r"_\d{4}$")
+
+
+def _strip_auto_suffix(name: str) -> str:
+    """Drop a trailing `_NNNN` so re-suffixing produces clean `flux_0002`
+    rather than `flux_0001_0001`. Duplicate of styles._strip_auto_suffix
+    (per v0.4 design — extract in v0.5 when a 3rd surface appears)."""
+    return _SUFFIX_RE.sub("", name)
+
+
+def _find_free_suffix(base: str, taken: dict) -> str:
+    """Smallest N >= 1 such that ``f"{base}_{N:04d}"`` is unused."""
+    n = 1
+    while f"{base}_{n:04d}" in taken:
+        n += 1
+    return f"{base}_{n:04d}"
+
+
+def merge_user_backends(
+    builtins: dict[str, Backend],
+    user: dict[str, Backend],
+) -> dict[str, Backend]:
+    """Combine built-in backends with user backends. Built-ins win.
+
+    A user backend whose name clashes with a built-in (or an earlier
+    user file alphabetically) gets renamed `<name>_NNNN` (4-digit zero-
+    padded counter). The original entry stays accessible under its
+    original name. Same semantics as styles.merge_user_styles.
+
+    Does NOT mutate either input.
+    """
+    from .colors import warn
+
+    merged: dict[str, Backend] = dict(builtins)
+    for name, backend in user.items():
+        if name not in merged:
+            merged[name] = backend
+            continue
+        base = _strip_auto_suffix(name)
+        new_name = _find_free_suffix(base, merged)
+        warn(
+            f"backends.d: '{name}' already taken (built-in or earlier "
+            f"user file), registered as '{new_name}'"
+        )
+        merged[new_name] = backend
+    return merged
+
+
+# ── Public accessors (cached merge of built-ins + user backends) ────────
+
+
+_cached_merged: dict[str, Backend] | None = None
+
+
+def _load_merged_backends() -> dict[str, Backend]:
+    """Lazy-merge built-ins + ~/.imgen/backends.d/. Cached per process."""
+    global _cached_merged
+    if _cached_merged is None:
+        # Local import to avoid module-load circularity with paths.py.
+        from .paths import STATE_DIR
+        user = load_user_backends_dir(STATE_DIR / "backends.d")
+        _cached_merged = merge_user_backends(BUILTIN_BACKENDS, user)
+    return _cached_merged
+
+
+def list_backends() -> list[str]:
+    """Sorted list of available backend names (built-in + user)."""
+    return sorted(_load_merged_backends().keys())
+
+
+def get_backend(name: str) -> Backend:
+    """Return Backend by name. Raises KeyError if unknown."""
+    merged = _load_merged_backends()
+    if name not in merged:
+        available = ", ".join(sorted(merged.keys()))
+        raise KeyError(
+            f"Unknown backend '{name}'. Available: {available}"
+        )
+    return merged[name]
+
+
+def reset_backends_cache() -> None:
+    """Wipe ``_cached_merged`` so the next ``_load_merged_backends``
+    re-reads ~/.imgen/backends.d/. Tests use this between fixtures;
+    not part of the public Backend surface."""
+    global _cached_merged
+    _cached_merged = None
+
+
 def build_mflux_cmd(
     *,
     binary: Path,

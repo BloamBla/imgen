@@ -272,3 +272,248 @@ def test_user_backends_always_have_needs_token_false():
     }
     be = validate_user_backend_schema(data, Path("test.toml"))
     assert be.needs_token is False
+
+
+# ── load_user_backend_file (TOML I/O + size cap + parse errors) ─────────
+
+
+def _write_toml(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+
+
+def test_load_user_backend_file_happy_path(tmp_path):
+    from imgen.backends import load_user_backend_file
+    toml_path = tmp_path / "sdxl.toml"
+    _write_toml(toml_path, '''
+binary = "mflux-generate-sdxl"
+image_flag = "--image-path"
+supports_strength = true
+extra_args = ["--model", "sdxl"]
+''')
+    be = load_user_backend_file(toml_path)
+    assert be.binary == "mflux-generate-sdxl"
+    assert be.supports_strength is True
+    assert be.extra_args == ("--model", "sdxl")
+
+
+def test_load_user_backend_file_rejects_oversized(tmp_path):
+    """Real backend TOMLs are tiny (hundreds of bytes). A multi-MB
+    file is corruption or misuse — refuse rather than slurp."""
+    from imgen.backends import USER_BACKEND_MAX_BYTES, load_user_backend_file
+    toml_path = tmp_path / "huge.toml"
+    # 1 byte over cap.
+    toml_path.write_text("x = " + ("y" * (USER_BACKEND_MAX_BYTES + 1)))
+    with pytest.raises(UserBackendError, match="too large"):
+        load_user_backend_file(toml_path)
+
+
+def test_load_user_backend_file_rejects_malformed_toml(tmp_path):
+    from imgen.backends import load_user_backend_file
+    toml_path = tmp_path / "broken.toml"
+    toml_path.write_text("binary = \"x\nimage_flag = \"--image-path\"")
+    with pytest.raises(UserBackendError):
+        load_user_backend_file(toml_path)
+
+
+def test_load_user_backend_file_rejects_missing_file(tmp_path):
+    from imgen.backends import load_user_backend_file
+    with pytest.raises(UserBackendError):
+        load_user_backend_file(tmp_path / "ghost.toml")
+
+
+# ── load_user_backends_dir (directory iteration + warn-skip on errors) ──
+
+
+def test_load_dir_returns_empty_when_nonexistent(tmp_path):
+    from imgen.backends import load_user_backends_dir
+    assert load_user_backends_dir(tmp_path / "ghost") == {}
+
+
+def test_load_dir_returns_empty_when_path_is_file(tmp_path):
+    from imgen.backends import load_user_backends_dir
+    fake_file = tmp_path / "not_a_dir"
+    fake_file.touch()
+    assert load_user_backends_dir(fake_file) == {}
+
+
+def test_load_dir_loads_multiple_tomls(tmp_path):
+    from imgen.backends import load_user_backends_dir
+    _write_toml(tmp_path / "a.toml",
+                'binary = "a-bin"\nimage_flag = "--image-path"\n')
+    _write_toml(tmp_path / "b.toml",
+                'binary = "b-bin"\nimage_flag = "--image-paths"\n')
+    result = load_user_backends_dir(tmp_path)
+    assert set(result.keys()) == {"a", "b"}
+    assert result["a"].binary == "a-bin"
+    assert result["b"].binary == "b-bin"
+
+
+def test_load_dir_skips_non_toml_files(tmp_path):
+    from imgen.backends import load_user_backends_dir
+    _write_toml(tmp_path / "real.toml",
+                'binary = "x"\nimage_flag = "--image-path"\n')
+    (tmp_path / "notes.txt").write_text("ignore me")
+    (tmp_path / "README").write_text("also ignore")
+    result = load_user_backends_dir(tmp_path)
+    assert list(result.keys()) == ["real"]
+
+
+def test_load_dir_warns_and_skips_malformed_file(tmp_path, capsys):
+    from imgen.backends import load_user_backends_dir
+    _write_toml(tmp_path / "good.toml",
+                'binary = "x"\nimage_flag = "--image-path"\n')
+    (tmp_path / "bad.toml").write_text("totally not toml \"")
+    result = load_user_backends_dir(tmp_path)
+    # Bad file skipped, good file survived.
+    assert list(result.keys()) == ["good"]
+    combined = capsys.readouterr()
+    combined_str = combined.out + combined.err
+    assert "Skipping bad.toml" in combined_str
+
+
+def test_load_dir_processes_files_in_sorted_order(tmp_path):
+    """Determinism for collision suffixing depends on alphabetical
+    iteration — lock it. Adversarial filenames that exercise the sort
+    boundary."""
+    from imgen.backends import load_user_backends_dir
+    _write_toml(tmp_path / "z.toml",
+                'binary = "z-bin"\nimage_flag = "--image-path"\n')
+    _write_toml(tmp_path / "a.toml",
+                'binary = "a-bin"\nimage_flag = "--image-path"\n')
+    result = load_user_backends_dir(tmp_path)
+    # dict preserves insertion order in modern Python; first key is alphabetic-first
+    keys = list(result.keys())
+    assert keys == ["a", "z"]
+
+
+# ── merge_user_backends (collision policy: built-ins win, suffix) ───────
+
+
+def _bare_backend(binary: str = "x"):
+    from imgen.backends import Backend
+    return Backend(
+        binary=binary, needs_token=False, image_flag="--image-path",
+        supports_strength=False, supports_negative=False, extra_args=(),
+    )
+
+
+def test_merge_adds_new_user_backends():
+    from imgen.backends import BUILTIN_BACKENDS, merge_user_backends
+    user = {"sdxl": _bare_backend("sdxl-bin")}
+    merged = merge_user_backends(BUILTIN_BACKENDS, user)
+    assert set(merged.keys()) == {"flux", "qwen", "sdxl"}
+    assert merged["sdxl"].binary == "sdxl-bin"
+
+
+def test_merge_collision_with_builtin_gets_suffix(capsys):
+    """User TOML named after a built-in (e.g. flux.toml) gets
+    rebranded — built-in wins. Mirrors styles.d semantics."""
+    from imgen.backends import BUILTIN_BACKENDS, merge_user_backends
+    user = {"flux": _bare_backend("user-tampered")}
+    merged = merge_user_backends(BUILTIN_BACKENDS, user)
+    # Built-in flux unchanged.
+    assert merged["flux"].binary == "mflux-generate-kontext"
+    # User entry renamed.
+    assert "flux_0001" in merged
+    assert merged["flux_0001"].binary == "user-tampered"
+    # User informed.
+    combined = capsys.readouterr()
+    combined_str = combined.out + combined.err
+    assert "flux" in combined_str
+    assert "flux_0001" in combined_str
+
+
+def test_merge_does_not_mutate_inputs():
+    from imgen.backends import BUILTIN_BACKENDS, merge_user_backends
+    builtins_snapshot = dict(BUILTIN_BACKENDS)
+    user = {"new": _bare_backend()}
+    user_snapshot = dict(user)
+    merge_user_backends(BUILTIN_BACKENDS, user)
+    assert BUILTIN_BACKENDS == builtins_snapshot
+    assert user == user_snapshot
+
+
+def test_merge_strip_then_resuffix_for_user_name_with_trailing_NNNN(capsys):
+    """User backend named `flux_0001` colliding with a previous-pass
+    auto-rename: re-suffix becomes `flux_0002`, NOT `flux_0001_0001`.
+    Same semantics as styles."""
+    from imgen.backends import BUILTIN_BACKENDS, merge_user_backends
+    user = {
+        "flux": _bare_backend("user1"),
+        "flux_0001": _bare_backend("user2"),
+    }
+    merged = merge_user_backends(BUILTIN_BACKENDS, user)
+    # flux built-in survives, user1 → flux_0001, user2 → flux_0002.
+    assert merged["flux"].binary == "mflux-generate-kontext"
+    assert merged["flux_0001"].binary == "user1"
+    assert merged["flux_0002"].binary == "user2"
+
+
+# ── list_backends / get_backend / reset_backends_cache ──────────────────
+
+
+@pytest.fixture
+def isolated_backends_dir(tmp_path, monkeypatch):
+    """Redirect STATE_DIR/backends.d/ to a tmp_path location so a real
+    ~/.imgen/backends.d/ doesn't leak into the test. Also resets the
+    in-process cache so each test sees a fresh load."""
+    import imgen.backends as backends_mod
+    import imgen.paths as paths_mod
+    state = tmp_path / ".imgen"
+    state.mkdir()
+    backends_dir = state / "backends.d"
+    backends_dir.mkdir()
+    monkeypatch.setattr(paths_mod, "STATE_DIR", state)
+    backends_mod.reset_backends_cache()
+    yield backends_dir
+    backends_mod.reset_backends_cache()
+
+
+def test_list_backends_includes_user_entries(isolated_backends_dir):
+    from imgen.backends import list_backends
+    _write_toml(
+        isolated_backends_dir / "myback.toml",
+        'binary = "my-bin"\nimage_flag = "--image-path"\n',
+    )
+    names = list_backends()
+    assert "flux" in names
+    assert "qwen" in names
+    assert "myback" in names
+
+
+def test_get_backend_returns_user_backend(isolated_backends_dir):
+    from imgen.backends import get_backend
+    _write_toml(
+        isolated_backends_dir / "myback.toml",
+        'binary = "my-bin"\nimage_flag = "--image-paths"\n',
+    )
+    be = get_backend("myback")
+    assert be.binary == "my-bin"
+    assert be.image_flag == "--image-paths"
+
+
+def test_get_backend_unknown_raises_keyerror(isolated_backends_dir):
+    from imgen.backends import get_backend
+    with pytest.raises(KeyError, match="nonexistent"):
+        get_backend("nonexistent")
+
+
+def test_reset_backends_cache_picks_up_new_files(isolated_backends_dir):
+    """After the first load + cache, a new file in backends.d/ is not
+    seen until reset. Lock-in test for the cache invalidation contract
+    — without it, dev iteration on a TOML file requires a full
+    process restart."""
+    from imgen.backends import list_backends, reset_backends_cache
+    # First load — only built-ins.
+    assert "newly_dropped" not in list_backends()
+    # Drop a file.
+    _write_toml(
+        isolated_backends_dir / "newly_dropped.toml",
+        'binary = "x"\nimage_flag = "--image-path"\n',
+    )
+    # Without reset, still not seen.
+    assert "newly_dropped" not in list_backends()
+    # After reset, picked up.
+    reset_backends_cache()
+    assert "newly_dropped" in list_backends()
