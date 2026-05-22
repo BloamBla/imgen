@@ -481,3 +481,29 @@ def test_prune_skips_symlinks_pointing_at_recent_target(logs_dir, tmp_path):
 
     assert link.is_symlink()
     assert removed == 0
+
+
+def test_prune_refuses_when_logs_dir_itself_is_symlink(tmp_path, monkeypatch):
+    """The v0.2.5 symlink-as-log-file fix catches symlinks INSIDE
+    LOGS_DIR. v0.2.6 closes the next layer: LOGS_DIR itself being a
+    symlink pointing elsewhere. Without this guard, `LOGS_DIR.glob`
+    walks through the symlink and could unlink files in the target
+    directory. (v0.2.5 security NIT-2)"""
+    import imgen.runs as runs_mod
+    target = tmp_path / "target_dir"
+    target.mkdir(mode=0o700)
+    # Drop a fake old log into the TARGET — if the guard fails, prune
+    # would walk through the symlink and remove this file.
+    victim = target / "old.log"
+    _make_log(victim, days_ago=60)
+
+    logs_link = tmp_path / "logs_symlink"
+    logs_link.symlink_to(target)
+    monkeypatch.setattr(runs_mod, "LOGS_DIR", logs_link)
+
+    removed, removed_bytes = prune_old_batch_logs(days=30)
+
+    # Refusal: nothing removed, victim file in target survives.
+    assert removed == 0
+    assert removed_bytes == 0
+    assert victim.exists()

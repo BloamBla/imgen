@@ -195,8 +195,19 @@ def ensure_logs_dir() -> None:
     Used by BatchLogger and direct callers (cmd_generate when it opens
     a per-batch log for multi-style runs). STATE_DIR is created first
     so a fresh user never hits ENOENT.
+
+    Refuses to operate (warn + return) if LOGS_DIR is a symlink — would
+    otherwise chmod 0o700 on whatever the link targets, which could be
+    an unrelated user directory or a shared/system path. (v0.2.5
+    security NIT-2)
     """
     ensure_state_dir()
+    if LOGS_DIR.is_symlink():
+        from .colors import warn
+        warn(f"LOGS_DIR is a symlink ({LOGS_DIR}); refusing to operate. "
+             "Remove the symlink or relocate ~/.imgen/logs/ to a real "
+             "directory.")
+        return
     if not LOGS_DIR.exists():
         LOGS_DIR.mkdir(mode=0o700)
     elif (LOGS_DIR.stat().st_mode & 0o777) != 0o700:
@@ -383,6 +394,12 @@ def prune_old_batch_logs(
     removed mid-glob; the next pass picks up the rest).
     """
     if not LOGS_DIR.exists():
+        return 0, 0
+    if LOGS_DIR.is_symlink():
+        # Defence-in-depth: a symlinked LOGS_DIR would let `glob("*.log")`
+        # walk into the target tree and unlink files there. Won't happen
+        # in normal installs — user would have to manually `ln -s` over
+        # the real dir — but cheap to refuse. (v0.2.5 security NIT-2)
         return 0, 0
     cutoff = _dt.datetime.now().timestamp() - days * 86400
     removed = 0

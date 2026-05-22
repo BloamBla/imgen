@@ -146,6 +146,64 @@ def test_ensure_logs_dir_tightens_loose_perms(tmp_path, monkeypatch):
     assert (logs.stat().st_mode & 0o777) == 0o700
 
 
+def test_ensure_logs_dir_refuses_to_chmod_through_symlink(
+    tmp_path, monkeypatch, capsys
+):
+    """If ~/.imgen/logs is a symlink pointing elsewhere, ensure_logs_dir
+    must NOT follow it and chmod 0o700 on whatever the target is —
+    that target may be a directory the user uses for unrelated purposes
+    (or worse, some shared/system dir if mounting was weird).
+
+    Refuse with a warn() instead, so the user finds out their LOGS_DIR
+    is a symlink and decides what to do. (v0.2.5 security NIT-2)"""
+    import imgen.paths as paths_mod
+    import imgen.runs as runs_mod
+    state = tmp_path / ".imgen"
+    state.mkdir(mode=0o700)
+    # Target the symlink resolves to — give it a deliberately
+    # different mode so we can detect a stray chmod.
+    target = tmp_path / "elsewhere"
+    target.mkdir(mode=0o755)
+    logs = state / "logs"
+    logs.symlink_to(target)
+    monkeypatch.setattr(paths_mod, "STATE_DIR", state)
+    monkeypatch.setattr(runs_mod, "LOGS_DIR", logs)
+
+    ensure_logs_dir()
+
+    # Target's mode untouched — we did not follow the symlink.
+    assert (target.stat().st_mode & 0o777) == 0o755
+    # User informed.
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "symlink" in combined.lower()
+
+
+def test_ensure_logs_dir_symlink_does_not_create_under_target(
+    tmp_path, monkeypatch
+):
+    """Symlink at LOGS_DIR → nonexistent path. Without the guard,
+    `LOGS_DIR.exists()` returns False (symlink target missing), and
+    `LOGS_DIR.mkdir(0o700)` would fail with FileNotFoundError or
+    even create a directory at the symlink's target location. The
+    guard catches it before mkdir."""
+    import imgen.paths as paths_mod
+    import imgen.runs as runs_mod
+    state = tmp_path / ".imgen"
+    state.mkdir(mode=0o700)
+    nonexistent_target = tmp_path / "phantom"
+    logs = state / "logs"
+    logs.symlink_to(nonexistent_target)
+    monkeypatch.setattr(paths_mod, "STATE_DIR", state)
+    monkeypatch.setattr(runs_mod, "LOGS_DIR", logs)
+
+    # Should NOT raise (we refuse, not crash).
+    ensure_logs_dir()
+
+    # Nothing got materialised at the phantom target.
+    assert not nonexistent_target.exists()
+
+
 # ── open_log_file_append (v0.2.3 review fix: security I1) ───────────────
 
 def test_open_log_file_append_creates_with_0o600(tmp_path):
