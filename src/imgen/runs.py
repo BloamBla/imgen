@@ -30,13 +30,14 @@ import os
 import stat as _stat
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO
+from typing import Any, BinaryIO
 
 from .paths import STATE_DIR, ensure_state_dir
 
 __all__ = [
     "LOG_RETENTION_DAYS",
     "LOGS_DIR",
+    "BatchContext",
     "BatchLogger",
     "Iteration",
     "auto_run_dirname",
@@ -45,6 +46,37 @@ __all__ = [
     "open_log_file_append",
     "prune_old_batch_logs",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class BatchContext:
+    """Batch-wide constants threaded into every iteration.
+
+    cmd_generate (and v0.3.0 commands/batch.py) builds this once before
+    the run loop and passes it whole into _run_one_iteration. Replaces
+    the 9 individual kwargs that were threaded through v0.2.4's
+    16-arg signature — keeps the call site legible and makes nested
+    N×M loops in batch.py tractable. (architect IMP-3 from v0.2.4 review)
+
+    Frozen because every iteration sees the same values; slots so
+    typos on field access raise instead of silently registering on
+    __dict__.
+
+    `args` is the parsed argparse Namespace; typed Any to avoid
+    importing argparse here just for an annotation.
+    `env` is a dict snapshot — frozen=True prevents reassignment of
+    the field, not mutation of the dict itself, but callers treat it
+    as read-only by convention.
+    """
+    backend: str
+    seed: int
+    width: int
+    height: int
+    input_path: Path
+    effective_custom_prompt: str | None
+    args: Any
+    batch_id: str | None
+    env: dict[str, str]
 
 
 @dataclass(frozen=True, slots=True)

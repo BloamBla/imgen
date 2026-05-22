@@ -29,6 +29,7 @@ from ..paths import (
 )
 from ..prompt_input import PromptInputError, resolve_prompt
 from ..runs import (
+    BatchContext,
     BatchLogger,
     Iteration,
     auto_run_dirname,
@@ -194,15 +195,7 @@ def _run_one_iteration(
     idx: int,
     total: int,
     is_batch: bool,
-    backend: str,
-    seed: int,
-    width: int,
-    height: int,
-    input_path: Path,
-    effective_custom_prompt: str | None,
-    args,
-    batch_id: str | None,
-    env: dict[str, str],
+    ctx: BatchContext,
     logger: BatchLogger | None,
     succeeded: list[tuple[str, Path, int]],
     failed: list[tuple[str, int, Path]],
@@ -213,6 +206,10 @@ def _run_one_iteration(
     update history → write log end-marker → append to succeeded or
     failed. Mutates the two lists (caller owns the storage; the helper
     is the producer of entries).
+
+    `ctx` is the batch-wide BatchContext (backend, seed, dimensions,
+    input path, custom prompt, args namespace, batch_id, env) — built
+    once in cmd_generate, shared across every iteration.
 
     Returns ``True`` to keep the batch loop going, ``False`` if the user
     pressed Ctrl-C (caller should early-exit with 130). The KeyboardInterrupt
@@ -228,37 +225,37 @@ def _run_one_iteration(
         step(f"Generating [{idx}/{total}] {style_name} → {output_path.name}")
     else:
         step(f"Generating {style_name} → {output_path.name}")
-    print(f"   {C.DIM}backend: {backend} q{it.final_quantize}  "
+    print(f"   {C.DIM}backend: {ctx.backend} q{it.final_quantize}  "
           f"steps: {it.final_steps}  guidance: {it.final_guidance}  "
-          f"strength: {it.final_strength}  seed: {seed}{C.END}")
-    print(f"   {C.DIM}size: {width}x{height}  "
-          f"input: {input_path.name} → output: {output_path}{C.END}")
+          f"strength: {it.final_strength}  seed: {ctx.seed}{C.END}")
+    print(f"   {C.DIM}size: {ctx.width}x{ctx.height}  "
+          f"input: {ctx.input_path.name} → output: {output_path}{C.END}")
     print()
 
     started = datetime.datetime.now()
     history_entry: dict = {
         "ts": started.isoformat(timespec="seconds"),
-        "input": str(input_path),
+        "input": str(ctx.input_path),
         "output": str(output_path),
         # `style` stored as the per-iteration style name when there's
         # no custom prompt — replay uses it to reload the same preset.
-        "style": style_name if not effective_custom_prompt else None,
-        "custom_prompt": effective_custom_prompt,
-        "scope": args.scope,
-        "preview": args.preview,
+        "style": style_name if not ctx.effective_custom_prompt else None,
+        "custom_prompt": ctx.effective_custom_prompt,
+        "scope": ctx.args.scope,
+        "preview": ctx.args.preview,
         "prompt": it.prompt,
         "negative": it.negative,
-        "seed": seed,
+        "seed": ctx.seed,
         "steps": it.final_steps,
         "guidance": it.final_guidance,
         "strength": it.final_strength,
-        "backend": backend,
+        "backend": ctx.backend,
         "quantize": it.final_quantize,
-        "width": width,
-        "height": height,
+        "width": ctx.width,
+        "height": ctx.height,
         # v0.2.3: ties multi-style entries together. Null for single-
         # style invocations (preserves v0.2.x shape).
-        "batch_id": batch_id,
+        "batch_id": ctx.batch_id,
         "batch_index": f"{idx}/{total}" if is_batch else None,
     }
 
@@ -267,7 +264,7 @@ def _run_one_iteration(
 
     try:
         returncode = run_with_stderr_redaction(
-            cmd, env=env, log_path=logger.path if logger else None
+            cmd, env=ctx.env, log_path=logger.path if logger else None
         )
     except KeyboardInterrupt:
         warn("Cancelled by user")
@@ -820,21 +817,29 @@ def cmd_generate(args) -> int:
     failed: list[tuple[str, int, Path]] = []
     total = len(iterations)
 
+    # Bundle the 9 batch-invariant args into a single BatchContext so
+    # _run_one_iteration's signature stays compact — and v0.3.0's
+    # nested N×M loop in commands/batch.py can thread one value through
+    # the inner loop instead of nine. (architect IMP-3 from v0.2.4 review)
+    ctx = BatchContext(
+        backend=backend,
+        seed=seed,
+        width=width,
+        height=height,
+        input_path=input_path,
+        effective_custom_prompt=effective_custom_prompt,
+        args=args,
+        batch_id=batch_id,
+        env=env,
+    )
+
     for idx, it in enumerate(iterations, start=1):
         cont = _run_one_iteration(
             it=it,
             idx=idx,
             total=total,
             is_batch=is_batch,
-            backend=backend,
-            seed=seed,
-            width=width,
-            height=height,
-            input_path=input_path,
-            effective_custom_prompt=effective_custom_prompt,
-            args=args,
-            batch_id=batch_id,
-            env=env,
+            ctx=ctx,
             logger=logger,
             succeeded=succeeded,
             failed=failed,

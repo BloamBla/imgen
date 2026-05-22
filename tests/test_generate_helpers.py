@@ -33,7 +33,7 @@ from imgen.commands.generate import (
     _run_one_iteration,
     _validate_input_path,
 )
-from imgen.runs import BatchLogger, Iteration
+from imgen.runs import BatchContext, BatchLogger, Iteration
 
 
 # ── _validate_input_path ────────────────────────────────────────────────
@@ -1364,18 +1364,25 @@ def stub_mflux(monkeypatch):
     return state
 
 
-def _run(*, it=None, tmp_path, succeeded, failed, logger=None, **kwargs):
-    """Wrapper threading sensible defaults for the verbose 16-arg call.
+_CTX_FIELDS = (
+    "backend", "seed", "width", "height", "input_path",
+    "effective_custom_prompt", "args", "batch_id", "env",
+)
 
-    Lets each test override only what it cares about (returncode,
-    logger, scope, etc.) without rebuilding the whole context."""
+
+def _run(*, it=None, tmp_path, succeeded, failed, logger=None, **kwargs):
+    """Wrapper threading sensible defaults for _run_one_iteration.
+
+    Tests can override any of:
+      - top-level helper args (idx, total, is_batch, logger)
+      - BatchContext fields (backend, seed, width, height, input_path,
+        effective_custom_prompt, args, batch_id, env) — pulled out of
+        kwargs and bundled into a BatchContext before the call
+
+    Lets each test stay terse — only set what's relevant."""
     if it is None:
         it = _full_iter(tmp_path)
-    defaults = dict(
-        it=it,
-        idx=1,
-        total=1,
-        is_batch=False,
+    ctx_kwargs = dict(
         backend="flux",
         seed=42,
         width=1024,
@@ -1385,6 +1392,18 @@ def _run(*, it=None, tmp_path, succeeded, failed, logger=None, **kwargs):
         args=_full_args(),
         batch_id=None,
         env={"PATH": "/usr/bin"},
+    )
+    for field in _CTX_FIELDS:
+        if field in kwargs:
+            ctx_kwargs[field] = kwargs.pop(field)
+    ctx = BatchContext(**ctx_kwargs)
+
+    defaults = dict(
+        it=it,
+        idx=1,
+        total=1,
+        is_batch=False,
+        ctx=ctx,
         logger=logger,
         succeeded=succeeded,
         failed=failed,
