@@ -12,11 +12,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from imgen.commands.generate import (
-    _confirm_batch,
-    _estimate_one_seconds,
-    _format_duration,
+from imgen.cmd_helpers import (
+    estimate_one_seconds as _estimate_one_seconds,
+    format_duration as _format_duration,
 )
+from imgen.commands.generate import _confirm_batch
 from imgen.runs import Iteration
 
 

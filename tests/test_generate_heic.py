@@ -7,10 +7,12 @@ sips-converted to JPEG before mflux ever sees it. Same helper that
 powers ``cmd_batch``'s per-input HEIC handling.
 
 These tests cover the cmd_generate side — cmd_batch HEIC behaviour is
-locked in ``test_batch.py``. Stubbing surface is the same:
-``imgen.commands.generate.run_with_stderr_redaction`` (fake mflux),
-``imgen.commands.generate._load_backend_and_token`` (bypass venv +
-binary), ``imgen.images.detect_resolution`` (no PIL), and
+locked in ``test_batch.py``. Stubbing surface (v0.3.1 post-cmd_helpers
+extraction):
+``imgen.cmd_helpers.run_with_stderr_redaction`` (fake mflux),
+``imgen.commands.generate.load_backend_and_token`` (bypass venv +
+binary; patched at the generate.py call site since it imports by
+name), ``imgen.commands.generate.detect_resolution`` (no PIL), and
 ``imgen.inputs.subprocess.run`` (fake sips).
 """
 from __future__ import annotations
@@ -38,7 +40,7 @@ def stub_mflux(monkeypatch):
         return state["returncode"]
 
     monkeypatch.setattr(
-        "imgen.commands.generate.run_with_stderr_redaction", fake_run
+        "imgen.cmd_helpers.run_with_stderr_redaction", fake_run
     )
     return state
 
@@ -53,7 +55,7 @@ def stub_backend(monkeypatch, tmp_path):
         return ("flux", BACKENDS["flux"], "hf_faketoken", fake_binary)
 
     monkeypatch.setattr(
-        "imgen.commands.generate._load_backend_and_token", fake_load
+        "imgen.commands.generate.load_backend_and_token", fake_load
     )
 
 
@@ -68,7 +70,7 @@ def stub_dims(monkeypatch):
 @pytest.fixture
 def stub_open(monkeypatch):
     monkeypatch.setattr(
-        "imgen.commands.generate._open_results", lambda **k: None
+        "imgen.commands.generate.open_results", lambda **k: None
     )
 
 

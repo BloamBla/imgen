@@ -2,24 +2,28 @@
 under ``<dir>``.
 
 v0.3.0's only new subcommand. Designed as a thin orchestrator that
-composes existing single-input helpers from ``commands/generate.py``:
+composes shared pipeline helpers from :mod:`imgen.cmd_helpers`:
 
-* :func:`~imgen.commands.generate._resolve_styles_list` (output mutex
-  is generate-specific; ``getattr`` lets the helper degrade cleanly
-  here).
-* :func:`~imgen.commands.generate._check_prompt_style_compat`
-* :func:`~imgen.commands.generate._resolve_output_layout` (returns the
-  ``run_dir`` branch — batch has no ``--output FILE`` flag).
-* :func:`~imgen.commands.generate._load_backend_and_token`
-* :func:`~imgen.commands.generate._build_iterations` — called once per
+* :func:`~imgen.cmd_helpers.resolve_styles_list` — pure resolution
+  (the ``--output FILE`` mutex is generate-only, kept there).
+* :func:`~imgen.cmd_helpers.check_prompt_style_compat`
+* :func:`~imgen.cmd_helpers.resolve_output_layout` — returns the
+  ``run_dir`` branch (batch has no ``--output FILE`` flag).
+* :func:`~imgen.cmd_helpers.load_backend_and_token`
+* :func:`~imgen.cmd_helpers.build_iterations` — called once per
   input, the resulting lists are flattened for preflight.
-* :func:`~imgen.commands.generate._preflight_resources` — guards against
+* :func:`~imgen.cmd_helpers.preflight_resources` — guards against
   the heaviest quant across the full N×M grid.
-* :func:`~imgen.commands.generate._run_one_iteration` — the single
+* :func:`~imgen.cmd_helpers.run_one_iteration` — the single
   per-mflux unit, wrapped here in the per-input section + global index.
-* :func:`~imgen.commands.generate._open_results`,
-  :func:`~imgen.commands.generate._print_batch_summary`,
-  :func:`~imgen.commands.generate._exit_code` — closing UX.
+* :func:`~imgen.cmd_helpers.open_results`,
+  :func:`~imgen.cmd_helpers.print_batch_summary`,
+  :func:`~imgen.cmd_helpers.exit_code` — closing UX.
+
+Pre-v0.3.1 these were leading-underscore helpers imported from
+:mod:`imgen.commands.generate` — the v0.3.0 architect review flagged
+the cross-module ``_private`` import smell. v0.3.1 promoted them to
+:mod:`imgen.cmd_helpers` and dropped the underscore prefix.
 
 What's new in this module:
 
@@ -57,21 +61,21 @@ from ..runs import (
     auto_run_dirname,
     next_available_run_dir,
 )
-from ..subprocess_helpers import build_mflux_env, format_cmd
-from .generate import (
-    _build_iterations,
-    _check_prompt_style_compat,
-    _estimate_one_seconds,
-    _exit_code,
-    _format_duration,
-    _load_backend_and_token,
-    _open_results,
-    _preflight_resources,
-    _print_batch_summary,
-    _resolve_output_layout,
-    _resolve_styles_list,
-    _run_one_iteration,
+from ..cmd_helpers import (
+    build_iterations,
+    check_prompt_style_compat,
+    estimate_one_seconds,
+    exit_code,
+    format_duration,
+    load_backend_and_token,
+    open_results,
+    preflight_resources,
+    print_batch_summary,
+    resolve_output_layout,
+    resolve_styles_list,
+    run_one_iteration,
 )
+from ..subprocess_helpers import build_mflux_env, format_cmd
 
 __all__ = ["cmd_batch"]
 
@@ -112,8 +116,8 @@ def _confirm_dir_batch(
     print(f"   {C.DIM}styles:{C.END}  {', '.join(styles_list)}")
     print(f"   {C.DIM}output:{C.END}  {output_root}")
     if one_eta_seconds is not None:
-        total_time = _format_duration(one_eta_seconds * total)
-        per_image = _format_duration(one_eta_seconds)
+        total_time = format_duration(one_eta_seconds * total)
+        per_image = format_duration(one_eta_seconds)
         print(f"   {C.DIM}eta:{C.END}     {total_time} total "
               f"({per_image} per image, ±50%)")
     print()
@@ -165,7 +169,10 @@ def cmd_batch(args) -> int:
     check_input_stems(input_paths)
 
     # 3) Styles + prompt mutex (reused from generate.py).
-    styles_list = _resolve_styles_list(args, merged_defaults)
+    # No mutex check needed: batch has no --output FILE flag (its
+    # parser stanza omits it), so the generate-specific
+    # _check_output_style_mutex doesn't apply here.
+    styles_list = resolve_styles_list(args, merged_defaults)
 
     try:
         effective_custom_prompt = resolve_prompt(
@@ -175,7 +182,7 @@ def cmd_batch(args) -> int:
     except PromptInputError as e:
         die(str(e), code=2)
 
-    _check_prompt_style_compat(styles_list, effective_custom_prompt)
+    check_prompt_style_compat(styles_list, effective_custom_prompt)
 
     if args.scope and effective_custom_prompt:
         warn(f"--scope={args.scope} ignored when using a custom prompt "
@@ -183,14 +190,14 @@ def cmd_batch(args) -> int:
 
     # 4) Output layout — batch never has --output, so this branch always
     # returns (None, run_dir).
-    _explicit_output, run_dir = _resolve_output_layout(args, config_output_dir)
+    _explicit_output, run_dir = resolve_output_layout(args, config_output_dir)
     assert run_dir is not None, (
-        "batch never uses --output FILE; _resolve_output_layout must "
+        "batch never uses --output FILE; resolve_output_layout must "
         "return run_dir for this path"
     )
 
     # 5) Backend, token, binary (shared across the whole grid).
-    backend, be, token, binary = _load_backend_and_token(args)
+    backend, be, token, binary = load_backend_and_token(args)
 
     # 6) Single seed for the whole batch so the same noise pattern
     # applies to every (input, style) — fair side-by-side preset
@@ -230,7 +237,7 @@ def cmd_batch(args) -> int:
             else:
                 width, height = detect_resolution(
                     mflux_input, preview=args.preview)
-            iters = _build_iterations(
+            iters = build_iterations(
                 styles_list=styles_list,
                 args=args,
                 effective_custom_prompt=effective_custom_prompt,
@@ -274,14 +281,14 @@ def cmd_batch(args) -> int:
         # 10) Preflight against the heaviest quant. Done once for the
         # whole N×M grid, not per-input.
         heaviest_quant = max(it.final_quantize for it in all_iters)
-        _preflight_resources(
+        preflight_resources(
             backend=backend, heaviest_quant=heaviest_quant, force=args.force
         )
 
         # 11) Confirm gate. --yes skips. ETA hidden if no matching
         # successful history entries (don't fabricate a wild guess).
         if not args.yes:
-            one_eta = _estimate_one_seconds(
+            one_eta = estimate_one_seconds(
                 load_history(), backend, heaviest_quant, args.preview
             )
             proceed = _confirm_dir_batch(
@@ -325,7 +332,7 @@ def cmd_batch(args) -> int:
             # across the whole N×M batch.
             #
             # The earlier shape `(n-1)*len(styles_list) + m` only worked
-            # because `_build_iterations` happens to return exactly one
+            # because `build_iterations` happens to return exactly one
             # Iteration per style. If that ever changes (per-style skip
             # on incompatible scope, style-filter, etc.), the formula
             # would silently mis-number while tests stayed green —
@@ -342,7 +349,7 @@ def cmd_batch(args) -> int:
                 # BatchContext.input_path is the ORIGINAL path (not the
                 # sips-converted JPEG) so history.input records what the
                 # user typed. Iteration.cmd already references the
-                # converted path via _build_iterations(input_path=
+                # converted path via build_iterations(input_path=
                 # mflux_input). (v0.3.0 design)
                 ctx = BatchContext(
                     backend=backend,
@@ -357,7 +364,7 @@ def cmd_batch(args) -> int:
                 )
                 for it in iters:
                     global_idx += 1
-                    cont = _run_one_iteration(
+                    cont = run_one_iteration(
                         it=it,
                         idx=global_idx,
                         total=total_iters,
@@ -386,7 +393,7 @@ def cmd_batch(args) -> int:
                 )
 
             # 15) Open Finder on the run folder.
-            _open_results(
+            open_results(
                 succeeded=succeeded,
                 run_dir=run_dir,
                 is_batch=True,
@@ -394,10 +401,10 @@ def cmd_batch(args) -> int:
             )
 
             # 16) End-of-batch summary.
-            _print_batch_summary(succeeded, failed, total_iters)
+            print_batch_summary(succeeded, failed, total_iters)
 
             # 17) Exit code (all-ok=0 / all-failed=1 / partial=5).
-            return _exit_code(
+            return exit_code(
                 is_batch=True, succeeded=succeeded, failed=failed
             )
         finally:

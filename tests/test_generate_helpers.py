@@ -20,17 +20,20 @@ import pytest
 from types import SimpleNamespace
 
 from imgen.backends import BACKENDS
+from imgen.cmd_helpers import (
+    build_iterations,
+    check_prompt_style_compat,
+    exit_code,
+    load_backend_and_token,
+    open_results,
+    preflight_resources,
+    print_batch_summary,
+    resolve_output_layout,
+    resolve_styles_list,
+    run_one_iteration,
+)
 from imgen.commands.generate import (
-    _build_iterations,
-    _check_prompt_style_compat,
-    _exit_code,
-    _load_backend_and_token,
-    _open_results,
-    _preflight_resources,
-    _print_batch_summary,
-    _resolve_output_layout,
-    _resolve_styles_list,
-    _run_one_iteration,
+    _check_output_style_mutex,
     _validate_input_path,
 )
 from imgen.runs import BatchContext, BatchLogger, Iteration
@@ -99,16 +102,16 @@ def test_validate_input_path_directory_exits_code_2(tmp_path, capsys):
     assert "Not a file" in err
 
 
-# ── _resolve_styles_list ────────────────────────────────────────────────
+# ── resolve_styles_list ────────────────────────────────────────────────
 
 def _args(style=None, output=None) -> SimpleNamespace:
-    """Minimal args for _resolve_styles_list."""
+    """Minimal args for resolve_styles_list."""
     return SimpleNamespace(style=style, output=output)
 
 
 def test_resolve_styles_list_uses_explicit_list_when_passed():
     """Parser already validated names + de-duped; helper passes through."""
-    result = _resolve_styles_list(
+    result = resolve_styles_list(
         _args(style=["anime", "ghibli"]),
         merged_defaults={"style": "anime"},
     )
@@ -116,7 +119,7 @@ def test_resolve_styles_list_uses_explicit_list_when_passed():
 
 
 def test_resolve_styles_list_single_explicit_style_preserved():
-    result = _resolve_styles_list(
+    result = resolve_styles_list(
         _args(style=["pixar"]),
         merged_defaults={"style": "anime"},
     )
@@ -124,7 +127,7 @@ def test_resolve_styles_list_single_explicit_style_preserved():
 
 
 def test_resolve_styles_list_falls_back_to_default_when_unspecified():
-    result = _resolve_styles_list(
+    result = resolve_styles_list(
         _args(style=None),
         merged_defaults={"style": "anime"},
     )
@@ -135,7 +138,7 @@ def test_resolve_styles_list_unknown_default_exits_code_2(capsys):
     """If [defaults] style in config.toml points at a missing preset,
     fail fast with a clear hint mentioning the config path."""
     with pytest.raises(SystemExit) as exc_info:
-        _resolve_styles_list(
+        resolve_styles_list(
             _args(style=None),
             merged_defaults={"style": "nonexistent-preset"},
         )
@@ -144,13 +147,20 @@ def test_resolve_styles_list_unknown_default_exits_code_2(capsys):
     assert "Default style 'nonexistent-preset' not found" in err
 
 
-def test_resolve_styles_list_output_file_with_multi_style_rejected(capsys):
+# ── _check_output_style_mutex (generate-only, v0.3.1 split) ────────────
+
+
+def test_check_output_style_mutex_multi_style_with_output_rejected(capsys):
     """--output FILE writes to one path — M styles would clobber the
-    same destination M times. Caller must use --output-dir for batches."""
+    same destination M times. Caller must use --output-dir for batches.
+
+    v0.3.1: the mutex check moved out of resolve_styles_list into this
+    generate-only helper (batch has no --output flag, so the silent
+    no-op there was surprising). Architect NIT-4 / NIT-6."""
     with pytest.raises(SystemExit) as exc_info:
-        _resolve_styles_list(
-            _args(style=["anime", "ghibli"], output="/tmp/forced.png"),
-            merged_defaults={"style": "anime"},
+        _check_output_style_mutex(
+            _args(output="/tmp/forced.png"),
+            styles_list=["anime", "ghibli"],
         )
     assert exc_info.value.code == 2
     err = capsys.readouterr().err
@@ -158,26 +168,39 @@ def test_resolve_styles_list_output_file_with_multi_style_rejected(capsys):
     assert "anime" in err and "ghibli" in err
 
 
-def test_resolve_styles_list_output_file_with_single_style_ok():
+def test_check_output_style_mutex_single_style_with_output_ok():
     """Single-style + --output FILE is the legitimate v0.1.x use case
     — must keep working unchanged."""
-    result = _resolve_styles_list(
-        _args(style=["anime"], output="/tmp/forced.png"),
+    # No raise = success.
+    _check_output_style_mutex(
+        _args(output="/tmp/forced.png"),
+        styles_list=["anime"],
+    )
+
+
+def test_check_output_style_mutex_no_output_is_noop():
+    """When --output isn't set, the mutex is a no-op even for
+    multi-style. Run-dir layout handles M files naturally."""
+    _check_output_style_mutex(
+        _args(output=None),
+        styles_list=["anime", "ghibli", "pixar"],
+    )
+
+
+def test_resolve_styles_list_does_not_check_output_mutex_anymore():
+    """v0.3.1 contract: resolve_styles_list is pure — it does NOT
+    raise on --output + multi-style anymore. That responsibility moved
+    to _check_output_style_mutex (kept generate-only since batch has
+    no --output flag)."""
+    # Multi-style + --output → no raise from the resolver alone.
+    result = resolve_styles_list(
+        _args(style=["anime", "ghibli"], output="/tmp/forced.png"),
         merged_defaults={"style": "anime"},
     )
-    assert result == ["anime"]
+    assert result == ["anime", "ghibli"]
 
 
-def test_resolve_styles_list_output_file_with_default_single_ok():
-    """No --style, --output set → default style applies, no rejection."""
-    result = _resolve_styles_list(
-        _args(style=None, output="/tmp/forced.png"),
-        merged_defaults={"style": "anime"},
-    )
-    assert result == ["anime"]
-
-
-# ── _check_prompt_style_compat ──────────────────────────────────────────
+# ── check_prompt_style_compat ──────────────────────────────────────────
 
 
 @pytest.fixture
@@ -187,7 +210,7 @@ def fake_styles(monkeypatch):
     Lets us mix prompt-bearing and param-only styles without touching
     the real built-in registry or styles.d/. The helper imports
     get_style locally; patch at the call site
-    (imgen.commands.generate.get_style)."""
+    (imgen.cmd_helpers.get_style)."""
     registry: dict = {}
 
     def fake_get_style(name: str) -> dict:
@@ -196,7 +219,7 @@ def fake_styles(monkeypatch):
         return registry[name]
 
     monkeypatch.setattr(
-        "imgen.commands.generate.get_style", fake_get_style
+        "imgen.cmd_helpers.get_style", fake_get_style
     )
     return registry
 
@@ -208,7 +231,7 @@ def test_check_prompt_style_compat_custom_prompt_with_param_only_ok(fake_styles)
     fake_styles["paramonly"] = {"strength": 0.6}  # no `prompt` key
 
     # Must not raise — returns None on success.
-    _check_prompt_style_compat(
+    check_prompt_style_compat(
         styles_list=["paramonly"],
         effective_custom_prompt="my custom prompt",
     )
@@ -222,7 +245,7 @@ def test_check_prompt_style_compat_custom_prompt_with_prompt_bearing_rejected(
     fake_styles["anime"] = {"prompt": "anime portrait", "strength": 0.6}
 
     with pytest.raises(SystemExit) as exc_info:
-        _check_prompt_style_compat(
+        check_prompt_style_compat(
             styles_list=["anime"],
             effective_custom_prompt="my custom prompt",
         )
@@ -242,7 +265,7 @@ def test_check_prompt_style_compat_lists_all_offenders_in_multi_style(
     fake_styles["paramonly"] = {"strength": 0.7}
 
     with pytest.raises(SystemExit):
-        _check_prompt_style_compat(
+        check_prompt_style_compat(
             styles_list=["anime", "paramonly", "ghibli"],
             effective_custom_prompt="custom",
         )
@@ -260,7 +283,7 @@ def test_check_prompt_style_compat_no_prompt_with_prompt_bearing_style_ok(
     path. Must remain unchanged."""
     fake_styles["anime"] = {"prompt": "anime portrait", "strength": 0.6}
 
-    _check_prompt_style_compat(
+    check_prompt_style_compat(
         styles_list=["anime"],
         effective_custom_prompt=None,
     )
@@ -274,7 +297,7 @@ def test_check_prompt_style_compat_no_prompt_with_param_only_rejected(
     fake_styles["paramonly"] = {"strength": 0.6}
 
     with pytest.raises(SystemExit) as exc_info:
-        _check_prompt_style_compat(
+        check_prompt_style_compat(
             styles_list=["paramonly"],
             effective_custom_prompt=None,
         )
@@ -293,20 +316,20 @@ def test_check_prompt_style_compat_empty_string_prompt_treated_as_missing(
 
     # No CLI prompt + falsy style prompt → reject (matches mutex semantics).
     with pytest.raises(SystemExit):
-        _check_prompt_style_compat(
+        check_prompt_style_compat(
             styles_list=["empty"],
             effective_custom_prompt=None,
         )
 
 
-# ── _resolve_output_layout ──────────────────────────────────────────────
+# ── resolve_output_layout ──────────────────────────────────────────────
 
 
 @pytest.fixture
 def fixed_run_dirname(monkeypatch):
     """Pin auto_run_dirname → '2026-05-22-10-00-00' for deterministic tests."""
     monkeypatch.setattr(
-        "imgen.commands.generate.auto_run_dirname",
+        "imgen.cmd_helpers.auto_run_dirname",
         lambda now=None: "2026-05-22-10-00-00",
     )
 
@@ -319,7 +342,7 @@ def test_resolve_output_layout_explicit_file_returns_path_no_run_dir(
     target = tmp_path / "forced.png"
     args = SimpleNamespace(output=str(target))
 
-    explicit_output, run_dir = _resolve_output_layout(
+    explicit_output, run_dir = resolve_output_layout(
         args, config_output_dir=None
     )
 
@@ -334,7 +357,7 @@ def test_resolve_output_layout_explicit_file_expands_tilde(
     monkeypatch.setenv("HOME", str(tmp_path))
     args = SimpleNamespace(output="~/out.png")
 
-    explicit_output, run_dir = _resolve_output_layout(
+    explicit_output, run_dir = resolve_output_layout(
         args, config_output_dir=None
     )
 
@@ -350,11 +373,11 @@ def test_resolve_output_layout_default_uses_module_default(
     ~/Desktop/imgen (don't want to write there from tests)."""
     fake_default = tmp_path / "fake_default"
     monkeypatch.setattr(
-        "imgen.commands.generate.DEFAULT_OUTPUT_DIR", fake_default
+        "imgen.cmd_helpers.DEFAULT_OUTPUT_DIR", fake_default
     )
     args = SimpleNamespace(output=None, output_dir=None)
 
-    explicit_output, run_dir = _resolve_output_layout(
+    explicit_output, run_dir = resolve_output_layout(
         args, config_output_dir=None
     )
 
@@ -371,7 +394,7 @@ def test_resolve_output_layout_cli_output_dir_beats_config(
     config_dir = tmp_path / "config"
     args = SimpleNamespace(output=None, output_dir=str(cli_dir))
 
-    explicit_output, run_dir = _resolve_output_layout(
+    explicit_output, run_dir = resolve_output_layout(
         args, config_output_dir=str(config_dir)
     )
 
@@ -384,13 +407,13 @@ def test_resolve_output_layout_config_beats_module_default(
 ):
     """No CLI --output-dir, config set → config used."""
     monkeypatch.setattr(
-        "imgen.commands.generate.DEFAULT_OUTPUT_DIR",
+        "imgen.cmd_helpers.DEFAULT_OUTPUT_DIR",
         tmp_path / "module_default",
     )
     config_dir = tmp_path / "config"
     args = SimpleNamespace(output=None, output_dir=None)
 
-    explicit_output, run_dir = _resolve_output_layout(
+    explicit_output, run_dir = resolve_output_layout(
         args, config_output_dir=str(config_dir)
     )
 
@@ -405,7 +428,7 @@ def test_resolve_output_layout_does_not_create_run_dir(
     confirm gate (so cancel doesn't orphan an empty dir)."""
     args = SimpleNamespace(output=None, output_dir=str(tmp_path))
 
-    _, run_dir = _resolve_output_layout(args, config_output_dir=None)
+    _, run_dir = resolve_output_layout(args, config_output_dir=None)
 
     assert not run_dir.exists()
 
@@ -418,12 +441,12 @@ def test_resolve_output_layout_suffixes_run_dir_on_collision(
     (tmp_path / "2026-05-22-10-00-00").mkdir()
     args = SimpleNamespace(output=None, output_dir=str(tmp_path))
 
-    _, run_dir = _resolve_output_layout(args, config_output_dir=None)
+    _, run_dir = resolve_output_layout(args, config_output_dir=None)
 
     assert run_dir == tmp_path / "2026-05-22-10-00-00_2"
 
 
-# ── _load_backend_and_token ─────────────────────────────────────────────
+# ── load_backend_and_token ─────────────────────────────────────────────
 
 
 @pytest.fixture
@@ -437,7 +460,7 @@ def fake_venv(tmp_path, monkeypatch):
     venv.mkdir()
     (venv / "mflux-generate-kontext").write_bytes(b"#!/bin/sh\n")
     (venv / "mflux-generate-qwen-edit").write_bytes(b"#!/bin/sh\n")
-    monkeypatch.setattr("imgen.commands.generate.VENV_BIN", venv)
+    monkeypatch.setattr("imgen.cmd_helpers.VENV_BIN", venv)
     return venv
 
 
@@ -445,18 +468,18 @@ def fake_venv(tmp_path, monkeypatch):
 def passing_checks(monkeypatch):
     """Stub check_venv + check_mflux to True. Individual tests override
     to False to exercise the not-installed branch."""
-    monkeypatch.setattr("imgen.commands.generate.check_venv", lambda: True)
-    monkeypatch.setattr("imgen.commands.generate.check_mflux", lambda: True)
+    monkeypatch.setattr("imgen.cmd_helpers.check_venv", lambda: True)
+    monkeypatch.setattr("imgen.cmd_helpers.check_mflux", lambda: True)
 
 
 def test_load_backend_and_token_flux_with_token(
     fake_venv, passing_checks, monkeypatch
 ):
     monkeypatch.setattr(
-        "imgen.commands.generate.load_token", lambda: "hf_TOKEN_VALUE"
+        "imgen.cmd_helpers.load_token", lambda: "hf_TOKEN_VALUE"
     )
 
-    backend, be, token, binary = _load_backend_and_token(
+    backend, be, token, binary = load_backend_and_token(
         SimpleNamespace(backend="flux")
     )
 
@@ -471,10 +494,10 @@ def test_load_backend_and_token_flux_without_token_exits_3(
 ):
     """FLUX is gated — missing HF token must fail fast with the setup
     hint, not silently call mflux and hit a 401 mid-run."""
-    monkeypatch.setattr("imgen.commands.generate.load_token", lambda: None)
+    monkeypatch.setattr("imgen.cmd_helpers.load_token", lambda: None)
 
     with pytest.raises(SystemExit) as exc_info:
-        _load_backend_and_token(SimpleNamespace(backend="flux"))
+        load_backend_and_token(SimpleNamespace(backend="flux"))
 
     assert exc_info.value.code == 3
     err = capsys.readouterr().err
@@ -488,11 +511,11 @@ def test_load_backend_and_token_qwen_no_token_needed(
     called (defensive: avoids touching the keyring/disk for nothing)."""
     called = []
     monkeypatch.setattr(
-        "imgen.commands.generate.load_token",
+        "imgen.cmd_helpers.load_token",
         lambda: called.append("load_token") or None,
     )
 
-    backend, be, token, binary = _load_backend_and_token(
+    backend, be, token, binary = load_backend_and_token(
         SimpleNamespace(backend="qwen")
     )
 
@@ -506,12 +529,12 @@ def test_load_backend_and_token_qwen_no_token_needed(
 def test_load_backend_and_token_venv_check_failure_exits_3(
     fake_venv, monkeypatch, capsys
 ):
-    monkeypatch.setattr("imgen.commands.generate.check_venv", lambda: False)
-    monkeypatch.setattr("imgen.commands.generate.check_mflux", lambda: True)
-    monkeypatch.setattr("imgen.commands.generate.load_token", lambda: "x")
+    monkeypatch.setattr("imgen.cmd_helpers.check_venv", lambda: False)
+    monkeypatch.setattr("imgen.cmd_helpers.check_mflux", lambda: True)
+    monkeypatch.setattr("imgen.cmd_helpers.load_token", lambda: "x")
 
     with pytest.raises(SystemExit) as exc_info:
-        _load_backend_and_token(SimpleNamespace(backend="qwen"))
+        load_backend_and_token(SimpleNamespace(backend="qwen"))
 
     assert exc_info.value.code == 3
     assert "mflux not installed" in capsys.readouterr().err
@@ -520,12 +543,12 @@ def test_load_backend_and_token_venv_check_failure_exits_3(
 def test_load_backend_and_token_mflux_check_failure_exits_3(
     fake_venv, monkeypatch, capsys
 ):
-    monkeypatch.setattr("imgen.commands.generate.check_venv", lambda: True)
-    monkeypatch.setattr("imgen.commands.generate.check_mflux", lambda: False)
-    monkeypatch.setattr("imgen.commands.generate.load_token", lambda: "x")
+    monkeypatch.setattr("imgen.cmd_helpers.check_venv", lambda: True)
+    monkeypatch.setattr("imgen.cmd_helpers.check_mflux", lambda: False)
+    monkeypatch.setattr("imgen.cmd_helpers.load_token", lambda: "x")
 
     with pytest.raises(SystemExit) as exc_info:
-        _load_backend_and_token(SimpleNamespace(backend="qwen"))
+        load_backend_and_token(SimpleNamespace(backend="qwen"))
 
     assert exc_info.value.code == 3
     assert "mflux not installed" in capsys.readouterr().err
@@ -537,10 +560,10 @@ def test_load_backend_and_token_missing_binary_exits_3(
     """venv reports installed but the per-backend binary is missing —
     half-broken state, point at `imgen upgrade`."""
     (fake_venv / "mflux-generate-qwen-edit").unlink()
-    monkeypatch.setattr("imgen.commands.generate.load_token", lambda: "x")
+    monkeypatch.setattr("imgen.cmd_helpers.load_token", lambda: "x")
 
     with pytest.raises(SystemExit) as exc_info:
-        _load_backend_and_token(SimpleNamespace(backend="qwen"))
+        load_backend_and_token(SimpleNamespace(backend="qwen"))
 
     assert exc_info.value.code == 3
     err = capsys.readouterr().err
@@ -548,11 +571,11 @@ def test_load_backend_and_token_missing_binary_exits_3(
     assert "imgen upgrade" in err
 
 
-# ── _build_iterations ───────────────────────────────────────────────────
+# ── build_iterations ───────────────────────────────────────────────────
 
 
 def _build_args(**overrides) -> SimpleNamespace:
-    """argparse Namespace shape that _build_iterations reads from.
+    """argparse Namespace shape that build_iterations reads from.
 
     Default values mirror "no CLI overrides" so each test only sets the
     one field it cares about."""
@@ -586,7 +609,7 @@ def _run_dir_at(tmp_path) -> Path:
 
 
 def _build(*, fake_styles, tmp_path, **overrides) -> list[Iteration]:
-    """Call _build_iterations with a sensible default kwarg set,
+    """Call build_iterations with a sensible default kwarg set,
     overriding only what the test cares about."""
     kwargs = dict(
         styles_list=["anime"],
@@ -603,7 +626,7 @@ def _build(*, fake_styles, tmp_path, **overrides) -> list[Iteration]:
         seed=42,
     )
     kwargs.update(overrides)
-    return _build_iterations(**kwargs)
+    return build_iterations(**kwargs)
 
 
 def test_build_iterations_single_style_preset_prompt(fake_styles, tmp_path):
@@ -692,7 +715,7 @@ def test_build_iterations_scope_person_adds_suffix(fake_styles, tmp_path):
     assert "background" in its[0].prompt
 
 
-# ── _build_iterations precedence: CLI > preset > preview > defaults ─────
+# ── build_iterations precedence: CLI > preset > preview > defaults ─────
 
 def test_build_iterations_steps_cli_beats_preset_and_preview(
     fake_styles, tmp_path
@@ -834,7 +857,7 @@ def test_build_iterations_strength_falls_back_to_defaults(
     )
 
 
-# ── _build_iterations multi-style + output_path resolution ──────────────
+# ── build_iterations multi-style + output_path resolution ──────────────
 
 def test_build_iterations_multi_style_one_per_name(fake_styles, tmp_path):
     """List length matches styles_list len; order preserved."""
@@ -892,7 +915,7 @@ def test_build_iterations_explicit_output_overrides_run_dir(
     assert its[0].output_path == explicit
 
 
-# ── _build_iterations contract guarantees ───────────────────────────────
+# ── build_iterations contract guarantees ───────────────────────────────
 
 def test_build_iterations_returns_iteration_dataclass_not_dict(
     fake_styles, tmp_path
@@ -927,7 +950,7 @@ def test_build_iterations_cmd_is_list_of_str(fake_styles, tmp_path):
     assert "/fake/bin/mflux-generate-kontext" in its[0].cmd
 
 
-# ── _exit_code ──────────────────────────────────────────────────────────
+# ── exit_code ──────────────────────────────────────────────────────────
 
 
 def _ok(name: str) -> tuple[str, Path, int]:
@@ -942,13 +965,13 @@ def _fail(name: str, rc: int) -> tuple[str, int, Path]:
 
 def test_exit_code_single_style_success_returns_0():
     """v0.1.x contract: single-style + ok → exit 0."""
-    assert _exit_code(is_batch=False, succeeded=[_ok("anime")], failed=[]) == 0
+    assert exit_code(is_batch=False, succeeded=[_ok("anime")], failed=[]) == 0
 
 
 def test_exit_code_single_style_failure_passes_through_returncode():
     """v0.1.x contract: single-style + failure → caller gets mflux's
     own returncode (so scripts can grep by exit code)."""
-    assert _exit_code(
+    assert exit_code(
         is_batch=False,
         succeeded=[],
         failed=[_fail("anime", 42)],
@@ -956,7 +979,7 @@ def test_exit_code_single_style_failure_passes_through_returncode():
 
 
 def test_exit_code_multi_all_ok_returns_0():
-    assert _exit_code(
+    assert exit_code(
         is_batch=True,
         succeeded=[_ok("anime"), _ok("ghibli")],
         failed=[],
@@ -965,7 +988,7 @@ def test_exit_code_multi_all_ok_returns_0():
 
 def test_exit_code_multi_all_failed_returns_1():
     """All M iterations failed → exit 1 (generic batch failure)."""
-    assert _exit_code(
+    assert exit_code(
         is_batch=True,
         succeeded=[],
         failed=[_fail("anime", 1), _fail("ghibli", 1)],
@@ -976,18 +999,18 @@ def test_exit_code_multi_partial_returns_5():
     """Mixed batch (some ok, some failed) → exit 5 — distinct from
     user-input 2, missing-tool 3, resource 4 — keeps grep-by-code
     scripting clean for callers."""
-    assert _exit_code(
+    assert exit_code(
         is_batch=True,
         succeeded=[_ok("anime")],
         failed=[_fail("ghibli", 1)],
     ) == 5
 
 
-# ── _print_batch_summary ────────────────────────────────────────────────
+# ── print_batch_summary ────────────────────────────────────────────────
 
 
 def test_print_batch_summary_all_ok(capsys):
-    _print_batch_summary(
+    print_batch_summary(
         succeeded=[_ok("anime"), _ok("ghibli")],
         failed=[],
         total=2,
@@ -1003,7 +1026,7 @@ def test_print_batch_summary_all_failed_lists_each(capsys):
     """Every failed style needs to surface (else user can't tell which
     succeeded and which need retry). No 'N ok' line when succeeded is
     empty — the `if succeeded:` guard skips it."""
-    _print_batch_summary(
+    print_batch_summary(
         succeeded=[],
         failed=[_fail("anime", 1), _fail("ghibli", 7)],
         total=2,
@@ -1017,7 +1040,7 @@ def test_print_batch_summary_all_failed_lists_each(capsys):
 
 
 def test_print_batch_summary_mixed(capsys):
-    _print_batch_summary(
+    print_batch_summary(
         succeeded=[_ok("anime")],
         failed=[_fail("ghibli", 1)],
         total=2,
@@ -1031,14 +1054,14 @@ def test_print_batch_summary_mixed(capsys):
 
 def test_print_batch_summary_singular_when_total_is_1(capsys):
     """Pedantic but visible in output — 1 generation, not 1 generations."""
-    _print_batch_summary(succeeded=[_ok("anime")], failed=[], total=1)
+    print_batch_summary(succeeded=[_ok("anime")], failed=[], total=1)
     out = capsys.readouterr().out
     assert "1 generation" in out
     assert "1 generations" not in out
 
 
 def test_print_batch_summary_plural_when_total_is_3(capsys):
-    _print_batch_summary(
+    print_batch_summary(
         succeeded=[_ok("a"), _ok("b"), _ok("c")],
         failed=[],
         total=3,
@@ -1047,7 +1070,7 @@ def test_print_batch_summary_plural_when_total_is_3(capsys):
     assert "3 generations" in out
 
 
-# ── _preflight_resources ────────────────────────────────────────────────
+# ── preflight_resources ────────────────────────────────────────────────
 
 
 def _clean_res() -> dict:
@@ -1067,7 +1090,7 @@ def _clean_res() -> dict:
 
 @pytest.fixture
 def stub_check_resources(monkeypatch):
-    """Return a dict the caller can mutate before _preflight_resources
+    """Return a dict the caller can mutate before preflight_resources
     invokes check_resources. Lets each test stage a specific failure."""
     state = {"res": _clean_res()}
 
@@ -1076,7 +1099,7 @@ def stub_check_resources(monkeypatch):
         return state["res"]
 
     monkeypatch.setattr(
-        "imgen.commands.generate.check_resources", fake_check
+        "imgen.cmd_helpers.check_resources", fake_check
     )
     return state
 
@@ -1087,18 +1110,18 @@ def test_preflight_resources_force_skips_check(monkeypatch):
     psutil reports a stale state."""
     called = []
     monkeypatch.setattr(
-        "imgen.commands.generate.check_resources",
+        "imgen.cmd_helpers.check_resources",
         lambda b, q: called.append((b, q)) or _clean_res(),
     )
 
-    _preflight_resources(backend="flux", heaviest_quant=8, force=True)
+    preflight_resources(backend="flux", heaviest_quant=8, force=True)
 
     assert called == [], "force=True must short-circuit before check_resources"
 
 
 def test_preflight_resources_clean_passes(stub_check_resources):
     """All green → returns None (no SystemExit, no warning crash)."""
-    _preflight_resources(backend="flux", heaviest_quant=8, force=False)
+    preflight_resources(backend="flux", heaviest_quant=8, force=False)
     # Confirms helper passed backend + quant through.
     assert stub_check_resources["last_call"] == ("flux", 8)
 
@@ -1109,7 +1132,7 @@ def test_preflight_resources_other_mflux_running_exits_4(
     stub_check_resources["res"]["other_mflux_pid"] = 12345
 
     with pytest.raises(SystemExit) as exc_info:
-        _preflight_resources(backend="flux", heaviest_quant=8, force=False)
+        preflight_resources(backend="flux", heaviest_quant=8, force=False)
 
     assert exc_info.value.code == 4
     err = capsys.readouterr().err
@@ -1123,7 +1146,7 @@ def test_preflight_resources_low_ram_exits_4(stub_check_resources, capsys):
     stub_check_resources["res"]["ram_required_gb"] = 24
 
     with pytest.raises(SystemExit) as exc_info:
-        _preflight_resources(backend="flux", heaviest_quant=8, force=False)
+        preflight_resources(backend="flux", heaviest_quant=8, force=False)
 
     assert exc_info.value.code == 4
     err = capsys.readouterr().err
@@ -1141,7 +1164,7 @@ def test_preflight_resources_low_disk_warns_not_dies(
     stub_check_resources["res"]["disk_ok"] = False
     stub_check_resources["res"]["disk_free_gb"] = 2.5
 
-    _preflight_resources(backend="flux", heaviest_quant=8, force=False)
+    preflight_resources(backend="flux", heaviest_quant=8, force=False)
 
     captured = capsys.readouterr()
     combined = captured.out + captured.err
@@ -1156,19 +1179,19 @@ def test_preflight_resources_low_battery_warns_not_dies(
     stub_check_resources["res"]["battery_ok"] = False
     stub_check_resources["res"]["battery_pct"] = 12
 
-    _preflight_resources(backend="flux", heaviest_quant=8, force=False)
+    preflight_resources(backend="flux", heaviest_quant=8, force=False)
 
     captured = capsys.readouterr()
     combined = captured.out + captured.err
     assert "Battery" in combined and "12%" in combined
 
 
-# ── _open_results ───────────────────────────────────────────────────────
+# ── open_results ───────────────────────────────────────────────────────
 
 
 @pytest.fixture
 def stub_subprocess_run(monkeypatch):
-    """Record subprocess.run invocations from _open_results without
+    """Record subprocess.run invocations from open_results without
     actually spawning anything. Tests assert against the recorded list."""
     calls: list[list[str]] = []
 
@@ -1180,7 +1203,7 @@ def stub_subprocess_run(monkeypatch):
         return _Result()
 
     monkeypatch.setattr(
-        "imgen.commands.generate.subprocess.run", fake_run
+        "imgen.cmd_helpers.subprocess.run", fake_run
     )
     return calls
 
@@ -1189,7 +1212,7 @@ def test_open_results_no_open_flag_skips(stub_subprocess_run, tmp_path):
     """--no-open opt-out wins over everything else."""
     img = tmp_path / "out.png"
     img.touch()
-    _open_results(
+    open_results(
         succeeded=[("anime", img, 1)],
         run_dir=None,
         is_batch=False,
@@ -1200,7 +1223,7 @@ def test_open_results_no_open_flag_skips(stub_subprocess_run, tmp_path):
 
 def test_open_results_empty_succeeded_skips(stub_subprocess_run):
     """Nothing succeeded → nothing to open."""
-    _open_results(
+    open_results(
         succeeded=[], run_dir=None, is_batch=False, no_open=False
     )
     assert stub_subprocess_run == []
@@ -1213,7 +1236,7 @@ def test_open_results_multi_opens_run_dir(stub_subprocess_run, tmp_path):
     img = run_dir / "out-anime.png"
     img.touch()
 
-    _open_results(
+    open_results(
         succeeded=[("anime", img, 1), ("ghibli", img, 1)],
         run_dir=run_dir,
         is_batch=True,
@@ -1230,7 +1253,7 @@ def test_open_results_multi_skips_if_run_dir_missing(
     let `open` autolaunch some other registered handler for the path."""
     run_dir = tmp_path / "phantom"
     # Note: deliberately NOT created.
-    _open_results(
+    open_results(
         succeeded=[("anime", tmp_path / "x", 1)],
         run_dir=run_dir,
         is_batch=True,
@@ -1243,7 +1266,7 @@ def test_open_results_single_opens_last_file(stub_subprocess_run, tmp_path):
     """v0.2.x behaviour: single-style → open the file in Preview."""
     img = tmp_path / "out.png"
     img.touch()
-    _open_results(
+    open_results(
         succeeded=[("anime", img, 1)],
         run_dir=None,
         is_batch=False,
@@ -1261,7 +1284,7 @@ def test_open_results_unsafe_extension_warns_no_open(
     img = tmp_path / "out.sh"
     img.touch()
 
-    _open_results(
+    open_results(
         succeeded=[("anime", img, 1)],
         run_dir=None,
         is_batch=False,
@@ -1285,11 +1308,11 @@ def test_open_results_swallows_filenotfound_single(monkeypatch, tmp_path):
         raise FileNotFoundError("no such binary: open")
 
     monkeypatch.setattr(
-        "imgen.commands.generate.subprocess.run", raising_run
+        "imgen.cmd_helpers.subprocess.run", raising_run
     )
 
     # Should NOT raise.
-    _open_results(
+    open_results(
         succeeded=[("anime", img, 1)],
         run_dir=None,
         is_batch=False,
@@ -1308,11 +1331,11 @@ def test_open_results_swallows_filenotfound_multi(monkeypatch, tmp_path):
         raise FileNotFoundError("no such binary: open")
 
     monkeypatch.setattr(
-        "imgen.commands.generate.subprocess.run", raising_run
+        "imgen.cmd_helpers.subprocess.run", raising_run
     )
 
     # Should NOT raise.
-    _open_results(
+    open_results(
         succeeded=[("anime", run_dir / "x.png", 1)],
         run_dir=run_dir,
         is_batch=True,
@@ -1320,7 +1343,7 @@ def test_open_results_swallows_filenotfound_multi(monkeypatch, tmp_path):
     )
 
 
-# ── _run_one_iteration ──────────────────────────────────────────────────
+# ── run_one_iteration ──────────────────────────────────────────────────
 
 
 def _full_iter(tmp_path, style="anime") -> Iteration:
@@ -1363,7 +1386,7 @@ def stub_mflux(monkeypatch):
         return state["returncode"]
 
     monkeypatch.setattr(
-        "imgen.commands.generate.run_with_stderr_redaction", fake_run
+        "imgen.cmd_helpers.run_with_stderr_redaction", fake_run
     )
     return state
 
@@ -1375,7 +1398,7 @@ _CTX_FIELDS = (
 
 
 def _run(*, it=None, tmp_path, succeeded, failed, logger=None, **kwargs):
-    """Wrapper threading sensible defaults for _run_one_iteration.
+    """Wrapper threading sensible defaults for run_one_iteration.
 
     Tests can override any of:
       - top-level helper args (idx, total, is_batch, logger)
@@ -1413,7 +1436,7 @@ def _run(*, it=None, tmp_path, succeeded, failed, logger=None, **kwargs):
         failed=failed,
     )
     defaults.update(kwargs)
-    return _run_one_iteration(**defaults)
+    return run_one_iteration(**defaults)
 
 
 def test_run_one_iteration_success_appends_to_succeeded(
@@ -1660,9 +1683,9 @@ def test_run_one_iteration_log_marker_lands_even_if_history_raises(
     The bug shape is: subprocess succeeded → history broken → next
     log entry orphaned. The test stages an exception class that
     history.py wouldn't normally catch (RuntimeError) so we exercise
-    the new _safe_append_history wrapper."""
+    the safe_append_history wrapper."""
     monkeypatch.setattr(
-        "imgen.commands.generate.append_history",
+        "imgen.cmd_helpers.append_history",
         lambda entry: (_ for _ in ()).throw(RuntimeError("json busted")),
     )
     logger = BatchLogger("coherence1")
@@ -1690,7 +1713,7 @@ def test_run_one_iteration_cancel_marker_lands_even_if_history_raises(
     marker must land even if the cancel-history record write blew up."""
     stub_mflux["raise"] = KeyboardInterrupt()
     monkeypatch.setattr(
-        "imgen.commands.generate.append_history",
+        "imgen.cmd_helpers.append_history",
         lambda entry: (_ for _ in ()).throw(RuntimeError("json busted")),
     )
     logger = BatchLogger("coherence2")
@@ -1714,7 +1737,7 @@ def test_run_one_iteration_warns_on_history_failure(
     """User has to see *something* — log + history mismatch otherwise
     looks like data was never recorded but the user has no clue why."""
     monkeypatch.setattr(
-        "imgen.commands.generate.append_history",
+        "imgen.cmd_helpers.append_history",
         lambda entry: (_ for _ in ()).throw(RuntimeError("json busted")),
     )
 
@@ -1728,7 +1751,7 @@ def test_run_one_iteration_warns_on_history_failure(
 
 
 def test_safe_append_history_propagates_keyboard_interrupt(monkeypatch):
-    """The broad-except in _safe_append_history catches `Exception` —
+    """The broad-except in safe_append_history catches `Exception` —
     KeyboardInterrupt inherits from BaseException, so it MUST still
     propagate. v0.2.5 review (security NIT-4) flagged this contract
     as untested; lock it.
@@ -1736,27 +1759,27 @@ def test_safe_append_history_propagates_keyboard_interrupt(monkeypatch):
     Without this, a Ctrl-C delivered exactly while append_history was
     on the stack would be swallowed and the user would see no batch
     cancellation."""
-    from imgen.commands.generate import _safe_append_history
+    from imgen.cmd_helpers import safe_append_history
 
     monkeypatch.setattr(
-        "imgen.commands.generate.append_history",
+        "imgen.cmd_helpers.append_history",
         lambda entry: (_ for _ in ()).throw(KeyboardInterrupt()),
     )
 
     with pytest.raises(KeyboardInterrupt):
-        _safe_append_history({"k": "v"})
+        safe_append_history({"k": "v"})
 
 
 def test_safe_append_history_propagates_system_exit(monkeypatch):
     """SystemExit is also BaseException, also must propagate.
     Same contract as KeyboardInterrupt."""
-    from imgen.commands.generate import _safe_append_history
+    from imgen.cmd_helpers import safe_append_history
 
     monkeypatch.setattr(
-        "imgen.commands.generate.append_history",
+        "imgen.cmd_helpers.append_history",
         lambda entry: (_ for _ in ()).throw(SystemExit(99)),
     )
 
     with pytest.raises(SystemExit) as exc_info:
-        _safe_append_history({"k": "v"})
+        safe_append_history({"k": "v"})
     assert exc_info.value.code == 99

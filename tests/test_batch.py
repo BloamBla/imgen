@@ -7,12 +7,14 @@ These tests exercise the orchestration end-to-end with stubbed mflux
 and stubbed backend-loading so the suite stays GPU-free / network-free
 / subprocess-light (<2s target).
 
-Stubbing surface:
-  * ``imgen.commands.generate.run_with_stderr_redaction`` — fake mflux
-  * ``imgen.commands.batch._load_backend_and_token`` — bypass venv +
-    binary existence checks
+Stubbing surface (v0.3.1 post-cmd_helpers extraction):
+  * ``imgen.cmd_helpers.run_with_stderr_redaction`` — fake mflux
+    (cmd_helpers.run_one_iteration looks it up there now)
+  * ``imgen.commands.batch.load_backend_and_token`` — bypass venv +
+    binary existence checks (patched at batch.py call site since it
+    imports by name)
   * ``imgen.images.detect_resolution`` — return fixed dims (no PIL)
-  * ``imgen.commands.batch._open_results`` — skip macOS `open`
+  * ``imgen.commands.batch.open_results`` — skip macOS `open`
   * ``imgen.inputs.subprocess.run`` — fake sips for HEIC tests
 
 State redirect via ``tmp_state_dir`` fixture so HISTORY_FILE + LOGS_DIR
@@ -47,7 +49,7 @@ def stub_mflux(monkeypatch):
         return state["returncode"]
 
     monkeypatch.setattr(
-        "imgen.commands.generate.run_with_stderr_redaction", fake_run
+        "imgen.cmd_helpers.run_with_stderr_redaction", fake_run
     )
     return state
 
@@ -67,7 +69,7 @@ def stub_backend(monkeypatch, tmp_path):
         return ("flux", be, "hf_faketoken", fake_binary)
 
     monkeypatch.setattr(
-        "imgen.commands.batch._load_backend_and_token", fake_load
+        "imgen.commands.batch.load_backend_and_token", fake_load
     )
     return fake_binary
 
@@ -85,7 +87,7 @@ def stub_dims(monkeypatch):
 @pytest.fixture
 def stub_finder(monkeypatch):
     """Don't open Finder during tests."""
-    monkeypatch.setattr("imgen.commands.batch._open_results", lambda **k: None)
+    monkeypatch.setattr("imgen.commands.batch.open_results", lambda **k: None)
 
 
 @pytest.fixture
@@ -290,16 +292,14 @@ def test_cmd_batch_global_idx_uses_flat_counter_not_formula(
     received_idx: list[int] = []
     received_total: list[int] = []
 
-    real_run_one = __import__(
-        "imgen.commands.generate", fromlist=["_run_one_iteration"]
-    )._run_one_iteration
+    from imgen.cmd_helpers import run_one_iteration as real_run_one
 
     def spy(*args, **kwargs):
         received_idx.append(kwargs["idx"])
         received_total.append(kwargs["total"])
         return real_run_one(*args, **kwargs)
 
-    monkeypatch.setattr("imgen.commands.batch._run_one_iteration", spy)
+    monkeypatch.setattr("imgen.commands.batch.run_one_iteration", spy)
 
     d = _make_input_dir(tmp_path, "a.jpg", "b.jpg", "c.jpg")
     args = _args(
@@ -352,7 +352,7 @@ def test_cmd_batch_partial_failure_returns_exit_5(
     # assertion failure here would clobber run_with_stderr_redaction
     # for the rest of the suite.
     monkeypatch.setattr(
-        "imgen.commands.generate.run_with_stderr_redaction", varying_run
+        "imgen.cmd_helpers.run_with_stderr_redaction", varying_run
     )
 
     d = _make_input_dir(tmp_path, "a.jpg", "b.jpg")
