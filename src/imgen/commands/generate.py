@@ -30,6 +30,7 @@ from ..paths import (
 from ..prompt_input import PromptInputError, resolve_prompt
 from ..runs import (
     LOGS_DIR,
+    Iteration,
     auto_run_dirname,
     ensure_logs_dir,
     next_available_run_dir,
@@ -77,7 +78,7 @@ def _format_duration(seconds: int) -> str:
 
 
 def _confirm_batch(
-    iterations: list[dict],
+    iterations: list[Iteration],
     input_name: str,
     output_root: Path,
     one_eta_seconds: int | None,
@@ -89,7 +90,7 @@ def _confirm_batch(
     and exiting clean (no folder created, no history entries written).
     """
     n = len(iterations)
-    style_names = [it["style_name"] for it in iterations]
+    style_names = [it.style_name for it in iterations]
     print()
     info(f"About to generate {n} images:")
     print(f"   {C.DIM}input:{C.END}   {input_name}")
@@ -168,6 +169,125 @@ def _resolve_output_layout(
     )
     run_dir = next_available_run_dir(parent, auto_run_dirname())
     return None, run_dir
+
+
+def _build_iterations(
+    *,
+    styles_list: list[str],
+    args,
+    effective_custom_prompt: str | None,
+    merged_defaults: dict,
+    be,
+    binary: Path,
+    input_path: Path,
+    width: int,
+    height: int,
+    explicit_output: Path | None,
+    run_dir: Path | None,
+    seed: int,
+) -> list[Iteration]:
+    """Resolve per-style params + build the mflux command for each style.
+
+    The whole batch is pre-built before any subprocess work so:
+      * --dry-run can print every cmd that would be executed
+      * resource preflight runs against ``max(it.final_quantize)`` —
+        no surprise crash on the 3rd image if its quant is heavier
+      * confirm gate can show the full list
+
+    Parameter precedence (locked by tests):
+      * ``steps``    : CLI > preview > merged_defaults  (preset.steps
+                       intentionally NOT honoured — preview must win
+                       when the user picks it for speed)
+      * ``quantize`` : CLI > preview > merged_defaults  (same reasoning)
+      * ``guidance`` : CLI > preset  > merged_defaults
+      * ``strength`` : CLI > preset  > merged_defaults
+      * ``prompt``   : custom_prompt verbatim (if set), else
+                       preset["prompt"] with optional scope substitution
+      * ``negative`` : preset.get("negative", "")
+
+    ``output_path`` per iteration:
+      * if ``explicit_output`` is set (legacy --output FILE) → that path
+      * else ``run_dir / "<input.stem>-<style>.png"``
+
+    Returns ``list[Iteration]`` (frozen) — caller may not mutate entries.
+    """
+    iterations: list[Iteration] = []
+    for style_name in styles_list:
+        preset = get_style(style_name)
+
+        if effective_custom_prompt:
+            prompt = effective_custom_prompt
+        else:
+            prompt = preset["prompt"]
+            if args.scope:
+                prompt = apply_scope(prompt, args.scope)
+
+        negative = preset.get("negative", "")
+
+        if args.steps is not None:
+            final_steps = args.steps
+        elif args.preview:
+            final_steps = PREVIEW_OVERRIDES["steps"]
+        else:
+            final_steps = merged_defaults["steps"]
+
+        if args.quantize is not None:
+            final_quantize = args.quantize
+        elif args.preview:
+            final_quantize = PREVIEW_OVERRIDES["quantize"]
+        else:
+            final_quantize = merged_defaults["quantize"]
+
+        if args.guidance is not None:
+            final_guidance = args.guidance
+        elif "guidance" in preset:
+            final_guidance = preset["guidance"]
+        else:
+            final_guidance = merged_defaults["guidance"]
+
+        if args.strength is not None:
+            final_strength = args.strength
+        elif "strength" in preset:
+            final_strength = preset["strength"]
+        else:
+            final_strength = merged_defaults["strength"]
+
+        if explicit_output is not None:
+            output_path = explicit_output
+        else:
+            output_path = run_dir / f"{input_path.stem}-{style_name}.png"
+
+        cmd = build_mflux_cmd(
+            binary=binary,
+            backend=be,
+            input_path=input_path,
+            output_path=output_path,
+            prompt=prompt,
+            negative=negative,
+            quantize=final_quantize,
+            steps=final_steps,
+            guidance=final_guidance,
+            strength=final_strength,
+            seed=seed,
+            width=width,
+            height=height,
+            mlx_cache_gb=merged_defaults["mlx_cache_gb"],
+            battery_stop=merged_defaults["battery_stop"],
+        )
+
+        iterations.append(Iteration(
+            style_name=style_name,
+            prompt=prompt,
+            negative=negative,
+            final_steps=final_steps,
+            final_quantize=final_quantize,
+            final_guidance=final_guidance,
+            final_strength=final_strength,
+            output_path=output_path,
+            cmd=cmd,
+        ))
+
+    return iterations
 
 
 def _load_backend_and_token(args) -> tuple[str, "object", str | None, Path]:
@@ -312,82 +432,20 @@ def cmd_generate(args) -> int:
 
     # 8) Pre-resolve each iteration's params + cmd so dry-run can show
     # all M and we can preflight resources against the heaviest one.
-    iterations: list[dict] = []
-    for style_name in styles_list:
-        preset = get_style(style_name)
-
-        if effective_custom_prompt:
-            prompt = effective_custom_prompt
-        else:
-            prompt = preset["prompt"]
-            if args.scope:
-                prompt = apply_scope(prompt, args.scope)
-
-        negative = preset.get("negative", "")
-
-        # Per-style param resolution. CLI > preset > preview > merged_defaults.
-        if args.steps is not None:
-            final_steps = args.steps
-        elif args.preview:
-            final_steps = PREVIEW_OVERRIDES["steps"]
-        else:
-            final_steps = merged_defaults["steps"]
-
-        if args.quantize is not None:
-            final_quantize = args.quantize
-        elif args.preview:
-            final_quantize = PREVIEW_OVERRIDES["quantize"]
-        else:
-            final_quantize = merged_defaults["quantize"]
-
-        if args.guidance is not None:
-            final_guidance = args.guidance
-        elif "guidance" in preset:
-            final_guidance = preset["guidance"]
-        else:
-            final_guidance = merged_defaults["guidance"]
-
-        if args.strength is not None:
-            final_strength = args.strength
-        elif "strength" in preset:
-            final_strength = preset["strength"]
-        else:
-            final_strength = merged_defaults["strength"]
-
-        if explicit_output is not None:
-            output_path = explicit_output
-        else:
-            output_path = run_dir / f"{input_path.stem}-{style_name}.png"
-
-        cmd = build_mflux_cmd(
-            binary=binary,
-            backend=be,
-            input_path=input_path,
-            output_path=output_path,
-            prompt=prompt,
-            negative=negative,
-            quantize=final_quantize,
-            steps=final_steps,
-            guidance=final_guidance,
-            strength=final_strength,
-            seed=seed,
-            width=width,
-            height=height,
-            mlx_cache_gb=merged_defaults["mlx_cache_gb"],
-            battery_stop=merged_defaults["battery_stop"],
-        )
-
-        iterations.append({
-            "style_name": style_name,
-            "prompt": prompt,
-            "negative": negative,
-            "final_steps": final_steps,
-            "final_quantize": final_quantize,
-            "final_guidance": final_guidance,
-            "final_strength": final_strength,
-            "output_path": output_path,
-            "cmd": cmd,
-        })
+    iterations = _build_iterations(
+        styles_list=styles_list,
+        args=args,
+        effective_custom_prompt=effective_custom_prompt,
+        merged_defaults=merged_defaults,
+        be=be,
+        binary=binary,
+        input_path=input_path,
+        width=width,
+        height=height,
+        explicit_output=explicit_output,
+        run_dir=run_dir,
+        seed=seed,
+    )
 
     multi = len(iterations) >= 2
     # batch_id stamps every history entry from this invocation when M >= 2,
@@ -404,9 +462,9 @@ def cmd_generate(args) -> int:
     # 9) Dry run — show every M cmd, skip resource checks + history.
     if args.dry_run:
         for it in iterations:
-            step(f"Dry run — would execute ({it['style_name']}):")
+            step(f"Dry run — would execute ({it.style_name}):")
             print()
-            print(format_cmd(it["cmd"]))
+            print(format_cmd(it.cmd))
             print()
         return 0
 
@@ -414,7 +472,7 @@ def cmd_generate(args) -> int:
     # batch (all iterations share a backend + quantize today since neither
     # is per-style; verifying the first is sufficient and future-proof
     # via max() if per-style quantize is ever added).
-    heaviest_quant = max(it["final_quantize"] for it in iterations)
+    heaviest_quant = max(it.final_quantize for it in iterations)
     if not args.force:
         res = check_resources(backend, heaviest_quant)
 
@@ -482,7 +540,7 @@ def cmd_generate(args) -> int:
             f"# imgen batch {batch_id}\n"
             f"# started:  {datetime.datetime.now().isoformat(timespec='seconds')}\n"
             f"# input:    {input_path}\n"
-            f"# styles:   {', '.join(it['style_name'] for it in iterations)}\n"
+            f"# styles:   {', '.join(it.style_name for it in iterations)}\n"
             f"# output:   {run_dir}\n"
             f"# backend:  {backend} q{heaviest_quant}  "
             f"preview={args.preview}  scope={args.scope}  seed={seed}\n"
@@ -511,17 +569,17 @@ def cmd_generate(args) -> int:
     total = len(iterations)
 
     for idx, it in enumerate(iterations, start=1):
-        style_name = it["style_name"]
-        output_path = it["output_path"]
-        cmd = it["cmd"]
+        style_name = it.style_name
+        output_path = it.output_path
+        cmd = it.cmd
 
         if multi:
             step(f"Generating [{idx}/{total}] {style_name} → {output_path.name}")
         else:
             step(f"Generating {style_name} → {output_path.name}")
-        print(f"   {C.DIM}backend: {backend} q{it['final_quantize']}  "
-              f"steps: {it['final_steps']}  guidance: {it['final_guidance']}  "
-              f"strength: {it['final_strength']}  seed: {seed}{C.END}")
+        print(f"   {C.DIM}backend: {backend} q{it.final_quantize}  "
+              f"steps: {it.final_steps}  guidance: {it.final_guidance}  "
+              f"strength: {it.final_strength}  seed: {seed}{C.END}")
         print(f"   {C.DIM}size: {width}x{height}  "
               f"input: {input_path.name} → output: {output_path}{C.END}")
         print()
@@ -537,14 +595,14 @@ def cmd_generate(args) -> int:
             "custom_prompt": effective_custom_prompt,
             "scope": args.scope,
             "preview": args.preview,
-            "prompt": it["prompt"],
-            "negative": it["negative"],
+            "prompt": it.prompt,
+            "negative": it.negative,
             "seed": seed,
-            "steps": it["final_steps"],
-            "guidance": it["final_guidance"],
-            "strength": it["final_strength"],
+            "steps": it.final_steps,
+            "guidance": it.final_guidance,
+            "strength": it.final_strength,
             "backend": backend,
-            "quantize": it["final_quantize"],
+            "quantize": it.final_quantize,
             "width": width,
             "height": height,
             # NEW v0.2.3: ties multi-style entries together. Null for

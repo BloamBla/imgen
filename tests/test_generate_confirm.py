@@ -17,6 +17,7 @@ from imgen.commands.generate import (
     _estimate_one_seconds,
     _format_duration,
 )
+from imgen.runs import Iteration
 
 
 # ── _estimate_one_seconds ───────────────────────────────────────────────
@@ -126,8 +127,23 @@ def test_format_duration_minutes():
 
 # ── _confirm_batch ──────────────────────────────────────────────────────
 
-def _iters(*style_names: str) -> list[dict]:
-    return [{"style_name": s} for s in style_names]
+def _iters(*style_names: str) -> list[Iteration]:
+    """Build minimal Iteration objects — _confirm_batch only reads
+    style_name; the other 8 fields can be any valid value."""
+    return [
+        Iteration(
+            style_name=s,
+            prompt="",
+            negative="",
+            final_steps=14,
+            final_quantize=8,
+            final_guidance=2.5,
+            final_strength=0.6,
+            output_path=Path("/tmp/dummy.png"),
+            cmd=[],
+        )
+        for s in style_names
+    ]
 
 
 def test_confirm_batch_yes_proceeds(monkeypatch, capsys):

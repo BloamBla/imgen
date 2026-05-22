@@ -19,13 +19,16 @@ import pytest
 
 from types import SimpleNamespace
 
+from imgen.backends import BACKENDS
 from imgen.commands.generate import (
+    _build_iterations,
     _check_prompt_style_compat,
     _load_backend_and_token,
     _resolve_output_layout,
     _resolve_styles_list,
     _validate_input_path,
 )
+from imgen.runs import Iteration
 
 
 # ── _validate_input_path ────────────────────────────────────────────────
@@ -538,3 +541,382 @@ def test_load_backend_and_token_missing_binary_exits_3(
     err = capsys.readouterr().err
     assert "Backend binary not found" in err
     assert "imgen upgrade" in err
+
+
+# ── _build_iterations ───────────────────────────────────────────────────
+
+
+def _build_args(**overrides) -> SimpleNamespace:
+    """argparse Namespace shape that _build_iterations reads from.
+
+    Default values mirror "no CLI overrides" so each test only sets the
+    one field it cares about."""
+    defaults = dict(
+        steps=None,
+        quantize=None,
+        guidance=None,
+        strength=None,
+        scope=None,
+        preview=False,
+    )
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+_FULL_DEFAULTS = {
+    "steps": 14,
+    "quantize": 8,
+    "guidance": 2.5,
+    "strength": 0.6,
+    "mlx_cache_gb": 8,
+    "battery_stop": 20,
+    "style": "anime",
+}
+
+
+def _run_dir_at(tmp_path) -> Path:
+    """Tests build iteration list against a non-existent run_dir — pure,
+    no FS side effects."""
+    return tmp_path / "run-2026-05-22-10-00-00"
+
+
+def _build(*, fake_styles, tmp_path, **overrides) -> list[Iteration]:
+    """Call _build_iterations with a sensible default kwarg set,
+    overriding only what the test cares about."""
+    kwargs = dict(
+        styles_list=["anime"],
+        args=_build_args(),
+        effective_custom_prompt=None,
+        merged_defaults=_FULL_DEFAULTS,
+        be=BACKENDS["flux"],
+        binary=Path("/fake/bin/mflux-generate-kontext"),
+        input_path=tmp_path / "photo.jpg",
+        width=1024,
+        height=1024,
+        explicit_output=None,
+        run_dir=_run_dir_at(tmp_path),
+        seed=42,
+    )
+    kwargs.update(overrides)
+    return _build_iterations(**kwargs)
+
+
+def test_build_iterations_single_style_preset_prompt(fake_styles, tmp_path):
+    """No CLI overrides, no scope → prompt comes verbatim from preset."""
+    fake_styles["anime"] = {
+        "prompt": "cinematic anime portrait of this person",
+        "negative": "bad anatomy",
+    }
+
+    its = _build(fake_styles=fake_styles, tmp_path=tmp_path)
+
+    assert len(its) == 1
+    it = its[0]
+    assert isinstance(it, Iteration)
+    assert it.style_name == "anime"
+    assert it.prompt == "cinematic anime portrait of this person"
+    assert it.negative == "bad anatomy"
+
+
+def test_build_iterations_negative_defaults_to_empty(fake_styles, tmp_path):
+    """Style without `negative` key → it.negative == "" (not None,
+    not missing — mflux gets an empty string)."""
+    fake_styles["anime"] = {"prompt": "x"}
+
+    its = _build(fake_styles=fake_styles, tmp_path=tmp_path)
+
+    assert its[0].negative == ""
+
+
+def test_build_iterations_uses_custom_prompt_over_preset(fake_styles, tmp_path):
+    fake_styles["anime"] = {"prompt": "PRESET PROMPT"}
+
+    its = _build(
+        fake_styles=fake_styles,
+        tmp_path=tmp_path,
+        effective_custom_prompt="MY OVERRIDE",
+    )
+
+    assert its[0].prompt == "MY OVERRIDE"
+
+
+def test_build_iterations_custom_prompt_ignores_scope(fake_styles, tmp_path):
+    """Scope-warn fires elsewhere (cmd_generate); the helper just must
+    NOT apply scope to a custom prompt — scope mutates 'this person'
+    inside preset prompts only."""
+    fake_styles["anime"] = {"prompt": "this person ignored"}
+
+    its = _build(
+        fake_styles=fake_styles,
+        tmp_path=tmp_path,
+        effective_custom_prompt="this person",  # has the scope-substring
+        args=_build_args(scope="man"),
+    )
+
+    # Custom prompt passed through verbatim — no scope substitution.
+    assert its[0].prompt == "this person"
+
+
+def test_build_iterations_scope_applied_to_preset_prompt(fake_styles, tmp_path):
+    """No custom prompt + scope=scene → apply_scope rewrites 'this person'
+    → 'this entire scene' in the preset prompt."""
+    fake_styles["anime"] = {"prompt": "portrait of this person, anime style"}
+
+    its = _build(
+        fake_styles=fake_styles,
+        tmp_path=tmp_path,
+        args=_build_args(scope="scene"),
+    )
+
+    # scope=scene swaps "this person" → "this entire scene".
+    assert "this person" not in its[0].prompt
+    assert "this entire scene" in its[0].prompt
+
+
+def test_build_iterations_scope_person_adds_suffix(fake_styles, tmp_path):
+    """scope=person appends a background-preservation suffix."""
+    fake_styles["anime"] = {"prompt": "portrait of this person"}
+
+    its = _build(
+        fake_styles=fake_styles,
+        tmp_path=tmp_path,
+        args=_build_args(scope="person"),
+    )
+
+    assert its[0].prompt.startswith("portrait of this person")
+    assert "background" in its[0].prompt
+
+
+# ── _build_iterations precedence: CLI > preset > preview > defaults ─────
+
+def test_build_iterations_steps_cli_beats_preset_and_preview(
+    fake_styles, tmp_path
+):
+    fake_styles["anime"] = {"prompt": "x", "steps": 18}
+
+    its = _build(
+        fake_styles=fake_styles,
+        tmp_path=tmp_path,
+        args=_build_args(steps=25, preview=True),
+    )
+
+    assert its[0].final_steps == 25
+
+
+def test_build_iterations_steps_preview_beats_defaults(fake_styles, tmp_path):
+    """Note: preview overrides preset+default for steps (PREVIEW_OVERRIDES
+    is checked before merged_defaults, but AFTER CLI). Preset.steps is
+    NOT in the precedence chain for steps — only CLI > preview > merged
+    defaults applies. This is intentional from v0.1.x — preset shouldn't
+    pin steps because the user picks --preview for speed."""
+    fake_styles["anime"] = {"prompt": "x"}
+
+    its = _build(
+        fake_styles=fake_styles,
+        tmp_path=tmp_path,
+        args=_build_args(preview=True),
+    )
+
+    # PREVIEW_OVERRIDES["steps"] == 8 in current defaults; assert via import.
+    from imgen.defaults import PREVIEW_OVERRIDES
+    assert its[0].final_steps == PREVIEW_OVERRIDES["steps"]
+
+
+def test_build_iterations_steps_falls_back_to_merged_defaults(
+    fake_styles, tmp_path
+):
+    fake_styles["anime"] = {"prompt": "x"}
+
+    its = _build(fake_styles=fake_styles, tmp_path=tmp_path)
+
+    assert its[0].final_steps == _FULL_DEFAULTS["steps"]
+
+
+def test_build_iterations_quantize_cli_wins(fake_styles, tmp_path):
+    fake_styles["anime"] = {"prompt": "x"}
+
+    its = _build(
+        fake_styles=fake_styles,
+        tmp_path=tmp_path,
+        args=_build_args(quantize=4, preview=True),
+    )
+
+    assert its[0].final_quantize == 4
+
+
+def test_build_iterations_quantize_preview_beats_defaults(
+    fake_styles, tmp_path
+):
+    fake_styles["anime"] = {"prompt": "x"}
+
+    its = _build(
+        fake_styles=fake_styles,
+        tmp_path=tmp_path,
+        args=_build_args(preview=True),
+    )
+
+    from imgen.defaults import PREVIEW_OVERRIDES
+    assert its[0].final_quantize == PREVIEW_OVERRIDES["quantize"]
+
+
+def test_build_iterations_guidance_cli_beats_preset(fake_styles, tmp_path):
+    fake_styles["anime"] = {"prompt": "x", "guidance": 3.5}
+
+    its = _build(
+        fake_styles=fake_styles,
+        tmp_path=tmp_path,
+        args=_build_args(guidance=5.0),
+    )
+
+    assert its[0].final_guidance == pytest.approx(5.0)
+
+
+def test_build_iterations_guidance_preset_beats_defaults(
+    fake_styles, tmp_path
+):
+    """Unlike steps, guidance precedence is CLI > preset > defaults —
+    preview has no opinion on guidance."""
+    fake_styles["anime"] = {"prompt": "x", "guidance": 3.5}
+
+    its = _build(fake_styles=fake_styles, tmp_path=tmp_path)
+
+    assert its[0].final_guidance == pytest.approx(3.5)
+
+
+def test_build_iterations_guidance_falls_back_to_defaults(
+    fake_styles, tmp_path
+):
+    fake_styles["anime"] = {"prompt": "x"}  # no guidance key
+
+    its = _build(fake_styles=fake_styles, tmp_path=tmp_path)
+
+    assert its[0].final_guidance == pytest.approx(
+        _FULL_DEFAULTS["guidance"]
+    )
+
+
+def test_build_iterations_strength_cli_beats_preset(fake_styles, tmp_path):
+    fake_styles["anime"] = {"prompt": "x", "strength": 0.55}
+
+    its = _build(
+        fake_styles=fake_styles,
+        tmp_path=tmp_path,
+        args=_build_args(strength=0.9),
+    )
+
+    assert its[0].final_strength == pytest.approx(0.9)
+
+
+def test_build_iterations_strength_preset_beats_defaults(
+    fake_styles, tmp_path
+):
+    fake_styles["anime"] = {"prompt": "x", "strength": 0.55}
+
+    its = _build(fake_styles=fake_styles, tmp_path=tmp_path)
+
+    assert its[0].final_strength == pytest.approx(0.55)
+
+
+def test_build_iterations_strength_falls_back_to_defaults(
+    fake_styles, tmp_path
+):
+    fake_styles["anime"] = {"prompt": "x"}
+
+    its = _build(fake_styles=fake_styles, tmp_path=tmp_path)
+
+    assert its[0].final_strength == pytest.approx(
+        _FULL_DEFAULTS["strength"]
+    )
+
+
+# ── _build_iterations multi-style + output_path resolution ──────────────
+
+def test_build_iterations_multi_style_one_per_name(fake_styles, tmp_path):
+    """List length matches styles_list len; order preserved."""
+    fake_styles["anime"] = {"prompt": "a"}
+    fake_styles["ghibli"] = {"prompt": "g"}
+    fake_styles["pixar"] = {"prompt": "p"}
+
+    its = _build(
+        fake_styles=fake_styles,
+        tmp_path=tmp_path,
+        styles_list=["anime", "ghibli", "pixar"],
+    )
+
+    assert [it.style_name for it in its] == ["anime", "ghibli", "pixar"]
+    assert [it.prompt for it in its] == ["a", "g", "p"]
+
+
+def test_build_iterations_output_path_uses_run_dir(fake_styles, tmp_path):
+    """run_dir mode: each iteration → <run_dir>/<input.stem>-<style>.png."""
+    fake_styles["anime"] = {"prompt": "x"}
+    fake_styles["ghibli"] = {"prompt": "y"}
+    input_path = tmp_path / "vacation.jpg"
+    run_dir = tmp_path / "run-1"
+
+    its = _build(
+        fake_styles=fake_styles,
+        tmp_path=tmp_path,
+        styles_list=["anime", "ghibli"],
+        input_path=input_path,
+        explicit_output=None,
+        run_dir=run_dir,
+    )
+
+    assert its[0].output_path == run_dir / "vacation-anime.png"
+    assert its[1].output_path == run_dir / "vacation-ghibli.png"
+
+
+def test_build_iterations_explicit_output_overrides_run_dir(
+    fake_styles, tmp_path
+):
+    """--output FILE mode: every iteration uses the explicit path. (In
+    practice multi-style + --output is rejected upstream, but the
+    helper itself doesn't enforce — defensive that it still produces
+    something coherent.)"""
+    fake_styles["anime"] = {"prompt": "x"}
+    explicit = tmp_path / "forced.png"
+
+    its = _build(
+        fake_styles=fake_styles,
+        tmp_path=tmp_path,
+        explicit_output=explicit,
+        run_dir=None,
+    )
+
+    assert its[0].output_path == explicit
+
+
+# ── _build_iterations contract guarantees ───────────────────────────────
+
+def test_build_iterations_returns_iteration_dataclass_not_dict(
+    fake_styles, tmp_path
+):
+    """Item 2's Iteration is the new typed contract — verify the helper
+    returns it, not a dict (v0.2.3 shape)."""
+    fake_styles["anime"] = {"prompt": "x"}
+
+    its = _build(fake_styles=fake_styles, tmp_path=tmp_path)
+
+    assert all(isinstance(it, Iteration) for it in its)
+
+
+def test_build_iterations_iteration_is_frozen(fake_styles, tmp_path):
+    fake_styles["anime"] = {"prompt": "x"}
+
+    its = _build(fake_styles=fake_styles, tmp_path=tmp_path)
+
+    with pytest.raises((AttributeError, TypeError)):
+        its[0].style_name = "ghibli"  # type: ignore[misc]
+
+
+def test_build_iterations_cmd_is_list_of_str(fake_styles, tmp_path):
+    """Smoke check: build_mflux_cmd was called, result stored in
+    it.cmd as a list of strings ready for subprocess.Popen."""
+    fake_styles["anime"] = {"prompt": "x"}
+
+    its = _build(fake_styles=fake_styles, tmp_path=tmp_path)
+
+    assert isinstance(its[0].cmd, list)
+    assert all(isinstance(arg, str) for arg in its[0].cmd)
+    assert "/fake/bin/mflux-generate-kontext" in its[0].cmd
