@@ -53,6 +53,20 @@ def resolve_prompt(
     if custom_prompt == "-":
         return _read_stdin(stdin)
 
+    # Empty / whitespace-only literal prompt: fail fast rather than
+    # silently fall through. Pre-v0.3.5 the falsy empty string would
+    # treat `effective_custom_prompt` as "no custom prompt" in the
+    # dispatch downstream — the preset prompt would be used instead,
+    # and the user wouldn't know their --custom-prompt was ignored.
+    # v0.3.5 made `imgen photo.jpg --custom-prompt "..."` a primary
+    # UX path (no-style augmentation lift), so this gap is newly
+    # reachable. (v0.3.5 reviewer HIGH.)
+    if custom_prompt is not None and not custom_prompt.strip():
+        raise PromptInputError(
+            "--custom-prompt is empty — pass actual prompt text, "
+            "or use '-' to read from stdin"
+        )
+
     return custom_prompt  # a literal string, or None
 
 

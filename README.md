@@ -94,6 +94,8 @@ strength = 0.7
 
 Use a full style with `-s noir`. Use a param-only style by combining with `--custom-prompt`: `imgen photo.jpg -s punchy --custom-prompt "..."` — the style supplies the tuning, the CLI supplies the prompt.
 
+**`--custom-prompt` augmentation** (v0.3.5+): with a full style, `--custom-prompt` AUGMENTS the style prompt rather than replacing it — the user's text is appended as a trailing detail. `imgen photo.jpg -s anime,ghibli,pixar --custom-prompt "wearing a red kimono"` runs three generations, each preserving its style's tuned prompt with the kimono detail tacked on. Without an explicit `--style`, `--custom-prompt` is the sole prompt content and the default style only contributes its tuning params (so `imgen photo.jpg --custom-prompt "sepia film still"` works without any style prompt blending in).
+
 If a user style's filename clashes with a built-in (e.g. `styles.d/anime.toml`), it gets registered as `anime_0001` (`_0002`, `_0003`, …) with a warning, and the built-in stays accessible as `anime`. Built-ins always win on name; the suffix mechanism makes overrides explicit.
 
 ## All commands
@@ -106,7 +108,8 @@ imgen <photo> --style anime,ghibli,pixar       # multi-style — M images into o
 imgen <photo> --style anime,ghibli --yes       # multi-style, skip the confirm gate
 imgen <photo> --output-dir ~/Pictures/runs     # change parent of the timestamped run folder
 imgen <photo> -o explicit.png                  # bypass run-folder layout (mutex with --output-dir)
-imgen <photo> --custom-prompt "..."            # free-form (visible in `ps auxww` — see below)
+imgen <photo> --custom-prompt "..."            # v0.3.5+: with --style → augments preset; without --style → sole prompt
+imgen <photo> -s anime,ghibli --custom-prompt "wearing a red kimono"  # shared addition across all styles
 imgen <photo> --custom-prompt -                # ← read prompt from stdin (hidden from ps)
 imgen <photo> --prompt-file ~/prompts/x.txt    # ← read prompt from file (hidden from ps)
 imgen <photo> -s anime --preview               # fast mode (~3-10 min)
@@ -118,6 +121,7 @@ imgen <photo> --force                          # skip resource preflight checks
 # Batch a folder (v0.3.0+) — same flags as generate except no -o/--output (always run-folder layout)
 imgen batch <dir>                              # every photo × default style → one timestamped folder
 imgen batch <dir> --style anime,ghibli,pixar   # N × M into one folder, named <input>-<style>.png
+imgen batch <dir> -s anime --custom-prompt "..." # v0.3.5+: shared --custom-prompt augmentation across every input
 imgen batch <dir> --style anime --yes          # skip the N×M confirm gate
 imgen batch <dir> --dry-run                    # show every mflux command without running
 
@@ -125,6 +129,7 @@ imgen batch <dir> --dry-run                    # show every mflux command withou
 imgen doctor                                   # env + RAM forecast + cached models
 imgen --list-styles                            # show presets
 imgen --dry-run <photo> -s anime               # show mflux command, don't run
+imgen -v   /   imgen --version                 # v0.3.5+: both forms print the version
 
 # Maintenance
 imgen setup                                    # rerun setup (e.g. fix token)

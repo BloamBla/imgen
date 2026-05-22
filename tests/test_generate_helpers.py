@@ -237,43 +237,40 @@ def test_check_prompt_style_compat_custom_prompt_with_param_only_ok(fake_styles)
     )
 
 
-def test_check_prompt_style_compat_custom_prompt_with_prompt_bearing_rejected(
-    fake_styles, capsys
+def test_check_prompt_style_compat_custom_prompt_with_prompt_bearing_ok(
+    fake_styles,
 ):
-    """Style that ships its own prompt can't combine with --custom-prompt
-    — would be two prompts fighting for the slot."""
+    """v0.3.5: full-style + --custom-prompt is now LEGAL — the two
+    combine via augmentation (preset prompt + ", " + custom) inside
+    build_iterations. Pre-v0.3.5 this case died with a mutex error;
+    the lift fixes the UX wart where `imgen photo.jpg --custom-prompt
+    "..."` died because the default style (pixar) had a prompt."""
     fake_styles["anime"] = {"prompt": "anime portrait", "strength": 0.6}
 
-    with pytest.raises(SystemExit) as exc_info:
-        check_prompt_style_compat(
-            styles_list=["anime"],
-            effective_custom_prompt="my custom prompt",
-        )
-    assert exc_info.value.code == 2
-    err = capsys.readouterr().err
-    assert "can't combine with --custom-prompt" in err
-    assert "anime" in err
+    # Must not raise — the combination is now supported via
+    # augmentation; check_prompt_style_compat returns None.
+    check_prompt_style_compat(
+        styles_list=["anime"],
+        effective_custom_prompt="my custom prompt",
+    )
 
 
-def test_check_prompt_style_compat_lists_all_offenders_in_multi_style(
-    fake_styles, capsys
+def test_check_prompt_style_compat_multi_style_with_custom_prompt_ok(
+    fake_styles,
 ):
-    """User should see every clashing style at once, not have to fix
-    one and re-run to discover the next."""
+    """v0.3.5: multi-style with --custom-prompt is fully supported —
+    each full-style augments with the same custom text (canonical use:
+    `-s anime,ghibli,pixar --custom-prompt "wearing a red kimono"`),
+    and any param-only styles in the mix use the custom prompt as the
+    sole prompt content with their tuning params. No die."""
     fake_styles["anime"] = {"prompt": "anime portrait", "strength": 0.6}
     fake_styles["ghibli"] = {"prompt": "ghibli scene", "strength": 0.5}
     fake_styles["paramonly"] = {"strength": 0.7}
 
-    with pytest.raises(SystemExit):
-        check_prompt_style_compat(
-            styles_list=["anime", "paramonly", "ghibli"],
-            effective_custom_prompt="custom",
-        )
-    err = capsys.readouterr().err
-    assert "anime" in err
-    assert "ghibli" in err
-    # paramonly is fine — should NOT be listed as an offender
-    assert "paramonly" not in err.split("can't combine")[1].split(".")[0]
+    check_prompt_style_compat(
+        styles_list=["anime", "paramonly", "ghibli"],
+        effective_custom_prompt="custom",
+    )
 
 
 def test_check_prompt_style_compat_no_prompt_with_prompt_bearing_style_ok(
@@ -735,6 +732,155 @@ def test_build_iterations_scope_none_explicit_keeps_preset_verbatim(
     assert its[0].prompt == (
         "Transform this person into anime, keep face identity"
     )
+
+
+# ── v0.3.5: --custom-prompt augmentation ───────────────────────────────
+
+
+def test_build_iterations_augmentation_full_style_plus_custom_prompt(
+    fake_styles, tmp_path,
+):
+    """v0.3.5 canonical augmentation: explicit full-style + custom-prompt
+    → preset_prompt + ", " + custom. Single common addition applied
+    across one (or many) styles in the same invocation."""
+    fake_styles["anime"] = {
+        "prompt": "anime portrait of this person",
+    }
+
+    its = _build(
+        fake_styles=fake_styles, tmp_path=tmp_path,
+        styles_list=["anime"],
+        effective_custom_prompt="wearing a red kimono",
+        args=_build_args(scope=None, style=["anime"]),
+    )
+
+    assert its[0].prompt == (
+        "anime portrait of this person, wearing a red kimono"
+    )
+
+
+def test_build_iterations_augmentation_multi_style_shares_custom_addition(
+    fake_styles, tmp_path,
+):
+    """The headline use case: `-s anime,ghibli,pixar --custom-prompt
+    "wearing a red kimono"` — every full-style iteration augments with
+    the same user addition. Style varies; user's common detail stays
+    constant across all M outputs."""
+    fake_styles["anime"] = {"prompt": "anime portrait"}
+    fake_styles["ghibli"] = {"prompt": "ghibli scene"}
+    fake_styles["pixar"] = {"prompt": "pixar render"}
+
+    its = _build(
+        fake_styles=fake_styles, tmp_path=tmp_path,
+        styles_list=["anime", "ghibli", "pixar"],
+        effective_custom_prompt="wearing a red kimono",
+        args=_build_args(scope=None, style=["anime", "ghibli", "pixar"]),
+    )
+
+    assert [it.prompt for it in its] == [
+        "anime portrait, wearing a red kimono",
+        "ghibli scene, wearing a red kimono",
+        "pixar render, wearing a red kimono",
+    ]
+
+
+def test_build_iterations_augmentation_scope_applies_to_base_not_addition(
+    fake_styles, tmp_path,
+):
+    """Scope rewrites the BASE preset prompt only; the user's added
+    text is passed through verbatim. Otherwise scope-mode replacements
+    could accidentally touch user wording (e.g. the user wrote 'this
+    person at a beach' meaning the original subject — scope=scene
+    must not rewrite that to 'this entire scene at a beach' inside
+    the user's addition)."""
+    fake_styles["anime"] = {
+        "prompt": "Transform this person into anime"
+    }
+
+    its = _build(
+        fake_styles=fake_styles, tmp_path=tmp_path,
+        styles_list=["anime"],
+        effective_custom_prompt="with this person at a beach",
+        args=_build_args(scope="scene", style=["anime"]),
+    )
+    prompt = its[0].prompt
+
+    # Base preset has its "Transform this person" → "Transform this
+    # entire scene" rewritten by scope=scene.
+    assert "Transform this entire scene" in prompt
+    # User's verbatim "this person at a beach" survives intact —
+    # not rewritten to "this entire scene at a beach".
+    assert "this person at a beach" in prompt
+
+
+def test_build_iterations_custom_prompt_without_explicit_style_uses_only_custom(
+    fake_styles, tmp_path,
+):
+    """v0.3.5 UX wart fix: a bare `imgen photo.jpg --custom-prompt
+    "make sepia"` no longer dies and no longer blends the default
+    style's prompt with the user's text. Without explicit --style,
+    custom-prompt is the SOLE prompt content; default style only
+    contributes its tuning params (guidance/strength/etc.).
+
+    Detection: `args.style` is falsy (parser fell back to the default).
+    """
+    # Default style is "anime" via merged_defaults fallback; it has
+    # a prompt, but augmentation must NOT trigger because --style
+    # wasn't explicit.
+    fake_styles["anime"] = {"prompt": "anime portrait of this person"}
+
+    its = _build(
+        fake_styles=fake_styles, tmp_path=tmp_path,
+        styles_list=["anime"],
+        effective_custom_prompt="make this sepia",
+        args=_build_args(scope=None, style=None),  # no explicit --style
+    )
+
+    # Custom prompt is the whole content — default style's prompt
+    # ("anime portrait of this person") is NOT included.
+    assert its[0].prompt == "make this sepia"
+    assert "anime portrait" not in its[0].prompt
+
+
+def test_build_iterations_param_only_style_plus_custom_prompt_uses_only_custom(
+    fake_styles, tmp_path,
+):
+    """Param-only style (no `prompt` field) + custom-prompt is the
+    v0.2.x path that already worked: style provides tuning params,
+    user provides prompt. v0.3.5 must preserve this — augmentation
+    only kicks in when the style actually has a `prompt`."""
+    fake_styles["punchy"] = {"strength": 0.7, "guidance": 5.0}  # no prompt
+
+    its = _build(
+        fake_styles=fake_styles, tmp_path=tmp_path,
+        styles_list=["punchy"],
+        effective_custom_prompt="render as a 1950s noir film still",
+        args=_build_args(scope=None, style=["punchy"]),
+    )
+
+    assert its[0].prompt == "render as a 1950s noir film still"
+    # And the param-only style's tuning applied.
+    assert its[0].final_strength == 0.7
+    assert its[0].final_guidance == 5.0
+
+
+def test_build_iterations_augmentation_no_double_comma_on_clean_base(
+    fake_styles, tmp_path,
+):
+    """Augmentation always joins with ", " — guards against double-
+    comma artifacts if a future preset prompt accidentally ends in
+    a comma. Also asserts spacing is clean."""
+    fake_styles["anime"] = {"prompt": "anime portrait"}
+
+    its = _build(
+        fake_styles=fake_styles, tmp_path=tmp_path,
+        styles_list=["anime"],
+        effective_custom_prompt="cinematic lighting",
+        args=_build_args(scope=None, style=["anime"]),
+    )
+
+    assert ", , " not in its[0].prompt
+    assert its[0].prompt == "anime portrait, cinematic lighting"
 
 
 def test_build_iterations_negative_defaults_to_empty(fake_styles, tmp_path):

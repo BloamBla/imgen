@@ -138,31 +138,36 @@ def check_prompt_style_compat(
     styles_list: list[str],
     effective_custom_prompt: str | None,
 ) -> None:
-    """Reject incompatible (prompt, style) combinations upfront.
+    """Reject only the genuinely incompatible (prompt, style) combos.
 
-    Strict mutex: every listed style must either HAVE its own ``prompt``
-    (then no --custom-prompt allowed) OR be param-only (then a CLI
-    prompt is required). Mixed lists fail with the full offender list so
-    the user can split into two invocations in one shot, not iteratively.
+    v0.3.5: `--custom-prompt` now AUGMENTS full-style prompts rather
+    than replacing them — the augmentation logic lives in
+    :func:`build_iterations`. The only remaining incompatibility is
+    "param-only style + no prompt source": a style with no built-in
+    `prompt` field and no `--custom-prompt` / `--prompt-file` leaves
+    the iteration with nothing to send mflux.
 
-    Raises SystemExit(2) on incompatibility. Returns None on success.
+    Pre-v0.3.5 there was a second mutex (full-style + custom-prompt)
+    that's now lifted — see :func:`build_iterations` for the
+    augmentation semantics. The UX wart where a bare
+    ``imgen photo.jpg --custom-prompt "..."`` invocation died because
+    the default style "pixar" had a prompt is also fixed by the lift.
+
+    Raises SystemExit(2) on the remaining incompatibility. Returns
+    None on success.
     """
     if effective_custom_prompt:
-        prompt_bearing = [s for s in styles_list if get_style(s).get("prompt")]
-        if prompt_bearing:
-            die(f"Style(s) with their own prompt can't combine with "
-                f"--custom-prompt / --prompt-file: {', '.join(prompt_bearing)}.",
-                code=2,
-                hint="Split into two invocations, or use only param-only "
-                     "styles (from ~/.imgen/styles.d/, no `prompt` field).")
-    else:
-        missing_prompt = [s for s in styles_list if not get_style(s).get("prompt")]
-        if missing_prompt:
-            die(f"Style(s) without a prompt: {', '.join(missing_prompt)}. "
-                "Pass --custom-prompt (or --prompt-file) to supply one.",
-                code=2,
-                hint="Param-only styles in ~/.imgen/styles.d/ need a "
-                     "CLI-supplied prompt.")
+        # v0.3.5: full-style + custom-prompt now augment — see
+        # build_iterations. Nothing to reject here.
+        return
+    # No custom prompt → every listed style must have its own.
+    missing_prompt = [s for s in styles_list if not get_style(s).get("prompt")]
+    if missing_prompt:
+        die(f"Style(s) without a prompt: {', '.join(missing_prompt)}. "
+            "Pass --custom-prompt (or --prompt-file) to supply one.",
+            code=2,
+            hint="Param-only styles in ~/.imgen/styles.d/ need a "
+                 "CLI-supplied prompt.")
 
 
 # ── Output layout ───────────────────────────────────────────────────────
@@ -527,13 +532,48 @@ def build_iterations(
     Returns ``list[Iteration]`` (frozen) — caller may not mutate entries.
     """
     iterations: list[Iteration] = []
+    # `args.style` is None when the parser fell back to merged_defaults
+    # for the default style (no explicit --style passed). Used below to
+    # gate augmentation: if user didn't explicitly pick a style, their
+    # `--custom-prompt` should drive the prompt content entirely rather
+    # than augment the default style's prompt — otherwise a bare
+    # `imgen photo.jpg --custom-prompt "make sepia"` would produce
+    # "Pixar 3D character + sepia" which is nonsense for that invocation
+    # shape. (v0.3.5 UX wart fix.)
+    style_was_explicit = bool(getattr(args, "style", None))
+
     for style_name in styles_list:
         preset = get_style(style_name)
+        preset_prompt = preset.get("prompt")
 
-        if effective_custom_prompt:
+        if effective_custom_prompt and preset_prompt and style_was_explicit:
+            # v0.3.5 augmentation: explicit full-style + custom-prompt
+            # → preset prompt is the BASE (scope applied to it), then
+            # user's --custom-prompt text is appended as a final detail.
+            # Lets the user share one common addition ("wearing a red
+            # kimono") across multiple styles in the same invocation
+            # via `-s anime,ghibli,pixar --custom-prompt "..."`.
+            #
+            # Scope applies only to the base — the user's added text is
+            # passed through verbatim so scope-mode replacements don't
+            # accidentally touch user wording (e.g. their literal
+            # "this person" stays "this person", not rewritten).
+            base = preset_prompt
+            if args.scope:
+                base = apply_scope(base, args.scope)
+            prompt = base + ", " + effective_custom_prompt
+        elif effective_custom_prompt:
+            # Custom-only path:
+            #   * param-only style (no `prompt` field) — style provides
+            #     params, user provides the prompt
+            #   * OR no explicit --style — default style's params apply
+            #     but its prompt is bypassed (UX wart fix: a bare
+            #     `imgen photo.jpg --custom-prompt "..."` no longer
+            #     blends the default Pixar prompt with the user's text)
             prompt = effective_custom_prompt
         else:
-            prompt = preset["prompt"]
+            # No custom-prompt → preset prompt is the prompt.
+            prompt = preset_prompt
             if args.scope:
                 prompt = apply_scope(prompt, args.scope)
 

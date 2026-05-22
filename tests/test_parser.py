@@ -135,3 +135,39 @@ def test_generate_scope_scene_explicit_still_works():
     parser = build_parser()
     args = parser.parse_args(["generate", "photo.jpg", "--scope", "scene"])
     assert args.scope == "scene"
+
+
+# ── -v short flag for --version (v0.3.5) ───────────────────────────────
+
+
+def test_short_v_prints_version_and_exits(capsys):
+    """v0.3.5: `imgen -v` mirrors `--version`. node/npm/pip ergonomics
+    — every user types `imgen -v` first; previously got "unrecognized
+    arguments"."""
+    from imgen import __version__
+
+    parser = build_parser()
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["-v"])
+    # argparse's version action exits 0
+    assert exc.value.code == 0
+    captured = capsys.readouterr()
+    # argparse writes version output to stdout
+    assert __version__ in captured.out
+
+
+def test_short_v_and_long_version_both_print_same(capsys):
+    """`-v` and `--version` must produce identical output."""
+    from imgen import __version__
+
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["-v"])
+    short_out = capsys.readouterr().out
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--version"])
+    long_out = capsys.readouterr().out
+
+    assert short_out == long_out
+    assert __version__ in short_out

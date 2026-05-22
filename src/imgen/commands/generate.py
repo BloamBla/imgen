@@ -160,10 +160,13 @@ def cmd_generate(args) -> int:
     # 3a) Pre-flight mutex per style (multi-style: ALL items must agree).
     check_prompt_style_compat(styles_list, effective_custom_prompt)
 
-    # 3b) Scope on custom prompts is a no-op — warn once, not per style.
-    if args.scope and effective_custom_prompt:
-        warn(f"--scope={args.scope} ignored when using a custom prompt "
-             "(--custom-prompt / --prompt-file)")
+    # v0.3.5: scope semantics with --custom-prompt — applies to the
+    # PRESET portion of an augmented prompt, NOT to the user's added
+    # text (build_iterations passes the user text through verbatim).
+    # In custom-only paths (no explicit --style, or param-only style)
+    # there's no preset prompt to scope, so scope is effectively a
+    # no-op there — but warning every time would be noisy and we now
+    # document this behaviour in --scope --help instead.
 
     # 3c) HEIC pre-conversion (v0.3.0 bonus — also fixes the v0.2.x bug
     # where `imgen generate vacation.heic` died with a cryptic mflux

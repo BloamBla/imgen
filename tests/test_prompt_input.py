@@ -183,3 +183,39 @@ def test_both_dash_and_prompt_file_also_raises(tmp_path):
         resolve_prompt(
             custom_prompt="-", prompt_file=p, stdin=io.StringIO("piped")
         )
+
+
+# ── v0.3.5: empty literal --custom-prompt rejected ─────────────────────
+
+
+@pytest.mark.parametrize("empty_form", ["", "   ", "\n", "\t\n  "])
+def test_empty_literal_custom_prompt_raises(empty_form):
+    """v0.3.5 reviewer HIGH: an empty / whitespace-only literal
+    --custom-prompt used to silently fall through to the preset prompt
+    because empty string is falsy in the build_iterations dispatch.
+    With the v0.3.5 augmentation lift making bare
+    `imgen photo.jpg --custom-prompt "..."` a documented path, this
+    silent no-op became newly reachable as a user surprise.
+
+    resolve_prompt now fails fast with a clear hint pointing at '-'
+    for stdin if the user wants prompt input that's not on argv."""
+    with pytest.raises(PromptInputError, match="empty"):
+        resolve_prompt(custom_prompt=empty_form, prompt_file=None)
+
+
+def test_dash_still_works_after_empty_guard():
+    """The empty-guard must NOT catch '-' (stdin sentinel). Locks the
+    boundary against an over-broad empty check that would also match
+    the single-character dash."""
+    result = resolve_prompt(
+        custom_prompt="-", prompt_file=None, stdin=io.StringIO("piped")
+    )
+    assert result == "piped"
+
+
+def test_none_custom_prompt_still_returns_none():
+    """The empty-guard only fires on string values — None (no
+    --custom-prompt passed) still returns None so caller can fall
+    back to the preset path."""
+    result = resolve_prompt(custom_prompt=None, prompt_file=None)
+    assert result is None

@@ -182,9 +182,9 @@ def cmd_batch(args) -> int:
 
     check_prompt_style_compat(styles_list, effective_custom_prompt)
 
-    if args.scope and effective_custom_prompt:
-        warn(f"--scope={args.scope} ignored when using a custom prompt "
-             "(--custom-prompt / --prompt-file)")
+    # v0.3.5: see commands/generate.py for the scope+custom semantics
+    # commentary. Same applies here — augmentation = scope on preset
+    # base; custom-only = no scope target. No noisy per-batch warn.
 
     # 4) Output layout — batch never has --output, so this branch always
     # returns (None, run_dir).

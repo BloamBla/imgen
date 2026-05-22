@@ -101,7 +101,11 @@ def build_parser(
     # Top-level utility flags
     p.add_argument("--list-styles", action="store_true",
                    help="List style presets and exit")
-    p.add_argument("--version", action="version",
+    # v0.3.5: `-v` short flag added — `node -v`/`npm -v`/`pip -V` all
+    # use a single letter for version; users naturally try `imgen -v`
+    # first and were getting "unrecognized arguments". `-v` doesn't
+    # collide with any other flag in this parser (no -verbose mode).
+    p.add_argument("-v", "--version", action="version",
                    version=f"imgen {__version__}")
 
     sub = p.add_subparsers(dest="command", metavar="COMMAND")
@@ -169,9 +173,11 @@ def _add_generate_args(
              f"(default: {defaults['style']}). See: imgen --list-styles",
     )
     p.add_argument("--custom-prompt",
-                   help="Custom prompt text (overrides --style's prompt). "
-                        "Pass '-' to read from stdin — useful when the prompt "
-                        "shouldn't appear in `ps auxww`.")
+                   help="Custom prompt text. With an explicit --style and "
+                        "a full preset, AUGMENTS the preset prompt (appended "
+                        "as a final detail — v0.3.5+). Without --style, "
+                        "becomes the sole prompt. Pass '-' to read from "
+                        "stdin (hides the prompt from `ps auxww`).")
     p.add_argument("--prompt-file", type=Path, default=None,
                    help="Read prompt from PATH instead of an argv string. "
                         "Mutually exclusive with --custom-prompt. Keeps "
@@ -252,9 +258,11 @@ def _add_batch_args(
              f"(default: {defaults['style']}). See: imgen --list-styles",
     )
     p.add_argument("--custom-prompt",
-                   help="Custom prompt text (overrides --style's prompt). "
-                        "Pass '-' to read from stdin — hides the prompt "
-                        "from `ps auxww`.")
+                   help="Custom prompt text. With an explicit --style and "
+                        "a full preset, AUGMENTS the preset prompt (appended "
+                        "as a final detail — v0.3.5+). Without --style, "
+                        "becomes the sole prompt. Pass '-' to read from "
+                        "stdin (hides from `ps auxww`).")
     p.add_argument("--prompt-file", type=Path, default=None,
                    help="Read prompt from PATH instead of an argv string. "
                         "Mutually exclusive with --custom-prompt.")
