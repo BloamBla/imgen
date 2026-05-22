@@ -180,3 +180,18 @@ def test_check_alias_skips_rc_file_without_imgen_alias(tmp_path):
     )
 
     assert check_alias_consistency(tmp_path, imgen_home) == []
+
+
+# ── Single source of truth — setup write list == doctor read list ───────
+
+
+def test_doctor_reads_exactly_the_files_setup_writes():
+    """v0.3.6 architect IMP-1: pre-fix, doctor.py read `.bashrc` (which
+    setup.py never wrote to) and missed nothing else. Both modules now
+    share `shell_rc.py` so any future shell addition stays symmetric
+    by construction. This test locks the symmetry so re-introducing a
+    divergence (e.g. doctor adding a "defensive" extra rc target) gets
+    caught at test time."""
+    from imgen.shell_rc import ALL_RC_FILES_REL, RC_FILE_BY_SHELL
+    # The set of files setup.py CAN write to equals the set doctor reads.
+    assert set(ALL_RC_FILES_REL) == set(RC_FILE_BY_SHELL.values())

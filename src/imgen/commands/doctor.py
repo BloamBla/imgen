@@ -26,19 +26,9 @@ from ..paths import (
     STATE_DIR,
     VENV_BIN,
 )
+from ..shell_rc import ALL_RC_FILES_REL
 from ..styles import BUILTIN_STYLES, list_styles, load_user_styles_dir
 from ..tokens import active_token_path, check_token_perms, load_token
-
-# Shell rc files where setup.py may have written `alias imgen=<path>`.
-# Order matters only for the "first hit wins" tie-break — divergence
-# across multiple shells is surfaced for each file independently so the
-# user sees every stale entry.
-_RC_FILES_REL = (
-    Path(".zshrc"),
-    Path(".bash_profile"),
-    Path(".bashrc"),
-    Path(".config") / "fish" / "config.fish",
-)
 
 # Matches `alias imgen=<value>` at line start (allowing leading
 # whitespace). The value is captured greedily to end-of-line and then
@@ -91,7 +81,7 @@ def check_alias_consistency(
         return []
     expected = (imgen_home / "imgen").resolve()
     results: list[tuple[Path, Path, str]] = []
-    for rel in _RC_FILES_REL:
+    for rel in ALL_RC_FILES_REL:
         rc = home / rel
         if not rc.exists():
             continue

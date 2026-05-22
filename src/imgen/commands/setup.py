@@ -11,6 +11,7 @@ from pathlib import Path
 from ..checks import check_mflux, check_venv
 from ..colors import C, dim, die, info, ok, step, warn
 from ..defaults import DEFAULTS
+from ..shell_rc import RC_FILE_BY_SHELL
 from ..paths import (
     CONFIG_FILE,
     DEFAULT_OUTPUT_DIR,
@@ -190,12 +191,8 @@ def cmd_setup(_args) -> int:
         info("Shell alias")
         shell_path = os.environ.get("SHELL", "")
         shell_name = Path(shell_path).name if shell_path else ""
-        rc_files = {
-            "zsh": Path.home() / ".zshrc",
-            "bash": Path.home() / ".bash_profile",
-            "fish": Path.home() / ".config" / "fish" / "config.fish",
-        }
-        rc_file = rc_files.get(shell_name)
+        rc_file_rel = RC_FILE_BY_SHELL.get(shell_name)
+        rc_file = (Path.home() / rc_file_rel) if rc_file_rel else None
         # shlex.quote() safely escapes paths containing quotes, spaces,
         # $, ;, etc. so a repo cloned into a weird directory can't inject
         # shell code.
