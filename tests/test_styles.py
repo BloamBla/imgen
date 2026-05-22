@@ -105,6 +105,22 @@ def test_get_style_unknown_raises_keyerror_with_hint():
     assert "anime" in msg  # at least one known style listed
 
 
+def test_get_style_unknown_raises_stylenotfound_subclass():
+    """v0.3.6: raise StyleNotFound (KeyError subclass) so existing
+    `except KeyError` handlers still match, but the friendly __str__
+    avoids KeyError's repr-style quoting around the message.
+    (python #21 from v0.1.x review.)"""
+    from imgen.styles import StyleNotFound
+    with pytest.raises(StyleNotFound) as exc_info:
+        get_style("nonexistent_style_xyz")
+    # Subclass relationship: legacy `except KeyError` callers still catch.
+    assert isinstance(exc_info.value, KeyError)
+    # Clean __str__ — no surrounding quotes like KeyError would add.
+    msg = str(exc_info.value)
+    assert msg.startswith("Unknown style 'nonexistent_style_xyz'.")
+    assert not msg.startswith('"'), "StyleNotFound must not inherit KeyError repr-quoting"
+
+
 # ── parse_style_list (v0.2.3 plumbing for multi-style CLI) ──────────────
 
 def test_parse_style_list_single_style_returns_one_element_list():

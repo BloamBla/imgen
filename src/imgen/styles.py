@@ -28,6 +28,7 @@ __all__ = [
     "BUILTIN_STYLES",
     "STYLES",
     "USER_STYLE_MAX_BYTES",
+    "StyleNotFound",
     "UserStyleError",
     "get_style",
     "list_styles",
@@ -37,6 +38,20 @@ __all__ = [
     "parse_style_list",
     "reset_styles_cache",
 ]
+
+
+class StyleNotFound(KeyError):
+    """Raised by ``get_style`` when the requested style name is unknown.
+
+    Subclass of ``KeyError`` so existing ``except KeyError`` handlers
+    (e.g. ``cmd_helpers.resolve_styles_list``) keep matching, but with
+    a clean ``__str__`` that avoids ``KeyError``'s historical
+    repr-quoting (``"'msg'"`` instead of ``msg``). (python #21 from
+    the v0.1.x review.)
+    """
+
+    def __str__(self) -> str:
+        return self.args[0] if self.args else ""
 
 # Cap on per-file size for ~/.imgen/styles.d/*.toml. Real style files are
 # under 2 KB (one prompt + a few tunings); 256 KB is way above realistic
@@ -401,11 +416,11 @@ def list_styles() -> list[str]:
 
 
 def get_style(name: str) -> dict:
-    """Return preset dict by name. Raises KeyError if unknown."""
+    """Return preset dict by name. Raises StyleNotFound (KeyError) if unknown."""
     merged = _load_merged_styles()
     if name not in merged:
         available = ", ".join(sorted(merged.keys()))
-        raise KeyError(f"Unknown style '{name}'. Available: {available}")
+        raise StyleNotFound(f"Unknown style '{name}'. Available: {available}")
     return merged[name]
 
 
