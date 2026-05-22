@@ -173,9 +173,10 @@ def test_cmd_batch_empty_dir_exits_2_with_hint(tmp_path, _batch_env, capsys):
 
 def test_cmd_batch_stem_collision_exits_2(tmp_path, _batch_env, capsys):
     """`IMG_1234.heic` + `IMG_1234.jpg` would overwrite under the flat
-    output layout — caught in preflight, no mflux invocations."""
-    monkey_sips_succeed_silently(tmp_path)  # not strictly needed (we
-    # never reach sips) but keeps the helper available for HEIC tests
+    output layout — caught in preflight, no mflux invocations.
+
+    No sips stub needed: check_input_stems dies before
+    resolve_to_mflux_input is reached."""
     d = _make_input_dir(tmp_path, "IMG_1234.heic", "IMG_1234.jpg")
     args = _args(directory=d, output_dir=tmp_path / "out")
     with pytest.raises(SystemExit) as exc:
@@ -183,14 +184,6 @@ def test_cmd_batch_stem_collision_exits_2(tmp_path, _batch_env, capsys):
     assert exc.value.code == 2
     err = capsys.readouterr().err
     assert "IMG_1234" in err
-
-
-# Helper to support HEIC-touching tests — kept module-local so the
-# stem-collision test above can be a no-op invocation of it.
-def monkey_sips_succeed_silently(_tmp_path):  # pragma: no cover - test helper
-    """Placeholder. Real HEIC tests use their own monkeypatch.
-    Kept here to make the import-and-call shape uniform."""
-    return None
 
 
 # ── Happy paths ─────────────────────────────────────────────────────────
@@ -340,7 +333,9 @@ def test_cmd_batch_output_files_use_flat_layout(tmp_path, _batch_env):
     }
 
 
-def test_cmd_batch_partial_failure_returns_exit_5(tmp_path, _batch_env):
+def test_cmd_batch_partial_failure_returns_exit_5(
+    tmp_path, _batch_env, monkeypatch,
+):
     """N×M=4 with first 2 succeeding + last 2 failing → mixed batch
     → exit code 5 (partial). Lets calling scripts distinguish all-ok
     (0) / all-failed (1) / partial (5) without parsing output."""
@@ -352,9 +347,13 @@ def test_cmd_batch_partial_failure_returns_exit_5(tmp_path, _batch_env):
         real_calls.append({"cmd": cmd, "env": env, "log_file": log_file})
         return rc
 
-    # Re-override the stub for this test only.
-    from imgen.commands import generate as gen_mod
-    gen_mod.run_with_stderr_redaction = varying_run  # type: ignore[assignment]
+    # Re-override the stub via monkeypatch (not bare module-attr
+    # assignment) so teardown restores the original — otherwise an
+    # assertion failure here would clobber run_with_stderr_redaction
+    # for the rest of the suite.
+    monkeypatch.setattr(
+        "imgen.commands.generate.run_with_stderr_redaction", varying_run
+    )
 
     d = _make_input_dir(tmp_path, "a.jpg", "b.jpg")
     args = _args(

@@ -216,6 +216,14 @@ def cmd_batch(args) -> int:
         # the first input's dims).
         per_input_iters: list[tuple[Path, Path, int, int, list[Iteration]]] = []
         for input_path in input_paths:
+            # sips-failure policy: a CalledProcessError or TimeoutExpired
+            # from resolve_to_mflux_input here propagates uncaught, aborting
+            # the whole batch. Design doc left "warn-and-skip vs fail-batch"
+            # open; v0.3.0 chose fail-batch by inaction. Rationale: a
+            # broken HEIC in the user's dir is rare AND surfacing it
+            # early stops the user from waiting through N-1 mflux runs
+            # before discovering the issue. Switch to per-input warn+skip
+            # if colleague demand surfaces. (v0.3.0 architect NIT-7.)
             mflux_input = resolve_to_mflux_input(input_path, cache_dir)
             if fixed_dims is not None:
                 width, height = fixed_dims
