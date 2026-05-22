@@ -283,6 +283,22 @@ def test_validator_rejects_dangerous_env_var_names(dangerous):
         validate_user_backend_schema(data, Path("test.toml"))
 
 
+def test_validator_rejects_plural_secrets_form():
+    """v0.4 architect IMP-3 fallback: a TOML using `[[secrets]]`
+    (plural array-of-tables) hits the unknown-field branch and would
+    silently warn-and-drop. Reject explicitly with a message
+    pointing to the singular [secret] form, so a colleague who
+    types the plural by reflex gets a clear error instead of
+    "your second secret is silently missing at runtime"."""
+    data = {
+        "binary": "x", "image_flag": "--image-path",
+        # tomllib parses [[secrets]] as a list of dicts.
+        "secrets": [{"env_var": "FOO"}, {"env_var": "BAR"}],
+    }
+    with pytest.raises(UserBackendError, match="plural"):
+        validate_user_backend_schema(data, Path("test.toml"))
+
+
 def test_validator_accepts_normal_api_key_env_var_names():
     """Sanity: the denylist doesn't over-match. Common API-key env
     var shapes still validate cleanly."""

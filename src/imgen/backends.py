@@ -264,6 +264,22 @@ def validate_user_backend_schema(data: dict, source: Path) -> Backend:
                 f"{source}: required field {required!r} missing"
             )
 
+    # Reject the plural [[secrets]] form explicitly. v0.4 supports at
+    # most one secret per backend ([secret] singular); a colleague
+    # might reach for the plural-array-of-tables form by reflex,
+    # especially when migrating from tools that use it. Without this
+    # explicit check the unknown-field branch below would warn-and-
+    # drop, leaving the user confused about why their second secret
+    # is silently absent at runtime. v0.5 may generalize to multi-
+    # secret; THIS rejection is the lock-in that prevents silent
+    # data loss until that lands. (v0.4 architect IMP-3 fallback.)
+    if "secrets" in data:
+        raise UserBackendError(
+            f"{source}: [[secrets]] (plural) is not supported — v0.4 "
+            "allows at most one secret per backend. Use [secret] "
+            "(singular). Multi-secret backends are tracked for v0.5+."
+        )
+
     # Validate every known top-level field (required + optional).
     validated: dict[str, Any] = {}
     for key, value in data.items():
