@@ -176,7 +176,7 @@ def _run_one_iteration(
     it: Iteration,
     idx: int,
     total: int,
-    multi: bool,
+    is_batch: bool,
     backend: str,
     seed: int,
     width: int,
@@ -207,7 +207,7 @@ def _run_one_iteration(
     output_path = it.output_path
     cmd = it.cmd
 
-    if multi:
+    if is_batch:
         step(f"Generating [{idx}/{total}] {style_name} → {output_path.name}")
     else:
         step(f"Generating {style_name} → {output_path.name}")
@@ -242,7 +242,7 @@ def _run_one_iteration(
         # v0.2.3: ties multi-style entries together. Null for single-
         # style invocations (preserves v0.2.x shape).
         "batch_id": batch_id,
-        "batch_index": f"{idx}/{total}" if multi else None,
+        "batch_index": f"{idx}/{total}" if is_batch else None,
     }
 
     if log_path is not None:
@@ -298,7 +298,7 @@ def _run_one_iteration(
 def _open_results(
     succeeded: list[tuple[str, Path, int]],
     run_dir: Path | None,
-    multi: bool,
+    is_batch: bool,
     no_open: bool,
 ) -> None:
     """Auto-open results — Finder for multi-style runs, Preview for single.
@@ -312,7 +312,7 @@ def _open_results(
     """
     if no_open or not succeeded:
         return
-    if multi and run_dir is not None:
+    if is_batch and run_dir is not None:
         # Belt-and-braces: only open if it's actually a directory.
         # If the dir somehow disappeared between mkdir and now (rare),
         # don't let `open <file>` auto-launch the registered app for
@@ -392,7 +392,7 @@ def _print_batch_summary(
 ) -> None:
     """Render the end-of-batch summary block (multi-style only).
 
-    Caller gates on `multi` — single-style runs keep v0.2.x's lean
+    Caller gates on `is_batch` — single-style runs keep v0.2.x's lean
     output where the per-image "Done in 3m 12s" line is the only signal.
     Always lists every failed style so the user can re-run just those,
     not the whole batch."""
@@ -408,11 +408,11 @@ def _print_batch_summary(
 
 def _exit_code(
     *,
-    multi: bool,
+    is_batch: bool,
     succeeded: list[tuple[str, Path, int]],
     failed: list[tuple[str, int, Path]],
 ) -> int:
-    """Map (multi, succeeded, failed) → process exit code.
+    """Map (is_batch, succeeded, failed) → process exit code.
 
     Single-style preserves v0.2.x semantics: mflux's returncode passes
     through so scripts that branch on exit code keep working. Multi-style
@@ -424,7 +424,7 @@ def _exit_code(
       * partial  → 5  (distinct from user-input=2, missing-tool=3,
                         resource=4 — keeps grep-by-code scripting clean)
     """
-    if not multi:
+    if not is_batch:
         if failed:
             return failed[0][1]
         return 0
@@ -711,17 +711,22 @@ def cmd_generate(args) -> int:
         seed=seed,
     )
 
-    multi = len(iterations) >= 2
-    # batch_id stamps every history entry from this invocation when M >= 2,
-    # making `imgen history --batch <id>` (v0.3.0+) trivial. Null for
-    # single-style runs to preserve v0.2.x history shape.
+    # is_batch threshold: "are we doing more than one image in this
+    # invocation?" v0.2.x → len(iterations) >= 2 (single input × M
+    # styles); v0.3.0 → N*M >= 2 (N inputs × M styles). Renamed from
+    # `multi` in v0.2.4 (architect item F1) so the upstream definition
+    # is the one place that changes when batch.py lands.
+    is_batch = len(iterations) >= 2
+    # batch_id stamps every history entry from this invocation when
+    # is_batch is True, making `imgen history --batch <id>` (v0.3.0+)
+    # trivial. Null for single-image runs to preserve v0.2.x history shape.
     # 12 hex chars = 48 bits — collision probability is astronomical at
     # single-user scale (one Mac, one human). Keeps log filenames short
     # and readable vs the 32-char full uuid4. ULID would give lex-
     # sortable IDs, but auto_run_dirname() already provides the
     # chronological sort via run-folder names; batch_id only needs to
     # be unique. (architect F4 from v0.2.3 review)
-    batch_id: str | None = uuid.uuid4().hex[:12] if multi else None
+    batch_id: str | None = uuid.uuid4().hex[:12] if is_batch else None
 
     # 9) Dry run — show every M cmd, skip resource checks + history.
     if args.dry_run:
@@ -744,7 +749,7 @@ def cmd_generate(args) -> int:
     # 11) Confirm gate (multi-style only — single-style keeps v0.2.x's
     # zero-prompt UX). --yes skips. Fires AFTER preflight so we never
     # ask the user to confirm a batch we know we can't run anyway.
-    if multi and not args.yes:
+    if is_batch and not args.yes:
         one_eta = _estimate_one_seconds(
             load_history(), backend, heaviest_quant, args.preview
         )
@@ -771,7 +776,7 @@ def cmd_generate(args) -> int:
     # writes go through open_log_file_append (binary mode, 0o600 from
     # creation — see paths.py for the umask rationale).
     log_path: Path | None = None
-    if multi:
+    if is_batch:
         ensure_logs_dir()
         log_path = LOGS_DIR / f"{batch_id}.log"
         header = (
@@ -811,7 +816,7 @@ def cmd_generate(args) -> int:
             it=it,
             idx=idx,
             total=total,
-            multi=multi,
+            is_batch=is_batch,
             backend=backend,
             seed=seed,
             width=width,
@@ -833,14 +838,14 @@ def cmd_generate(args) -> int:
     _open_results(
         succeeded=succeeded,
         run_dir=run_dir,
-        multi=multi,
+        is_batch=is_batch,
         no_open=args.no_open,
     )
 
     # 17) End-of-batch summary (only for multi-style — single-style keeps
     # the v0.2.x lean output).
-    if multi:
+    if is_batch:
         _print_batch_summary(succeeded, failed, total)
 
     # 18) Exit code (single-style passthrough vs multi-style 0/1/5 map).
-    return _exit_code(multi=multi, succeeded=succeeded, failed=failed)
+    return _exit_code(is_batch=is_batch, succeeded=succeeded, failed=failed)

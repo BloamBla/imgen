@@ -942,14 +942,14 @@ def _fail(name: str, rc: int) -> tuple[str, int, Path]:
 
 def test_exit_code_single_style_success_returns_0():
     """v0.1.x contract: single-style + ok → exit 0."""
-    assert _exit_code(multi=False, succeeded=[_ok("anime")], failed=[]) == 0
+    assert _exit_code(is_batch=False, succeeded=[_ok("anime")], failed=[]) == 0
 
 
 def test_exit_code_single_style_failure_passes_through_returncode():
     """v0.1.x contract: single-style + failure → caller gets mflux's
     own returncode (so scripts can grep by exit code)."""
     assert _exit_code(
-        multi=False,
+        is_batch=False,
         succeeded=[],
         failed=[_fail("anime", 42)],
     ) == 42
@@ -957,7 +957,7 @@ def test_exit_code_single_style_failure_passes_through_returncode():
 
 def test_exit_code_multi_all_ok_returns_0():
     assert _exit_code(
-        multi=True,
+        is_batch=True,
         succeeded=[_ok("anime"), _ok("ghibli")],
         failed=[],
     ) == 0
@@ -966,7 +966,7 @@ def test_exit_code_multi_all_ok_returns_0():
 def test_exit_code_multi_all_failed_returns_1():
     """All M iterations failed → exit 1 (generic batch failure)."""
     assert _exit_code(
-        multi=True,
+        is_batch=True,
         succeeded=[],
         failed=[_fail("anime", 1), _fail("ghibli", 1)],
     ) == 1
@@ -977,7 +977,7 @@ def test_exit_code_multi_partial_returns_5():
     user-input 2, missing-tool 3, resource 4 — keeps grep-by-code
     scripting clean for callers."""
     assert _exit_code(
-        multi=True,
+        is_batch=True,
         succeeded=[_ok("anime")],
         failed=[_fail("ghibli", 1)],
     ) == 5
@@ -1201,7 +1201,7 @@ def test_open_results_no_open_flag_skips(stub_subprocess_run, tmp_path):
     _open_results(
         succeeded=[("anime", img, 1)],
         run_dir=None,
-        multi=False,
+        is_batch=False,
         no_open=True,
     )
     assert stub_subprocess_run == []
@@ -1210,7 +1210,7 @@ def test_open_results_no_open_flag_skips(stub_subprocess_run, tmp_path):
 def test_open_results_empty_succeeded_skips(stub_subprocess_run):
     """Nothing succeeded → nothing to open."""
     _open_results(
-        succeeded=[], run_dir=None, multi=False, no_open=False
+        succeeded=[], run_dir=None, is_batch=False, no_open=False
     )
     assert stub_subprocess_run == []
 
@@ -1225,7 +1225,7 @@ def test_open_results_multi_opens_run_dir(stub_subprocess_run, tmp_path):
     _open_results(
         succeeded=[("anime", img, 1), ("ghibli", img, 1)],
         run_dir=run_dir,
-        multi=True,
+        is_batch=True,
         no_open=False,
     )
 
@@ -1242,7 +1242,7 @@ def test_open_results_multi_skips_if_run_dir_missing(
     _open_results(
         succeeded=[("anime", tmp_path / "x", 1)],
         run_dir=run_dir,
-        multi=True,
+        is_batch=True,
         no_open=False,
     )
     assert stub_subprocess_run == []
@@ -1255,7 +1255,7 @@ def test_open_results_single_opens_last_file(stub_subprocess_run, tmp_path):
     _open_results(
         succeeded=[("anime", img, 1)],
         run_dir=None,
-        multi=False,
+        is_batch=False,
         no_open=False,
     )
     assert stub_subprocess_run == [["open", str(img)]]
@@ -1273,7 +1273,7 @@ def test_open_results_unsafe_extension_warns_no_open(
     _open_results(
         succeeded=[("anime", img, 1)],
         run_dir=None,
-        multi=False,
+        is_batch=False,
         no_open=False,
     )
 
@@ -1300,7 +1300,7 @@ def test_open_results_swallows_filenotfound(monkeypatch, tmp_path):
     _open_results(
         succeeded=[("anime", img, 1)],
         run_dir=None,
-        multi=False,
+        is_batch=False,
         no_open=False,
     )
 
@@ -1360,7 +1360,7 @@ def _run(*, it=None, tmp_path, succeeded, failed, log_path=None, **kwargs):
         it=it,
         idx=1,
         total=1,
-        multi=False,
+        is_batch=False,
         backend="flux",
         seed=42,
         width=1024,
@@ -1513,7 +1513,7 @@ def test_run_one_iteration_history_batch_fields(
 
     _run(
         tmp_path=tmp_path, succeeded=[], failed=[],
-        multi=True, idx=2, total=3, batch_id="abc123def456",
+        is_batch=True, idx=2, total=3, batch_id="abc123def456",
     )
 
     e = load_history()[0]
@@ -1528,7 +1528,7 @@ def test_run_one_iteration_history_batch_fields_null_when_single(
 
     _run(
         tmp_path=tmp_path, succeeded=[], failed=[],
-        multi=False, batch_id=None,
+        is_batch=False, batch_id=None,
     )
 
     e = load_history()[0]
@@ -1544,7 +1544,7 @@ def test_run_one_iteration_log_markers_written_when_path_given(
 
     _run(
         tmp_path=tmp_path, succeeded=[], failed=[],
-        log_path=log, multi=True, idx=1, total=2,
+        log_path=log, is_batch=True, idx=1, total=2,
     )
 
     assert log.exists()
@@ -1561,7 +1561,7 @@ def test_run_one_iteration_log_markers_record_cancel(
 
     _run(
         tmp_path=tmp_path, succeeded=[], failed=[],
-        log_path=log, multi=True, idx=1, total=2,
+        log_path=log, is_batch=True, idx=1, total=2,
     )
 
     content = log.read_bytes().decode()
