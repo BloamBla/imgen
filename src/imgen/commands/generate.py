@@ -171,6 +171,44 @@ def _resolve_output_layout(
     return None, run_dir
 
 
+def _open_results(
+    succeeded: list[tuple[str, Path, int]],
+    run_dir: Path | None,
+    multi: bool,
+    no_open: bool,
+) -> None:
+    """Auto-open results — Finder for multi-style runs, Preview for single.
+
+    Skipped entirely on --no-open, on empty success list, or when the
+    `open` binary is missing (FileNotFoundError swallowed — generation
+    already succeeded, no point crashing the CLI). For single-style,
+    re-checks the extension against SAFE_OUTPUT_EXTS — macOS ``open``
+    delegates to the registered app for the suffix, so a .sh / .command
+    target would auto-execute. The whitelist is the last guard.
+    """
+    if no_open or not succeeded:
+        return
+    if multi and run_dir is not None:
+        # Belt-and-braces: only open if it's actually a directory.
+        # If the dir somehow disappeared between mkdir and now (rare),
+        # don't let `open <file>` auto-launch the registered app for
+        # whatever path that resolved to. (security I3 from v0.2.3 review)
+        if run_dir.is_dir():
+            try:
+                subprocess.run(["open", str(run_dir)], check=False)
+            except FileNotFoundError:
+                pass
+        return
+    last_path = succeeded[-1][1]
+    if last_path.suffix.lower() not in SAFE_OUTPUT_EXTS:
+        warn(f"Skipping auto-open: unsafe extension {last_path.suffix}")
+        return
+    try:
+        subprocess.run(["open", str(last_path)], check=False)
+    except FileNotFoundError:
+        pass
+
+
 def _preflight_resources(
     *,
     backend: str,
@@ -734,33 +772,14 @@ def cmd_generate(args) -> int:
         ok(f"Done in {duration // 60}m {duration % 60}s — {output_path}")
         print()
 
-    # 16) Open in Preview (defence-in-depth: re-check ext before `open`,
-    # since macOS `open` would auto-launch the registered app for the suffix).
-    # For multi-style we open the run folder so the user sees all results
-    # in Finder at once; for single-style keep v0.2.x behaviour (open the
-    # one file in Preview).
-    if not args.no_open and succeeded:
-        if multi and run_dir is not None:
-            # Belt-and-braces: only open if it's actually a directory.
-            # `open <file>` would auto-launch the registered app for the
-            # extension, which the SAFE_OUTPUT_EXTS guard below
-            # protects against for the single-file branch. Symbolic
-            # link or other exotic path → skip the open. (security I3
-            # from v0.2.3 review)
-            if run_dir.is_dir():
-                try:
-                    subprocess.run(["open", str(run_dir)], check=False)
-                except FileNotFoundError:
-                    pass
-        else:
-            last_path = succeeded[-1][1]
-            if last_path.suffix.lower() not in SAFE_OUTPUT_EXTS:
-                warn(f"Skipping auto-open: unsafe extension {last_path.suffix}")
-            else:
-                try:
-                    subprocess.run(["open", str(last_path)], check=False)
-                except FileNotFoundError:
-                    pass
+    # 16) Open in Preview (single-style) or Finder (multi-style); silent
+    # no-op on --no-open or when `open` is missing.
+    _open_results(
+        succeeded=succeeded,
+        run_dir=run_dir,
+        multi=multi,
+        no_open=args.no_open,
+    )
 
     # 17) End-of-batch summary (only for multi-style — single-style keeps
     # the v0.2.x lean output).

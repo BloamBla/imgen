@@ -25,6 +25,7 @@ from imgen.commands.generate import (
     _check_prompt_style_compat,
     _exit_code,
     _load_backend_and_token,
+    _open_results,
     _preflight_resources,
     _print_batch_summary,
     _resolve_output_layout,
@@ -1168,3 +1169,136 @@ def test_preflight_resources_low_battery_warns_not_dies(
     captured = capsys.readouterr()
     combined = captured.out + captured.err
     assert "Battery" in combined and "12%" in combined
+
+
+# ── _open_results ───────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def stub_subprocess_run(monkeypatch):
+    """Record subprocess.run invocations from _open_results without
+    actually spawning anything. Tests assert against the recorded list."""
+    calls: list[list[str]] = []
+
+    def fake_run(argv, check=False, **kwargs):
+        calls.append(list(argv))
+
+        class _Result:
+            returncode = 0
+        return _Result()
+
+    monkeypatch.setattr(
+        "imgen.commands.generate.subprocess.run", fake_run
+    )
+    return calls
+
+
+def test_open_results_no_open_flag_skips(stub_subprocess_run, tmp_path):
+    """--no-open opt-out wins over everything else."""
+    img = tmp_path / "out.png"
+    img.touch()
+    _open_results(
+        succeeded=[("anime", img, 1)],
+        run_dir=None,
+        multi=False,
+        no_open=True,
+    )
+    assert stub_subprocess_run == []
+
+
+def test_open_results_empty_succeeded_skips(stub_subprocess_run):
+    """Nothing succeeded → nothing to open."""
+    _open_results(
+        succeeded=[], run_dir=None, multi=False, no_open=False
+    )
+    assert stub_subprocess_run == []
+
+
+def test_open_results_multi_opens_run_dir(stub_subprocess_run, tmp_path):
+    """Multi-style → user sees the whole batch in Finder at once."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    img = run_dir / "out-anime.png"
+    img.touch()
+
+    _open_results(
+        succeeded=[("anime", img, 1), ("ghibli", img, 1)],
+        run_dir=run_dir,
+        multi=True,
+        no_open=False,
+    )
+
+    assert stub_subprocess_run == [["open", str(run_dir)]]
+
+
+def test_open_results_multi_skips_if_run_dir_missing(
+    stub_subprocess_run, tmp_path
+):
+    """Defence-in-depth: if the dir somehow doesn't exist by now, don't
+    let `open` autolaunch some other registered handler for the path."""
+    run_dir = tmp_path / "phantom"
+    # Note: deliberately NOT created.
+    _open_results(
+        succeeded=[("anime", tmp_path / "x", 1)],
+        run_dir=run_dir,
+        multi=True,
+        no_open=False,
+    )
+    assert stub_subprocess_run == []
+
+
+def test_open_results_single_opens_last_file(stub_subprocess_run, tmp_path):
+    """v0.2.x behaviour: single-style → open the file in Preview."""
+    img = tmp_path / "out.png"
+    img.touch()
+    _open_results(
+        succeeded=[("anime", img, 1)],
+        run_dir=None,
+        multi=False,
+        no_open=False,
+    )
+    assert stub_subprocess_run == [["open", str(img)]]
+
+
+def test_open_results_unsafe_extension_warns_no_open(
+    stub_subprocess_run, tmp_path, capsys
+):
+    """macOS `open` delegates to the registered app for the suffix; a
+    .terminal / .command would auto-execute. The SAFE_OUTPUT_EXTS
+    guard rejects anything not in the image whitelist."""
+    img = tmp_path / "out.sh"
+    img.touch()
+
+    _open_results(
+        succeeded=[("anime", img, 1)],
+        run_dir=None,
+        multi=False,
+        no_open=False,
+    )
+
+    assert stub_subprocess_run == []
+    out = capsys.readouterr().out
+    assert "unsafe extension" in out
+    assert ".sh" in out
+
+
+def test_open_results_swallows_filenotfound(monkeypatch, tmp_path):
+    """If `open` binary somehow isn't there (very unusual on macOS),
+    don't crash the whole CLI — generation already succeeded."""
+    img = tmp_path / "out.png"
+    img.touch()
+
+    def raising_run(argv, check=False, **kwargs):
+        raise FileNotFoundError("no such binary: open")
+
+    monkeypatch.setattr(
+        "imgen.commands.generate.subprocess.run", raising_run
+    )
+
+    # Should NOT raise.
+    _open_results(
+        succeeded=[("anime", img, 1)],
+        run_dir=None,
+        multi=False,
+        no_open=False,
+    )
