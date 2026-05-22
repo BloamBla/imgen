@@ -74,10 +74,16 @@ def test_common_flags_present_with_correct_value(params, flag, value_provider):
     assert cmd[idx + 1] == value_provider(params)
 
 
-def test_metadata_flag_present(params):
-    """--metadata is a switch (no value), distinct from value-flags above."""
+def test_metadata_flag_absent(params):
+    """v0.3.2: ``--metadata`` removed — mflux otherwise drops a
+    ``<output>.metadata.json`` sidecar next to every image, cluttering
+    the gallery. PNG-embedded metadata is preserved by mflux regardless
+    of this flag (see backends.build_mflux_cmd docstring), so the
+    sidecar was duplicate data. We also write run params to
+    ``~/.imgen/history.jsonl`` for replay, making the sidecar triply
+    redundant."""
     cmd = build_mflux_cmd(**params)
-    assert "--metadata" in cmd
+    assert "--metadata" not in cmd
 
 
 # ── FLUX-specific ───────────────────────────────────────────────────
