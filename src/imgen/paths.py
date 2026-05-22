@@ -73,7 +73,21 @@ SAFE_OUTPUT_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
 
 
 def ensure_state_dir() -> None:
-    """Create STATE_DIR with restrictive perms (history may contain prompts)."""
+    """Create STATE_DIR with restrictive perms (history may contain prompts).
+
+    Trust-boundary note (v0.2.6 review NIT-A + python NIT-4, doc-only):
+    we do NOT verify that STATE_DIR itself is a real directory rather
+    than a symlink, nor do we close the TOCTOU window between
+    `LOGS_DIR.is_symlink()` and the subsequent glob/unlink in
+    ``runs.prune_old_batch_logs``. Both gaps are deliberate — imgen is
+    a single-user CLI on the user's own Mac, and an attacker with
+    same-uid code-exec already has direct `rm -rf` and file-write, so
+    symlink games gain them nothing they can't do more directly. The
+    ``LOGS_DIR`` symlink guards in ``runs.py`` are defence-in-depth
+    against an accidental `ln -s` over ``~/.imgen/logs/``, not against
+    a compromised STATE_DIR — don't read them as full path-traversal
+    hardening.
+    """
     if not STATE_DIR.exists():
         STATE_DIR.mkdir(mode=0o700)
     elif (STATE_DIR.stat().st_mode & 0o777) != 0o700:

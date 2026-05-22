@@ -189,6 +189,41 @@ def open_log_file_append(path: Path) -> BinaryIO:
     return os.fdopen(fd, "ab")
 
 
+def _logs_dir_is_safe() -> bool:
+    """Return False (and warn) if LOGS_DIR is a symlink.
+
+    Centralizes the v0.2.5/v0.2.6 LOGS_DIR symlink guard shared by
+    ``ensure_logs_dir`` and ``prune_old_batch_logs``. (architect NIT-2
+    from v0.2.6 review — extracted ahead of the third caller, since
+    the runs/logs surface is going to keep growing and re-rolling
+    the same guard inline guarantees wording drift.)
+
+    Why we guard at all:
+      * ``ensure_logs_dir`` would otherwise chmod 0o700 on whatever the
+        symlink targets — could be an unrelated user dir or a shared
+        mount.
+      * ``prune_old_batch_logs`` would otherwise let ``LOGS_DIR.glob``
+        walk into the target tree and unlink files there.
+      * Both gaps require an explicit `ln -s` over ``~/.imgen/logs/`` —
+        won't happen in normal installs, but cheap to refuse.
+
+    Warn (not silent return) is deliberate: a clean-only workflow that
+    never runs ``imgen generate`` would otherwise see "0 logs removed"
+    forever and never learn why the dir is misconfigured.
+
+    Trust-boundary scope: catches a symlink AT LOGS_DIR only. A
+    symlinked STATE_DIR parent is NOT detected — see
+    ``paths.ensure_state_dir`` docstring for why that's deliberate.
+    """
+    if LOGS_DIR.is_symlink():
+        from .colors import warn
+        warn(f"LOGS_DIR is a symlink ({LOGS_DIR}); refusing to operate. "
+             "Remove the symlink or relocate ~/.imgen/logs/ to a real "
+             "directory.")
+        return False
+    return True
+
+
 def ensure_logs_dir() -> None:
     """Create LOGS_DIR (0o700) under STATE_DIR.
 
@@ -196,17 +231,11 @@ def ensure_logs_dir() -> None:
     a per-batch log for multi-style runs). STATE_DIR is created first
     so a fresh user never hits ENOENT.
 
-    Refuses to operate (warn + return) if LOGS_DIR is a symlink — would
-    otherwise chmod 0o700 on whatever the link targets, which could be
-    an unrelated user directory or a shared/system path. (v0.2.5
-    security NIT-2)
+    Refuses to operate (warn + return) if LOGS_DIR is a symlink — see
+    ``_logs_dir_is_safe`` for the rationale.
     """
     ensure_state_dir()
-    if LOGS_DIR.is_symlink():
-        from .colors import warn
-        warn(f"LOGS_DIR is a symlink ({LOGS_DIR}); refusing to operate. "
-             "Remove the symlink or relocate ~/.imgen/logs/ to a real "
-             "directory.")
+    if not _logs_dir_is_safe():
         return
     if not LOGS_DIR.exists():
         LOGS_DIR.mkdir(mode=0o700)
@@ -464,21 +493,11 @@ def prune_old_batch_logs(
     """
     if not LOGS_DIR.exists():
         return 0, 0
-    if LOGS_DIR.is_symlink():
-        # Defence-in-depth: a symlinked LOGS_DIR would let `glob("*.log")`
-        # walk into the target tree and unlink files there. Won't happen
-        # in normal installs — user would have to manually `ln -s` over
-        # the real dir — but cheap to refuse. (v0.2.5 security NIT-2)
-        #
-        # Warn (not silent) so a clean-only workflow surfaces the
-        # misconfiguration. ensure_logs_dir also warns; symmetry matters
-        # — a user who never runs `imgen generate` would otherwise see
-        # "0 logs removed" forever and never learn why. (v0.2.6 review
-        # NIT — triple-flagged by python/security/architect.)
-        from .colors import warn
-        warn(f"LOGS_DIR is a symlink ({LOGS_DIR}); refusing to prune. "
-             "Remove the symlink or relocate ~/.imgen/logs/ to a real "
-             "directory.")
+    if not _logs_dir_is_safe():
+        # See ``_logs_dir_is_safe`` for the full rationale (centralized
+        # in v0.2.6 review NIT-2 closure). Warn is symmetric with the
+        # ensure_logs_dir path so a clean-only workflow surfaces the
+        # misconfiguration instead of silently returning "0 removed".
         return 0, 0
     cutoff = _dt.datetime.now().timestamp() - days * 86400
     removed = 0
