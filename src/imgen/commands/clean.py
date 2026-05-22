@@ -8,34 +8,20 @@ import shutil
 
 from ..colors import C, dim, info, ok, step, warn
 from ..paths import HF_CACHE
-from ..runs import LOG_RETENTION_DAYS, LOGS_DIR
+from ..runs import LOG_RETENTION_DAYS, prune_old_batch_logs
 
 
 def _prune_old_batch_logs(args) -> None:
-    """Delete ~/.imgen/logs/*.log older than LOG_RETENTION_DAYS.
+    """User-facing wrapper around runs.prune_old_batch_logs.
 
-    Quiet when there's nothing to do (matches the .incomplete pattern).
-    Respects --dry-run (only counts, doesn't delete).
+    The retention policy + filesystem work lives in runs.py — this
+    wrapper just unpacks args.dry_run and prints the result. Quiet
+    when there's nothing to do (matches the .incomplete pattern).
     """
-    if not LOGS_DIR.exists():
-        return
     dry_run: bool = getattr(args, "dry_run", False)
-    cutoff = datetime.datetime.now().timestamp() - LOG_RETENTION_DAYS * 86400
-    removed = 0
-    removed_size = 0
-    for log in LOGS_DIR.glob("*.log"):
-        try:
-            # Snapshot stat() once — separate calls would let st_size
-            # raise OSError after st_mtime succeeded, leaving `removed`
-            # and `removed_size` out of sync (python C2 from v0.2.3 review).
-            st = log.stat()
-            if st.st_mtime < cutoff:
-                removed_size += st.st_size
-                if not dry_run:
-                    log.unlink()
-                removed += 1
-        except OSError:
-            pass
+    removed, removed_size = prune_old_batch_logs(
+        LOG_RETENTION_DAYS, dry_run=dry_run
+    )
     if removed:
         verb = "Would remove" if dry_run else "Removed"
         ok(f"{verb} {removed} old batch log(s) older than "

@@ -29,12 +29,10 @@ from ..paths import (
 )
 from ..prompt_input import PromptInputError, resolve_prompt
 from ..runs import (
-    LOGS_DIR,
+    BatchLogger,
     Iteration,
     auto_run_dirname,
-    ensure_logs_dir,
     next_available_run_dir,
-    open_log_file_append,
 )
 from ..styles import get_style
 from ..subprocess_helpers import format_cmd, run_with_stderr_redaction
@@ -186,7 +184,7 @@ def _run_one_iteration(
     args,
     batch_id: str | None,
     env: dict[str, str],
-    log_path: Path | None,
+    logger: BatchLogger | None,
     succeeded: list[tuple[str, Path, int]],
     failed: list[tuple[str, int, Path]],
 ) -> bool:
@@ -245,14 +243,13 @@ def _run_one_iteration(
         "batch_index": f"{idx}/{total}" if is_batch else None,
     }
 
-    if log_path is not None:
-        marker = (f"\n=== [{idx}/{total}] {style_name} → "
-                  f"{started.isoformat(timespec='seconds')} ===\n")
-        with open_log_file_append(log_path) as f:
-            f.write(marker.encode())
+    if logger is not None:
+        logger.iteration_start(idx, total, style_name, started)
 
     try:
-        returncode = run_with_stderr_redaction(cmd, env=env, log_path=log_path)
+        returncode = run_with_stderr_redaction(
+            cmd, env=env, log_path=logger.path if logger else None
+        )
     except KeyboardInterrupt:
         warn("Cancelled by user")
         cancel_duration = int(
@@ -260,11 +257,8 @@ def _run_one_iteration(
         history_entry["status"] = "cancelled"
         history_entry["duration_sec"] = cancel_duration
         append_history(history_entry)
-        if log_path is not None:
-            marker = (f"\n=== [{idx}/{total}] {style_name} → "
-                      f"CANCELLED in {cancel_duration}s ===\n")
-            with open_log_file_append(log_path) as f:
-                f.write(marker.encode())
+        if logger is not None:
+            logger.iteration_cancelled(idx, total, style_name, cancel_duration)
         return False
 
     duration = int((datetime.datetime.now() - started).total_seconds())
@@ -272,13 +266,8 @@ def _run_one_iteration(
     history_entry["status"] = "success" if returncode == 0 else "failed"
     append_history(history_entry)
 
-    if log_path is not None:
-        status = ("ok" if returncode == 0
-                  else f"FAILED exit={returncode}")
-        marker = (f"\n=== [{idx}/{total}] {style_name} → {status} "
-                  f"in {duration}s ===\n")
-        with open_log_file_append(log_path) as f:
-            f.write(marker.encode())
+    if logger is not None:
+        logger.iteration_end(idx, total, style_name, returncode, duration)
 
     if returncode != 0:
         err(f"mflux exited with code {returncode} after {duration}s "
@@ -769,27 +758,26 @@ def cmd_generate(args) -> int:
     else:
         explicit_output.parent.mkdir(parents=True, exist_ok=True)
 
-    # 13) Per-batch log file (multi-style only). One log per invocation,
-    # named after batch_id. mflux stderr (after token redaction) is
-    # appended; cmd_generate writes per-image markers below for grep-
-    # ability. Retention (30 days) is enforced by `imgen clean`. All
-    # writes go through open_log_file_append (binary mode, 0o600 from
-    # creation — see paths.py for the umask rationale).
-    log_path: Path | None = None
+    # 13) Per-batch log (multi-style only). BatchLogger owns the lifecycle:
+    # header here, iteration start/end/cancelled markers inside
+    # _run_one_iteration, retention via runs.prune_old_batch_logs called
+    # from imgen clean. mflux stderr (after token redaction) is tee'd
+    # into the same file by run_with_stderr_redaction. All writes go
+    # through open_log_file_append (binary mode, 0o600 from creation
+    # — see runs.py for the umask rationale).
+    logger: BatchLogger | None = None
     if is_batch:
-        ensure_logs_dir()
-        log_path = LOGS_DIR / f"{batch_id}.log"
-        header = (
-            f"# imgen batch {batch_id}\n"
-            f"# started:  {datetime.datetime.now().isoformat(timespec='seconds')}\n"
-            f"# input:    {input_path}\n"
-            f"# styles:   {', '.join(it.style_name for it in iterations)}\n"
-            f"# output:   {run_dir}\n"
-            f"# backend:  {backend} q{heaviest_quant}  "
-            f"preview={args.preview}  scope={args.scope}  seed={seed}\n"
+        logger = BatchLogger(batch_id)
+        logger.write_header(
+            input_path=input_path,
+            styles=[it.style_name for it in iterations],
+            run_dir=run_dir,
+            backend=backend,
+            quant=heaviest_quant,
+            preview=args.preview,
+            scope=args.scope,
+            seed=seed,
         )
-        with open_log_file_append(log_path) as f:
-            f.write(header.encode())
 
     # 14) Minimal env (don't forward random secrets from parent shell).
     env: dict[str, str] = {}
@@ -826,7 +814,7 @@ def cmd_generate(args) -> int:
             args=args,
             batch_id=batch_id,
             env=env,
-            log_path=log_path,
+            logger=logger,
             succeeded=succeeded,
             failed=failed,
         )

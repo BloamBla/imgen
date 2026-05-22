@@ -17,11 +17,16 @@ from imgen.runs import LOG_RETENTION_DAYS
 
 @pytest.fixture
 def tmp_logs(tmp_path, monkeypatch):
-    """Redirect LOGS_DIR to a per-test tmp location."""
+    """Redirect runs.LOGS_DIR to a per-test tmp location.
+
+    v0.2.4: clean.py no longer references LOGS_DIR directly — the
+    retention logic lives in runs.prune_old_batch_logs, which reads
+    runs.LOGS_DIR. Patch the canonical home, not the import site
+    (clean.py imports the function, not the constant)."""
     logs = tmp_path / "logs"
     logs.mkdir(mode=0o700)
-    import imgen.commands.clean as clean_mod
-    monkeypatch.setattr(clean_mod, "LOGS_DIR", logs)
+    import imgen.runs as runs_mod
+    monkeypatch.setattr(runs_mod, "LOGS_DIR", logs)
     return logs
 
 
@@ -34,8 +39,8 @@ def _make_log(path, days_ago: float, content: str = "x") -> None:
 
 def test_prune_no_logs_dir_is_noop(tmp_path, monkeypatch, capsys):
     """No LOGS_DIR yet → silent no-op (fresh user has never run a batch)."""
-    import imgen.commands.clean as clean_mod
-    monkeypatch.setattr(clean_mod, "LOGS_DIR", tmp_path / "nonexistent")
+    import imgen.runs as runs_mod
+    monkeypatch.setattr(runs_mod, "LOGS_DIR", tmp_path / "nonexistent")
 
     _prune_old_batch_logs(SimpleNamespace(dry_run=False))
 

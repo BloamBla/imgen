@@ -33,7 +33,7 @@ from imgen.commands.generate import (
     _run_one_iteration,
     _validate_input_path,
 )
-from imgen.runs import Iteration
+from imgen.runs import BatchLogger, Iteration
 
 
 # ── _validate_input_path ────────────────────────────────────────────────
@@ -1349,11 +1349,11 @@ def stub_mflux(monkeypatch):
     return state
 
 
-def _run(*, it=None, tmp_path, succeeded, failed, log_path=None, **kwargs):
+def _run(*, it=None, tmp_path, succeeded, failed, logger=None, **kwargs):
     """Wrapper threading sensible defaults for the verbose 16-arg call.
 
     Lets each test override only what it cares about (returncode,
-    log_path, scope, etc.) without rebuilding the whole context."""
+    logger, scope, etc.) without rebuilding the whole context."""
     if it is None:
         it = _full_iter(tmp_path)
     defaults = dict(
@@ -1370,7 +1370,7 @@ def _run(*, it=None, tmp_path, succeeded, failed, log_path=None, **kwargs):
         args=_full_args(),
         batch_id=None,
         env={"PATH": "/usr/bin"},
-        log_path=log_path,
+        logger=logger,
         succeeded=succeeded,
         failed=failed,
     )
@@ -1536,49 +1536,53 @@ def test_run_one_iteration_history_batch_fields_null_when_single(
     assert e["batch_index"] is None
 
 
-def test_run_one_iteration_log_markers_written_when_path_given(
+def test_run_one_iteration_log_markers_written_when_logger_given(
     tmp_state_dir, tmp_path, stub_mflux
 ):
-    """log_path set → start + end markers appended."""
-    log = tmp_path / "batch.log"
+    """logger set → start + end markers appended via BatchLogger."""
+    logger = BatchLogger("testbatch1")
 
     _run(
         tmp_path=tmp_path, succeeded=[], failed=[],
-        log_path=log, is_batch=True, idx=1, total=2,
+        logger=logger, is_batch=True, idx=1, total=2,
     )
 
-    assert log.exists()
-    content = log.read_bytes().decode()
+    assert logger.path.exists()
+    content = logger.path.read_bytes().decode()
     assert "[1/2] anime" in content
-    assert "ok" in content
+    assert " ok " in content
 
 
 def test_run_one_iteration_log_markers_record_cancel(
     tmp_state_dir, tmp_path, stub_mflux
 ):
     stub_mflux["raise"] = KeyboardInterrupt()
-    log = tmp_path / "batch.log"
+    logger = BatchLogger("testbatch2")
 
     _run(
         tmp_path=tmp_path, succeeded=[], failed=[],
-        log_path=log, is_batch=True, idx=1, total=2,
+        logger=logger, is_batch=True, idx=1, total=2,
     )
 
-    content = log.read_bytes().decode()
+    content = logger.path.read_bytes().decode()
     assert "CANCELLED" in content
 
 
-def test_run_one_iteration_log_skipped_when_path_none(
+def test_run_one_iteration_log_skipped_when_logger_none(
     tmp_state_dir, tmp_path, stub_mflux
 ):
-    """log_path=None (single-style) → no file written."""
+    """logger=None (single-style) → no log file created."""
     _run(
         tmp_path=tmp_path, succeeded=[], failed=[],
-        log_path=None,
+        logger=None,
     )
 
-    # No log file because we didn't pass one.
-    assert not any(tmp_path.glob("*.log"))
+    # No log files anywhere (BatchLogger never instantiated → no LOGS_DIR
+    # writes; tmp_state_dir LOGS_DIR stays empty).
+    import imgen.runs as runs_mod
+    assert not runs_mod.LOGS_DIR.exists() or not any(
+        runs_mod.LOGS_DIR.glob("*.log")
+    )
 
 
 def test_run_one_iteration_passes_env_to_subprocess(

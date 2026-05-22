@@ -36,11 +36,13 @@ from .paths import STATE_DIR, ensure_state_dir
 __all__ = [
     "LOG_RETENTION_DAYS",
     "LOGS_DIR",
+    "BatchLogger",
     "Iteration",
     "auto_run_dirname",
     "ensure_logs_dir",
     "next_available_run_dir",
     "open_log_file_append",
+    "prune_old_batch_logs",
 ]
 
 
@@ -136,8 +138,9 @@ def open_log_file_append(path: Path) -> BinaryIO:
 def ensure_logs_dir() -> None:
     """Create LOGS_DIR (0o700) under STATE_DIR.
 
-    Used by cmd_generate when it opens a per-batch log for multi-style
-    runs. STATE_DIR is created first so a fresh user never hits ENOENT.
+    Used by BatchLogger and direct callers (cmd_generate when it opens
+    a per-batch log for multi-style runs). STATE_DIR is created first
+    so a fresh user never hits ENOENT.
     """
     ensure_state_dir()
     if not LOGS_DIR.exists():
@@ -147,3 +150,130 @@ def ensure_logs_dir() -> None:
             LOGS_DIR.chmod(0o700)
         except OSError:
             pass
+
+
+# ── BatchLogger + retention ─────────────────────────────────────────────
+
+
+class BatchLogger:
+    """Owner of one multi-style invocation's log file.
+
+    v0.2.3 had the per-batch log lifecycle split across three modules
+    (header in commands/generate.py, iteration markers in the same
+    file's loop, stderr-tee in subprocess_helpers.py, retention in
+    commands/clean.py). v0.2.4 (architect item I3) collapses the
+    header + marker concerns into this class so future log-shape
+    changes — per-image rotation, structured JSON markers,
+    per-(input, style) row in v0.3.0 — happen in one place.
+
+    Single-style runs do NOT create a BatchLogger; caller gates on
+    is_batch. The log file is created lazily on first write so a
+    BatchLogger that the batch never writes to (e.g. an error before
+    write_header) doesn't leave an empty file behind.
+
+    The subprocess stderr-tee still owns its own fd inside
+    run_with_stderr_redaction (it needs raw bytes, not formatted
+    markers). The BatchLogger's .path is what that helper opens.
+    """
+    __slots__ = ("_batch_id", "path")
+
+    def __init__(self, batch_id: str) -> None:
+        ensure_logs_dir()
+        self._batch_id = batch_id
+        self.path: Path = LOGS_DIR / f"{batch_id}.log"
+
+    def write_header(
+        self,
+        *,
+        input_path: Path,
+        styles: list[str],
+        run_dir: Path | None,
+        backend: str,
+        quant: int,
+        preview: bool,
+        scope: str | None,
+        seed: int,
+        now: _dt.datetime | None = None,
+    ) -> None:
+        """Write the # imgen batch <id> header block.
+
+        `now` defaults to wall-clock time but is injectable for tests.
+        """
+        started = (now if now is not None else _dt.datetime.now()).isoformat(
+            timespec="seconds"
+        )
+        header = (
+            f"# imgen batch {self._batch_id}\n"
+            f"# started:  {started}\n"
+            f"# input:    {input_path}\n"
+            f"# styles:   {', '.join(styles)}\n"
+            f"# output:   {run_dir}\n"
+            f"# backend:  {backend} q{quant}  "
+            f"preview={preview}  scope={scope}  seed={seed}\n"
+        )
+        with open_log_file_append(self.path) as f:
+            f.write(header.encode())
+
+    def iteration_start(
+        self, idx: int, total: int, style: str, ts: _dt.datetime
+    ) -> None:
+        """Write the `=== [idx/total] style → <ts> ===` start marker."""
+        marker = (f"\n=== [{idx}/{total}] {style} → "
+                  f"{ts.isoformat(timespec='seconds')} ===\n")
+        with open_log_file_append(self.path) as f:
+            f.write(marker.encode())
+
+    def iteration_end(
+        self, idx: int, total: int, style: str, returncode: int, duration: int
+    ) -> None:
+        """Write the end marker: ` ok ` on success, `FAILED exit=N` on
+        non-zero returncode."""
+        status = "ok" if returncode == 0 else f"FAILED exit={returncode}"
+        marker = (f"\n=== [{idx}/{total}] {style} → {status} "
+                  f"in {duration}s ===\n")
+        with open_log_file_append(self.path) as f:
+            f.write(marker.encode())
+
+    def iteration_cancelled(
+        self, idx: int, total: int, style: str, duration: int
+    ) -> None:
+        """Write the CANCELLED marker (KeyboardInterrupt mid-mflux)."""
+        marker = (f"\n=== [{idx}/{total}] {style} → "
+                  f"CANCELLED in {duration}s ===\n")
+        with open_log_file_append(self.path) as f:
+            f.write(marker.encode())
+
+
+def prune_old_batch_logs(
+    days: int, dry_run: bool = False
+) -> tuple[int, int]:
+    """Delete .log files in LOGS_DIR with mtime older than `days`.
+
+    Returns ``(count_removed, bytes_removed)`` so the UX layer (clean.py)
+    can phrase the user message. ``dry_run=True`` counts without
+    deleting. Non-existent LOGS_DIR (fresh user who never ran a batch)
+    is silent: returns (0, 0). Only `*.log` files are touched —
+    a user-dropped `notes.txt` survives intentionally.
+
+    OSError on individual files is swallowed (file may have been
+    removed mid-glob; the next pass picks up the rest).
+    """
+    if not LOGS_DIR.exists():
+        return 0, 0
+    cutoff = _dt.datetime.now().timestamp() - days * 86400
+    removed = 0
+    removed_size = 0
+    for log in LOGS_DIR.glob("*.log"):
+        try:
+            # Snapshot stat() once — separate calls would let st_size
+            # raise OSError after st_mtime succeeded, leaving the two
+            # counters out of sync. (python C2 from v0.2.3 review)
+            st = log.stat()
+            if st.st_mtime < cutoff:
+                removed_size += st.st_size
+                if not dry_run:
+                    log.unlink()
+                removed += 1
+        except OSError:
+            pass
+    return removed, removed_size
