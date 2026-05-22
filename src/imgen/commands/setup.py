@@ -174,6 +174,14 @@ def cmd_setup(_args) -> int:
     # User-backends directory (v0.4 — same pattern as styles.d).
     # 0o700 + README that doubles as schema docs + an explicit security
     # warning, since `binary = ...` becomes an actual subprocess exec.
+    #
+    # KEEP IN SYNC WITH `### User-defined backends` in README.md.
+    # Both describe the schema in prose with the same example. If you
+    # change one (add a field, change defaults, refine the security
+    # wording), the other needs the corresponding edit. v0.5 may
+    # collapse this into a single-source generator if drift becomes a
+    # real problem — for now the cost is hand-syncing a short doc.
+    # (v0.4 architect NIT-5.)
     backends_dir = BACKENDS_D
     if not backends_dir.exists():
         backends_dir.mkdir(mode=0o700)

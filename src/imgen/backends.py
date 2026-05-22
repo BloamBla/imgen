@@ -129,8 +129,18 @@ def _is_str_nonempty(v: Any) -> bool:
     return isinstance(v, str) and v.strip() != ""
 
 
-def _is_list_of_str(v: Any) -> bool:
-    return isinstance(v, list) and all(isinstance(x, str) for x in v)
+def _is_list_of_clean_str(v: Any) -> bool:
+    """List of strings with no control bytes anywhere. Mirrors the
+    binary-field defence: argv elements go straight to execvp, not
+    a shell, so injection isn't the concern — but a flag value
+    containing `\\x1b` would leak escape sequences into mflux's
+    stderr (and from there into our log files via the
+    redaction-tee). Reject at schema time. (v0.4 security-reviewer
+    NIT-2.)"""
+    return (
+        isinstance(v, list)
+        and all(isinstance(x, str) and not _has_control_bytes(x) for x in v)
+    )
 
 
 _USER_BACKEND_SCHEMA: dict[str, tuple[str, Callable[[Any], bool]]] = {
@@ -141,7 +151,9 @@ _USER_BACKEND_SCHEMA: dict[str, tuple[str, Callable[[Any], bool]]] = {
     ),
     "supports_strength": ("bool", lambda v: isinstance(v, bool)),
     "supports_negative": ("bool", lambda v: isinstance(v, bool)),
-    "extra_args": ("list of strings", _is_list_of_str),
+    "extra_args": (
+        "list of strings (no control bytes)", _is_list_of_clean_str,
+    ),
 }
 
 _SECRET_SCHEMA: dict[str, tuple[str, Callable[[Any], bool]]] = {

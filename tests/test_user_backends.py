@@ -75,6 +75,20 @@ def test_validator_rejects_extra_args_with_non_string_element():
         validate_user_backend_schema(data, Path("test.toml"))
 
 
+def test_validator_rejects_extra_args_with_control_bytes():
+    """v0.4 security-reviewer NIT-2: argv strings reach mflux stderr
+    (and our log files via the redaction-tee). Embedded ESC bytes
+    could clear screens or set terminal titles when the user later
+    `cat ~/.imgen/logs/<id>.log`. Filter at schema time, symmetric
+    with the `binary` field defence."""
+    data = {
+        "binary": "x", "image_flag": "--image-path",
+        "extra_args": ["--model", "evil\x1b[2J"],
+    }
+    with pytest.raises(UserBackendError, match="extra_args.*control"):
+        validate_user_backend_schema(data, Path("test.toml"))
+
+
 # ── Binary content validation (paths + control bytes) ───────────────────
 
 

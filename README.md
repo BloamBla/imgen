@@ -237,7 +237,7 @@ export MY_BACKEND_API_KEY=...           # (only if [secret] declared with requir
 imgen photo.jpg --backend sdxl
 ```
 
-> **Security:** `binary = ...` is exec'd as a subprocess by imgen. Treat backends.d/ files like shell scripts — only drop in files you wrote yourself or got from a source you trust. Same risk surface as `styles.d/` (which can already inject argv into mflux), but more direct because the binary is the actual exec target.
+> **Security:** `binary = ...` is exec'd as a subprocess by imgen. Treat backends.d/ files **like shell scripts** — only drop in files you wrote yourself or got from a source you trust. This is a strictly higher trust level than `styles.d/`: a style TOML injects arguments to a known mflux binary, a backend TOML controls *which binary runs at all*. A malicious backends.d entry runs arbitrary code as your user.
 
 Collisions with built-ins (`flux.toml`, `qwen.toml`) get a `_0001` suffix with a warning; built-ins always win on name. Mirrors the styles.d collision policy. Binary paths starting with `/` are used as-is; bare names resolve to `~/imgen/.venv/bin/<name>` (the venv that hosts mflux). Built-in fields you'll never see in a user TOML: `needs_token` (FLUX-specific HF token plumbing) is hard-coded `false` for user backends — use the `[secret]` section above for non-HF tokens.
 
