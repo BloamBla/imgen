@@ -12,8 +12,7 @@ __all__ = [
     "PREVIEW_RESOLUTIONS",
     "RESOLUTIONS",
     "SCOPE_PERSON_SUFFIX",
-    "SCOPE_SCENE_REPLACEMENTS",
-    "SCOPE_SCENE_SUFFIX",
+    "SCOPE_SCENE_SUFFIX_GENERIC",
     "apply_scope",
     "detect_resolution",
 ]
@@ -42,89 +41,41 @@ PREVIEW_RESOLUTIONS = [
 ]
 
 # --scope: how to modify the prompt
+#
+# v0.5 redesign — both scopes preserve identity-anchor unconditionally;
+# scope only governs background treatment. Previously (v0.3.2–v0.4.0)
+# scope=scene actively REWROTE identity-anchor language into composition-
+# anchor language via ``SCOPE_SCENE_REPLACEMENTS``, which silently broke
+# face preservation on every default invocation (scope=scene is the
+# default). With v0.5 the identity-anchor stays in the style preset
+# unchanged for BOTH scopes; ``apply_scope`` just appends a background-
+# directive suffix:
+#
+#   * scope=person → identity preserved + background unchanged
+#   * scope=scene  → identity preserved + background also restyled
+#                    (per-style ``scene_suffix`` field if present, else
+#                    ``SCOPE_SCENE_SUFFIX_GENERIC`` fallback)
+#
+# The per-style suffix lives in ``BUILTIN_STYLES[name]["scene_suffix"]``
+# so each style's background gets a treatment tuned to its visual
+# school (Pixar 3D-painterly, Simpsons flat-color, Ghibli watercolor,
+# etc.). User styles in ``~/.imgen/styles.d/*.toml`` may declare their
+# own ``scene_suffix``; absent that field, they fall to the generic.
+
+# Person mode: identity preserved (from the style preset itself) + a
+# directive to leave the background untouched. Same wording v0.3.x
+# established — unchanged in v0.5.
 SCOPE_PERSON_SUFFIX = ", keep the background photorealistic and unchanged"
 
-# Targeted substring rewrites that reframe person-focused wording into
-# scene-focused wording when a prompt contains any of the trigger
-# substrings. Two cohorts:
-#
-#   • v0.3.4 built-in wording — "Restyle this person as <X>, while
-#     preserving the exact facial features, hairstyle, body proportions,
-#     and pose" (or its Simpsons variant). Scene mode relaxes the
-#     person-anchored preservation block into a scene-wide one.
-#   • v0.1.x — v0.3.3 legacy wording — "Transform this person into X,
-#     ..., keep face identity, keep pose [and composition]". User
-#     styles in ``~/.imgen/styles.d/`` and any custom prompts written
-#     against earlier imgen versions still use this phrasing; we keep
-#     the old triggers for back-compat so scene mode doesn't silently
-#     fall through on those.
-#
-# When neither cohort matches (truly free-form prompt), the v0.3.3
-# hybrid :func:`apply_scope` fallback appends :data:`SCOPE_SCENE_SUFFIX`
-# instead — so scene mode is never a silent no-op.
-SCOPE_SCENE_REPLACEMENTS = [
-    # ── v0.3.4 preservation-clause rewrites ───────────────────────
-    # Three variants matching the three preservation phrasings used
-    # across built-in presets:
-    #
-    #   * "exact facial features"  — vangogh, pencil (paint/sketch
-    #                                styles that don't restructure
-    #                                facial geometry)
-    #   * "facial identity"        — pixar, anime, ghibli (styles
-    #                                that DO restructure face; identity
-    #                                anchor without geometry claim)
-    #   * "recognizable expression" — simpsons (style radically
-    #                                restructures the face)
-    #
-    # All three relax to the same scene-wide preservation directive:
-    # composition + relative position of all subjects. The legacy
-    # "Transform this person" trigger below does NOT fire on v0.3.4
-    # openers ("Restyle this person as …") so these are the only
-    # rewrites applied to built-ins under scope=scene.
-    (
-        "while preserving the exact facial features, hairstyle, "
-        "body proportions, and pose",
-        "while preserving the overall composition and the relative "
-        "position of all subjects",
-    ),
-    (
-        "while preserving the facial identity, hairstyle, "
-        "body proportions, and pose",
-        "while preserving the overall composition and the relative "
-        "position of all subjects",
-    ),
-    (
-        "while preserving the recognizable expression, hairstyle, "
-        "body proportions, and pose",
-        "while preserving the overall composition and the relative "
-        "position of all subjects",
-    ),
-
-    # ── v0.1.x — v0.3.3 legacy wording (kept for back-compat) ─────
-    # Anchored to the legacy "Transform this person" syntactic context
-    # rather than the bare "this person" substring — otherwise these
-    # would also fire on v0.3.4's "Restyle this person as <X>" openers
-    # and produce grammatically-broken output like "Restyle this entire
-    # scene as a Pixar 3D character". (v0.3.4 review HIGH-2.)
-    ("Transform this person", "Transform this entire scene"),
-    ("Transform the person", "Transform the whole scene"),
-    ("keep face identity", "keep all subjects recognizable"),
-    ("keep pose and composition", "keep overall composition"),
-    ("keep pose", "keep composition"),
-]
-
-# Fallback append for scene-mode when no SCOPE_SCENE_REPLACEMENTS trigger
-# matched — i.e. a user-supplied style in ``~/.imgen/styles.d/*.toml`` or
-# a drifted built-in whose wording no longer hits the table. Without this
-# the v0.3.2 ``--scope=scene`` default would be a silent no-op on those
-# prompts, and the user would get a person-focused image despite asking
-# for a scene-wide transform. Symmetric in shape with
-# :data:`SCOPE_PERSON_SUFFIX` (leading comma + directive + preservation
-# clause). (v0.3.3 — closes the apply_scope fragility flagged as a v0.1.x
-# review nit and made more acute by v0.3.2 making scene the default.)
-SCOPE_SCENE_SUFFIX = (
-    ", transform the entire scene including background and any "
-    "additional subjects, keep overall composition"
+# Generic background-restyling directive for scope=scene. Used when the
+# selected style doesn't carry an explicit ``scene_suffix`` field — i.e.
+# user styles in ``~/.imgen/styles.d/*.toml`` that pre-date v0.5 or
+# don't bother tuning per-style background language. Built-in styles
+# ALL carry their own ``scene_suffix`` tuned to their visual school,
+# so the generic is a fallback path, not the primary one.
+SCOPE_SCENE_SUFFIX_GENERIC = (
+    ", and transform the background and surroundings to match the "
+    "same artistic style as the subject"
 )
 
 
@@ -162,43 +113,45 @@ def detect_resolution(image_path: Path, preview: bool = False) -> tuple[int, int
     return best[0], best[1]
 
 
-def apply_scope(prompt: str, scope: str | None) -> str:
-    """Modify ``prompt`` based on ``scope``: person-only, full scene,
-    or unchanged.
+def apply_scope(
+    prompt: str,
+    scope: str | None,
+    scene_suffix: str | None = None,
+) -> str:
+    """Append the scope-specific background directive to ``prompt``.
 
-    Person mode appends :data:`SCOPE_PERSON_SUFFIX` — works for any
-    prompt because it's a pure append, no substring assumption.
+    v0.5: both scopes leave the prompt's identity-anchor language
+    (e.g. ``while preserving the facial identity, hairstyle, body
+    proportions, and pose``) untouched. Scope only governs what
+    happens with the background:
 
-    Scene mode is hybrid (v0.3.3):
+    * ``scope="person"`` → ``prompt + SCOPE_PERSON_SUFFIX``
+      ("keep the background photorealistic and unchanged")
+    * ``scope="scene"`` → ``prompt + (scene_suffix or
+      SCOPE_SCENE_SUFFIX_GENERIC)``. Built-in styles carry their own
+      ``scene_suffix`` tuned to the visual school (Pixar 3D-painterly,
+      Simpsons flat-color, Ghibli watercolor, etc.); user styles in
+      ``styles.d/*.toml`` either declare their own or fall back to
+      the generic ``match the same artistic style`` directive.
+    * Any other / None scope → ``prompt`` unchanged.
 
-    1. Try every :data:`SCOPE_SCENE_REPLACEMENTS` substring rewrite in
-       order. Built-in presets all follow the v0.1.x wording
-       convention and trigger at least one rewrite, so this path
-       preserves the targeted v0.1.x-tuned phrasing.
-    2. If NO rewrite fired (e.g. a user style in ``styles.d/`` whose
-       prompt is structured differently, or a built-in whose wording
-       drifted), append :data:`SCOPE_SCENE_SUFFIX` as a fallback
-       directive so scene-mode is never a silent no-op.
+    The v0.3.2–v0.4.0 ``SCOPE_SCENE_REPLACEMENTS`` substring-rewrite
+    table is gone. That table actively STRIPPED identity-anchor
+    language from scope=scene prompts (the most common default
+    invocation) and replaced it with composition-anchor language,
+    silently losing face preservation on every person-photo run.
+    Whether the photo contains a person or not, keeping the
+    identity-anchor in the prompt costs nothing for landscape inputs
+    (FLUX Kontext's image-conditioning ignores person-directives
+    when no person is on the input) and gains everything for
+    person-photo inputs.
 
-    The hybrid keeps the precise built-in behaviour but eliminates the
-    fragility that became acute when v0.3.2 made scene the default —
-    every default invocation now needs scene-mode to actually have an
-    effect, no matter the prompt's wording.
-
-    Unknown scope values (anything other than ``"person"``/``"scene"``)
-    fall through with no modification, matching argparse's enforcement
-    at the CLI boundary.
+    Pure function — no I/O, no mutation. ``scene_suffix`` is read
+    from the active style preset by the caller (``build_iterations``)
+    and threaded through here as a string.
     """
     if scope == "person":
         return prompt + SCOPE_PERSON_SUFFIX
     if scope == "scene":
-        modified = prompt
-        applied_any = False
-        for old, new in SCOPE_SCENE_REPLACEMENTS:
-            if old in modified:
-                modified = modified.replace(old, new)
-                applied_any = True
-        if not applied_any:
-            modified = modified + SCOPE_SCENE_SUFFIX
-        return modified
+        return prompt + (scene_suffix or SCOPE_SCENE_SUFFIX_GENERIC)
     return prompt

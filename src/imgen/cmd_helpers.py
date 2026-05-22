@@ -721,7 +721,10 @@ def build_iterations(
             # "this person" stays "this person", not rewritten).
             base = preset_prompt
             if args.scope:
-                base = apply_scope(base, args.scope)
+                base = apply_scope(
+                    base, args.scope,
+                    scene_suffix=preset.get("scene_suffix"),
+                )
             prompt = base + ", " + effective_custom_prompt
         elif effective_custom_prompt:
             # Custom-only path:
@@ -736,7 +739,10 @@ def build_iterations(
             # No custom-prompt → preset prompt is the prompt.
             prompt = preset_prompt
             if args.scope:
-                prompt = apply_scope(prompt, args.scope)
+                prompt = apply_scope(
+                    prompt, args.scope,
+                    scene_suffix=preset.get("scene_suffix"),
+                )
 
         negative = preset.get("negative", "")
 

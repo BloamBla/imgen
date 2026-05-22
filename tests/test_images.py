@@ -14,8 +14,7 @@ from imgen.images import (
     PREVIEW_RESOLUTIONS,
     RESOLUTIONS,
     SCOPE_PERSON_SUFFIX,
-    SCOPE_SCENE_REPLACEMENTS,
-    SCOPE_SCENE_SUFFIX,
+    SCOPE_SCENE_SUFFIX_GENERIC,
     apply_scope,
 )
 
@@ -48,235 +47,230 @@ def test_RESOLUTIONS_dimensions_multiples_of_64():
         assert w % 64 == 0 and h % 64 == 0, f"{w}x{h} not /64"
 
 
-# ── apply_scope ───────────────────────────────────────────────────────
+# ── apply_scope (v0.5 semantics) ─────────────────────────────────────
+#
+# v0.5 redesign: both scopes preserve the prompt's identity-anchor
+# language verbatim. Scope only governs the BACKGROUND directive
+# appended. Per-style ``scene_suffix`` tuned for visual school
+# (Pixar 3D-painterly, Simpsons flat, Ghibli watercolor, etc.).
+#
+# This replaces the v0.3.x ``SCOPE_SCENE_REPLACEMENTS`` substring
+# table that actively stripped identity language from scope=scene
+# prompts — silently losing face preservation on every default-scope
+# invocation (scope=scene is the imgen default since v0.3.2).
+
 
 def test_apply_scope_none_unchanged():
     base = "Transform this person into anime"
     assert apply_scope(base, None) == base
 
 
+def test_apply_scope_unknown_value_unchanged():
+    """Defensive: anything that's not 'person'/'scene' is a no-op.
+    argparse enforces the choices at CLI boundary; this guards
+    against programmatic callers passing junk."""
+    base = "x"
+    assert apply_scope(base, "subject") == base
+    assert apply_scope(base, "") == base
+
+
 def test_apply_scope_person_appends_suffix():
-    base = "Transform this person into anime"
+    base = "Restyle this person preserving facial identity, anime"
     assert apply_scope(base, "person") == base + SCOPE_PERSON_SUFFIX
 
 
-def test_apply_scope_person_is_idempotent_only_once():
-    # Applying twice would duplicate the suffix — apply_scope is one-shot
-    # per call, callers shouldn't loop it. This test pins that "person"
-    # appends literally once, no dedup.
+def test_apply_scope_person_ignores_scene_suffix_arg():
+    """``scene_suffix`` is scope=scene-specific. Person mode must
+    ignore it — passing a per-style scene_suffix to a person-scope
+    call shouldn't leak the wrong directive into the prompt."""
     base = "x"
-    once = apply_scope(base, "person")
-    twice = apply_scope(once, "person")
-    assert twice == base + SCOPE_PERSON_SUFFIX * 2
+    result = apply_scope(base, "person", scene_suffix=", and paint sky")
+    assert result == base + SCOPE_PERSON_SUFFIX
+    assert "paint sky" not in result
 
 
-def test_apply_scope_scene_does_known_replacements():
-    base = "Transform this person, keep face identity, keep pose"
-    result = apply_scope(base, "scene")
-    # "this person" → "this entire scene"
-    assert "this person" not in result
-    assert "this entire scene" in result
-    # "keep face identity" → "keep all subjects recognizable"
-    assert "keep face identity" not in result
-    assert "keep all subjects recognizable" in result
-
-
-def test_apply_scope_scene_replacement_count_matches_table():
-    # If someone adds a tuple to SCOPE_SCENE_REPLACEMENTS without updating
-    # apply_scope, this would catch a silent no-op replacement.
-    # v0.3.4: table grew to 8 entries (3 new preservation-clause variants
-    # for v0.3.4 prompts + 5 legacy v0.1.x triggers kept for back-compat).
-    assert len(SCOPE_SCENE_REPLACEMENTS) >= 8
-    for old, new in SCOPE_SCENE_REPLACEMENTS:
-        assert isinstance(old, str) and isinstance(new, str)
-        assert old != new
-
-
-# ── scene fallback (v0.3.3 — hybrid apply_scope) ──────────────────────
-
-
-def test_apply_scope_scene_appends_suffix_when_no_trigger_matches():
-    """User-supplied styles in ~/.imgen/styles.d/ won't follow the
-    v0.1.x built-in wording convention ("this person" / "keep face
-    identity" / etc.). v0.3.2 made scope=scene the default, which made
-    silent no-ops on those prompts a real bug — user asks for scene
-    framing, gets a person-focused prompt unchanged. v0.3.3 fix: when
-    no SCOPE_SCENE_REPLACEMENTS trigger matched, append
-    SCOPE_SCENE_SUFFIX as a fallback directive."""
+def test_apply_scope_scene_no_suffix_uses_generic():
+    """No per-style suffix → fall back to the generic background
+    directive. This is the path for user-styles in styles.d/*.toml
+    that haven't tuned their own scene_suffix yet."""
     base = "Render the subject as a watercolor painting"
     result = apply_scope(base, "scene")
-    assert result == base + SCOPE_SCENE_SUFFIX
+    assert result == base + SCOPE_SCENE_SUFFIX_GENERIC
 
 
-def test_apply_scope_scene_does_not_double_apply_suffix_when_triggers_present():
-    """Built-in presets (which trigger the substring rewrites) must
-    NOT also get the fallback suffix appended — that would be a
-    redundant scene-directive on top of the already-rewritten wording."""
-    base = "Transform this person, keep face identity, keep pose"
-    result = apply_scope(base, "scene")
-    # Triggers rewrote in-place; no trailing suffix.
-    assert not result.endswith(SCOPE_SCENE_SUFFIX)
-    # And the rewrites still fired (sanity).
-    assert "this entire scene" in result
-    assert "keep all subjects recognizable" in result
+def test_apply_scope_scene_per_style_suffix_overrides_generic():
+    """Per-style ``scene_suffix`` wins over the generic fallback.
+    Built-in styles use this to tune background language to each
+    style's visual school."""
+    base = "Restyle this person preserving facial identity, ghibli"
+    ghibli_suffix = (
+        ", and transform the background into a Studio Ghibli "
+        "watercolor environment"
+    )
+    result = apply_scope(base, "scene", scene_suffix=ghibli_suffix)
+    assert result == base + ghibli_suffix
+    # Generic must NOT have leaked in alongside.
+    assert SCOPE_SCENE_SUFFIX_GENERIC not in result
+
+
+def test_apply_scope_scene_empty_per_style_suffix_falls_back_to_generic():
+    """Empty-string scene_suffix is "no per-style override" — treat as
+    if absent, fall back to generic."""
+    base = "x"
+    result = apply_scope(base, "scene", scene_suffix="")
+    assert result == base + SCOPE_SCENE_SUFFIX_GENERIC
 
 
 def test_apply_scope_scene_fallback_on_empty_prompt():
-    """Edge case: empty prompt has no triggers → fallback appends.
+    """Edge case: empty prompt + scope=scene → just the suffix.
     Defensive — shouldn't happen in practice (resolve_prompt rejects
-    empty), but apply_scope itself stays defined."""
-    assert apply_scope("", "scene") == SCOPE_SCENE_SUFFIX
+    empty input upstream)."""
+    assert apply_scope("", "scene") == SCOPE_SCENE_SUFFIX_GENERIC
 
 
-def test_apply_scope_scene_partial_trigger_match_no_fallback():
-    """If even ONE trigger fires, the fallback does NOT — the targeted
-    rewrite is sufficient. Lock the boundary against double-treatment."""
-    # Prompt has only one of the five triggers ("this person") — others
-    # absent. The single rewrite fires; no suffix gets appended.
-    base = "Transform this person into watercolor"
-    result = apply_scope(base, "scene")
-    assert "this entire scene" in result
-    assert not result.endswith(SCOPE_SCENE_SUFFIX)
-
-
-def test_apply_scope_scene_suffix_constant_shape():
-    """SCOPE_SCENE_SUFFIX must lead with a comma (so it grafts onto an
-    existing prompt cleanly) and be non-trivial."""
-    assert SCOPE_SCENE_SUFFIX.startswith(",")
-    assert "scene" in SCOPE_SCENE_SUFFIX.lower()
-    # Symmetric in shape with SCOPE_PERSON_SUFFIX — both lead with
-    # ", " for clean concatenation.
+def test_apply_scope_suffix_constants_shape():
+    """Both suffix constants must lead with a comma so they graft
+    cleanly onto an existing prompt."""
     assert SCOPE_PERSON_SUFFIX.startswith(",")
+    assert SCOPE_SCENE_SUFFIX_GENERIC.startswith(",")
 
 
-def test_apply_scope_person_unaffected_by_scene_changes():
-    """Hybrid scene logic must not touch the person path — it stays a
-    pure suffix append."""
-    base = "Render the subject as watercolor"  # no triggers
+# ── v0.5 regression: identity-anchor language survives BOTH scopes ────
+
+
+def test_apply_scope_person_keeps_facial_identity():
+    """scope=person preserves the identity-anchor language verbatim
+    (it lives in the style preset, not in the scope suffix)."""
+    base = (
+        "Restyle this person as anime, while preserving the facial "
+        "identity, hairstyle, body proportions, and pose"
+    )
     result = apply_scope(base, "person")
-    assert result == base + SCOPE_PERSON_SUFFIX
-    # And no scene-suffix leaked in.
-    assert SCOPE_SCENE_SUFFIX not in result
+    assert "facial identity" in result
+    assert "hairstyle, body proportions, and pose" in result
 
 
-# ── v0.3.4: HIGH-2 — no double-rewrite on v0.3.4 prompts ──────────────
-
-
-def test_apply_scope_scene_does_not_double_rewrite_v034_subject_opener():
-    """v0.3.4 review HIGH-2: pre-fix, the legacy 'this person' →
-    'this entire scene' trigger fired on the v0.3.4 opener
-    ('Restyle this person as <X>') simultaneously with the new
-    preservation-clause trigger, producing grammatically-broken
-    output like 'Restyle this entire scene as a Pixar 3D character'.
-    Fix: the legacy trigger was anchored to 'Transform this person'
-    (v0.1.x form only). v0.3.4 openers stay verbatim under scope=scene;
-    only the preservation clause gets relaxed."""
+def test_apply_scope_scene_keeps_facial_identity():
+    """v0.5 regression test — scope=scene must NOT strip identity-
+    anchor language. v0.3.x SCOPE_SCENE_REPLACEMENTS used to rewrite
+    'preserving the facial identity, hairstyle, body proportions, and
+    pose' into 'preserving the overall composition...' — that silently
+    broke face preservation on every default invocation. v0.5 fix:
+    identity language stays untouched, scene-suffix only ADDS a
+    background directive."""
     base = (
-        "Restyle this person as a polished Pixar 3D animated character, "
-        "while preserving the facial identity, hairstyle, body "
-        "proportions, and pose, with cartoon styling"
+        "Restyle this person as anime, while preserving the facial "
+        "identity, hairstyle, body proportions, and pose"
     )
     result = apply_scope(base, "scene")
-    # Opener stays — "Restyle this person as" not corrupted by the
-    # legacy subject rewrite.
-    assert "Restyle this person as" in result
-    assert "this entire scene as" not in result
-    # But the preservation clause IS scene-rewritten.
-    assert "facial identity" not in result
-    assert "overall composition" in result
+    # Identity-anchor language untouched.
+    assert "facial identity" in result
+    assert "hairstyle, body proportions, and pose" in result
+    # AND background directive added on top.
+    assert "background" in result.lower()
 
 
-def test_apply_scope_scene_legacy_transform_pattern_still_works():
-    """Back-compat: user styles in ~/.imgen/styles.d/ that still use
-    the v0.1.x 'Transform this person ...' wording must continue to
-    get the legacy subject rewrite under scope=scene. Anchoring the
-    trigger to 'Transform this person' (v0.3.4 HIGH-2 fix) keeps that
-    code path live for legacy callers."""
-    legacy = "Transform this person into watercolor painting"
-    result = apply_scope(legacy, "scene")
-    assert "Transform this entire scene" in result
-    assert "this person" not in result
-
-
-def test_apply_scope_scene_facial_identity_variant_rewrites():
-    """v0.3.4 pixar/anime/ghibli use 'facial identity' instead of
-    'exact facial features' because their styles restructure facial
-    geometry (HIGH-1 fix). Scene mode must recognize that variant."""
+def test_apply_scope_scene_keeps_exact_facial_features_variant():
+    """Same regression for the 'exact facial features' anchor used
+    by vangogh + pencil styles."""
     base = (
-        "Restyle this person as a Pixar character, while preserving "
-        "the facial identity, hairstyle, body proportions, and pose, "
-        "with cartoon styling"
+        "Restyle this person's portrait as a Van Gogh oil painting, "
+        "while preserving the exact facial features, hairstyle, body "
+        "proportions, and pose"
     )
     result = apply_scope(base, "scene")
-    assert "facial identity" not in result
-    assert "overall composition" in result
+    assert "exact facial features" in result
 
 
-# ── v0.3.4: built-in presets must fire scene-mode rewrites ─────────────
-
-
-def test_apply_scope_scene_rewrites_v034_preservation_clause():
-    """v0.3.4 built-in prompts have a uniform preservation clause:
-    "while preserving the exact facial features, hairstyle, body
-    proportions, and pose". Scene mode must relax this into a scene-
-    wide preservation directive — otherwise person-anchored
-    preservation overrides the user's scene-wide intent."""
-    base = (
-        "Restyle this person as a Pixar 3D character, while preserving "
-        "the exact facial features, hairstyle, body proportions, and "
-        "pose, with cartoon styling"
-    )
-    result = apply_scope(base, "scene")
-    # Person-anchored preservation gone, scene-wide preservation in.
-    assert "exact facial features" not in result
-    assert "overall composition" in result
-    assert "relative position of all subjects" in result
-
-
-def test_apply_scope_scene_rewrites_simpsons_variant_preservation():
-    """The Simpsons preset uses a slightly different preservation
-    phrasing ("recognizable expression" instead of "facial features"
-    because the style restructures the face). That variant must also
-    be recognized by scene mode."""
+def test_apply_scope_scene_keeps_recognizable_expression_variant():
+    """Same regression for the 'recognizable expression' anchor used
+    by the simpsons style (face restructures too radically to anchor
+    on identity)."""
     base = (
         "Restyle this person as a Simpsons character, while preserving "
-        "the recognizable expression, hairstyle, body proportions, "
-        "and pose, with yellow skin"
+        "the recognizable expression, hairstyle, body proportions, and "
+        "pose"
     )
     result = apply_scope(base, "scene")
-    assert "recognizable expression" not in result
-    assert "overall composition" in result
+    assert "recognizable expression" in result
+
+
+# ── Per-style scene_suffix lock-in on every built-in ──────────────────
 
 
 @pytest.mark.parametrize("name", [
     "pixar", "anime", "simpsons", "ghibli", "vangogh", "pencil",
 ])
-def test_apply_scope_scene_actually_rewrites_every_built_in(name):
-    """End-to-end lock: scope=scene applied to every built-in preset
-    prompt must produce a visibly different string (and NOT trigger
-    the v0.3.3 SCOPE_SCENE_SUFFIX fallback — built-ins should rewrite,
-    not append). Catches future drift where a preset's wording slips
-    past every trigger and silently no-ops.
-
-    v0.3.2 made scope=scene the default — this guarantee is critical
-    because every default invocation depends on it."""
-    from imgen.images import SCOPE_SCENE_SUFFIX
-    from imgen.styles import STYLES
-
-    original = STYLES[name]["prompt"]
-    rewritten = apply_scope(original, "scene")
-
-    assert rewritten != original, (
-        f"{name}: scope=scene was a no-op on built-in prompt — no "
-        f"trigger matched and fallback didn't fire"
+def test_every_built_in_has_scene_suffix(name):
+    """All 6 built-in styles carry their own ``scene_suffix`` tuned
+    to the style's visual school. Lock-in test so a future refactor
+    that drops the field silently doesn't fall the style back to the
+    generic — the per-style language is part of the brand promise."""
+    from imgen.styles import BUILTIN_STYLES
+    suffix = BUILTIN_STYLES[name].get("scene_suffix")
+    assert isinstance(suffix, str) and suffix.strip(), (
+        f"{name}: missing or empty scene_suffix field"
     )
-    # Built-ins must REWRITE (their "this person" or v0.3.4 preservation
-    # clause triggers), not fall back to the suffix append meant for
-    # truly-trigger-free prompts.
-    assert not rewritten.endswith(SCOPE_SCENE_SUFFIX), (
-        f"{name}: scope=scene used the fallback suffix instead of the "
-        f"targeted substring rewrite — a trigger should have fired"
+    # All built-in suffixes start with a comma+space for clean
+    # concatenation onto the prompt.
+    assert suffix.startswith(", "), f"{name}: scene_suffix shape"
+
+
+@pytest.mark.parametrize("name,must_contain", [
+    ("pixar", "Pixar"),
+    ("anime", "anime"),
+    ("simpsons", "Simpsons"),
+    ("ghibli", "Ghibli"),
+    ("vangogh", "Van Gogh"),
+    ("pencil", "pencil"),
+])
+def test_per_style_scene_suffix_mentions_its_style(name, must_contain):
+    """Each per-style scene_suffix should name its style/school so
+    FLUX has a clear cue. Pixar suffix mentions 'Pixar', Ghibli
+    mentions 'Ghibli', etc. Catches accidental copy-paste between
+    style suffixes."""
+    from imgen.styles import BUILTIN_STYLES
+    suffix = BUILTIN_STYLES[name]["scene_suffix"]
+    assert must_contain in suffix, (
+        f"{name}: scene_suffix doesn't mention '{must_contain}': "
+        f"{suffix!r}"
     )
+
+
+def test_every_built_in_scene_suffix_is_unique():
+    """No two built-in styles should have the same scene_suffix —
+    each is tuned for its specific visual school. A copy-paste
+    accident (e.g. vangogh's scene_suffix landing on pencil) would
+    silently produce wrong backgrounds for one of the affected
+    styles."""
+    from imgen.styles import BUILTIN_STYLES
+    suffixes = [
+        BUILTIN_STYLES[n]["scene_suffix"]
+        for n in ("pixar", "anime", "simpsons", "ghibli",
+                  "vangogh", "pencil")
+    ]
+    assert len(set(suffixes)) == len(suffixes), (
+        "duplicate scene_suffix across built-in styles"
+    )
+
+
+@pytest.mark.parametrize("name", [
+    "pixar", "anime", "simpsons", "ghibli", "vangogh", "pencil",
+])
+def test_apply_scope_scene_on_built_in_uses_per_style_suffix(name):
+    """End-to-end through apply_scope: feeding a built-in style's
+    prompt + its scene_suffix produces output ending in the
+    per-style suffix (not the generic). This is the contract the
+    cmd_helpers call-site relies on."""
+    from imgen.styles import BUILTIN_STYLES
+
+    style = BUILTIN_STYLES[name]
+    result = apply_scope(
+        style["prompt"], "scene",
+        scene_suffix=style["scene_suffix"],
+    )
+    assert result.endswith(style["scene_suffix"])
+    assert SCOPE_SCENE_SUFFIX_GENERIC not in result
 
 
 @pytest.mark.parametrize("name", [

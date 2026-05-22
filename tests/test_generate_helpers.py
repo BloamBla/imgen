@@ -830,46 +830,48 @@ def test_build_iterations_single_style_preset_prompt(fake_styles, tmp_path):
     assert it.negative == "bad anatomy"
 
 
-def test_build_iterations_default_scope_scene_rewrites_built_in_style(
+def test_build_iterations_default_scope_scene_keeps_identity_and_adds_background(
     fake_styles, tmp_path,
 ):
-    """v0.3.2 user-visible behavior change: with scope defaulting to
-    'scene' at the parser layer, every built-in style prompt (which
-    starts with 'Transform this person ...  keep face identity, keep
-    pose ...') gets the SCOPE_SCENE_REPLACEMENTS chain applied on a
-    plain ``imgen photo.jpg`` invocation. This locks the end-to-end
-    chain — parser default → fixture default → build_iterations →
-    apply_scope → final Iteration.prompt."""
+    """v0.5 redesign: scope=scene (parser default) now PRESERVES the
+    identity-anchor language in the style preset verbatim AND appends
+    a background-restyling directive on top. Previously (v0.3.2-v0.4)
+    scope=scene actively stripped identity language via
+    SCOPE_SCENE_REPLACEMENTS, silently losing face preservation on
+    every default-scope invocation. This test locks the corrected
+    end-to-end chain: parser → build_iterations → apply_scope with
+    per-style scene_suffix → final Iteration.prompt."""
     fake_styles["anime"] = {
         "prompt": (
-            "Transform this person into anime, keep face identity, "
-            "keep pose and composition"
+            "Restyle this person as anime, while preserving the facial "
+            "identity, hairstyle, body proportions, and pose"
+        ),
+        "scene_suffix": (
+            ", and transform the background into a hand-painted "
+            "anime environment"
         ),
     }
 
     its = _build(fake_styles=fake_styles, tmp_path=tmp_path)
     prompt = its[0].prompt
 
-    # Every SCOPE_SCENE_REPLACEMENTS rule fired:
-    assert "this person" not in prompt
-    assert "this entire scene" in prompt
-    assert "keep face identity" not in prompt
-    assert "keep all subjects recognizable" in prompt
-    assert "keep pose and composition" not in prompt
-    assert "keep overall composition" in prompt
+    # Identity-anchor language survives the scope transform intact.
+    assert "facial identity" in prompt
+    assert "hairstyle, body proportions, and pose" in prompt
+    # AND the per-style scene_suffix is appended on top.
+    assert "hand-painted anime environment" in prompt
 
 
-def test_build_iterations_default_scope_scene_falls_back_for_user_style(
+def test_build_iterations_default_scope_scene_uses_generic_when_no_suffix(
     fake_styles, tmp_path,
 ):
-    """v0.3.3 hybrid apply_scope locked end-to-end: a user-defined
-    preset whose prompt has NONE of the SCOPE_SCENE_REPLACEMENTS
-    trigger substrings gets the SCOPE_SCENE_SUFFIX directive appended
-    instead. Without this, the v0.3.2 ``--scope=scene`` default would
-    silently no-op on every user-defined style in ~/.imgen/styles.d/."""
-    from imgen.images import SCOPE_SCENE_SUFFIX
+    """v0.5 fallback path: a user-defined preset (or built-in whose
+    scene_suffix was dropped accidentally) gets the generic background
+    directive appended. Validates the (preset.get("scene_suffix") or
+    GENERIC) lookup wiring through cmd_helpers.build_iterations."""
+    from imgen.images import SCOPE_SCENE_SUFFIX_GENERIC
 
-    # Trigger-free prompt — would silent-no-op pre-v0.3.3.
+    # User style with no scene_suffix → fallback to generic.
     fake_styles["watercolor"] = {
         "prompt": "Render the subject as a watercolor painting",
     }
@@ -879,7 +881,7 @@ def test_build_iterations_default_scope_scene_falls_back_for_user_style(
         styles_list=["watercolor"],
     )
 
-    assert its[0].prompt.endswith(SCOPE_SCENE_SUFFIX)
+    assert its[0].prompt.endswith(SCOPE_SCENE_SUFFIX_GENERIC)
 
 
 def test_build_iterations_scope_none_explicit_keeps_preset_verbatim(
@@ -958,30 +960,34 @@ def test_build_iterations_augmentation_multi_style_shares_custom_addition(
 def test_build_iterations_augmentation_scope_applies_to_base_not_addition(
     fake_styles, tmp_path,
 ):
-    """Scope rewrites the BASE preset prompt only; the user's added
-    text is passed through verbatim. Otherwise scope-mode replacements
-    could accidentally touch user wording (e.g. the user wrote 'this
-    person at a beach' meaning the original subject — scope=scene
-    must not rewrite that to 'this entire scene at a beach' inside
-    the user's addition)."""
+    """Scope appends the background directive to the BASE preset prompt
+    only; the user's added text comes AFTER scope-application. v0.5
+    semantics keep the preset's identity-anchor intact and add the
+    per-style scene_suffix BETWEEN base prompt and user augmentation.
+    User text is always passed through verbatim — it never gets
+    rewritten by scope logic."""
     fake_styles["anime"] = {
-        "prompt": "Transform this person into anime"
+        "prompt": (
+            "Restyle this person as anime, while preserving the "
+            "facial identity"
+        ),
+        "scene_suffix": ", and transform the background to anime",
     }
 
     its = _build(
         fake_styles=fake_styles, tmp_path=tmp_path,
         styles_list=["anime"],
-        effective_custom_prompt="with this person at a beach",
+        effective_custom_prompt="standing at a beach",
         args=_build_args(scope="scene", style=["anime"]),
     )
     prompt = its[0].prompt
 
-    # Base preset has its "Transform this person" → "Transform this
-    # entire scene" rewritten by scope=scene.
-    assert "Transform this entire scene" in prompt
-    # User's verbatim "this person at a beach" survives intact —
-    # not rewritten to "this entire scene at a beach".
-    assert "this person at a beach" in prompt
+    # Identity-anchor preserved in base (v0.5 regression check).
+    assert "facial identity" in prompt
+    # Scene suffix appended to base.
+    assert "transform the background to anime" in prompt
+    # User addition appears verbatim AFTER scope+suffix, joined by ", ".
+    assert prompt.endswith(", standing at a beach")
 
 
 def test_build_iterations_custom_prompt_without_explicit_style_uses_only_custom(
@@ -1094,17 +1100,24 @@ def test_build_iterations_custom_prompt_ignores_scope(fake_styles, tmp_path):
 
 
 def test_build_iterations_scope_applied_to_preset_prompt(fake_styles, tmp_path):
-    """No custom prompt + scope=scene → apply_scope's legacy
-    "Transform this person" trigger fires through the build_iterations
-    plumbing and produces "Transform this entire scene".
+    """No custom prompt + scope=scene → identity-anchor language stays
+    intact and the per-style scene_suffix gets appended through the
+    build_iterations plumbing.
 
-    (v0.3.4: the legacy trigger was anchored to the full "Transform
-    this person" prefix to avoid double-firing on v0.3.4 openers like
-    "Restyle this person as <X>". The HIGH-2 fix kept the legacy path
-    live for back-compat with user-defined styles still using v0.1.x
-    wording.)"""
+    v0.5 behaviour change: previously the legacy "Transform this
+    person" → "Transform this entire scene" rewrite fired here; v0.5
+    deletes that rewrite entirely and instead appends a background
+    directive. Identity language stays verbatim, regardless of scope.
+    """
     fake_styles["anime"] = {
-        "prompt": "Transform this person, keep face identity, keep pose"
+        "prompt": (
+            "Restyle this person as anime, while preserving the facial "
+            "identity, hairstyle, body proportions, and pose"
+        ),
+        "scene_suffix": (
+            ", and transform the background and surroundings into "
+            "anime environment"
+        ),
     }
 
     its = _build(
@@ -1113,10 +1126,13 @@ def test_build_iterations_scope_applied_to_preset_prompt(fake_styles, tmp_path):
         args=_build_args(scope="scene"),
     )
 
-    # scope=scene swaps "Transform this person" → "Transform this
-    # entire scene" via the legacy v0.1.x rewrite path.
-    assert "this person" not in its[0].prompt
-    assert "Transform this entire scene" in its[0].prompt
+    # Person language stays verbatim — v0.5 doesn't rewrite it.
+    assert "Restyle this person" in its[0].prompt
+    # Identity-anchor language survives the scope transform.
+    assert "facial identity" in its[0].prompt
+    assert "hairstyle, body proportions, and pose" in its[0].prompt
+    # Scene suffix appended.
+    assert "anime environment" in its[0].prompt
 
 
 def test_build_iterations_scope_person_adds_suffix(fake_styles, tmp_path):

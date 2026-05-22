@@ -118,6 +118,16 @@ BUILTIN_STYLES: dict[str, dict] = {
         ),
         "guidance": 3.5,
         "strength": 0.55,
+        # v0.5: scope=scene now PRESERVES identity-anchor (it stays in
+        # the prompt above) and only ADDS a background-restyling
+        # directive tuned for this style's visual school. Pixar
+        # backgrounds are painterly 3D environments with cinematic
+        # depth-of-field and soft volumetric lighting.
+        "scene_suffix": (
+            ", and transform the background and surroundings into a "
+            "Pixar-style 3D-animated environment with soft volumetric "
+            "lighting, painterly textures, and cinematic depth-of-field"
+        ),
     },
 
     "anime": {
@@ -137,6 +147,14 @@ BUILTIN_STYLES: dict[str, dict] = {
         ),
         "guidance": 4.0,
         "strength": 0.60,
+        # Anime backgrounds (背景画) are hand-painted detailed scenery
+        # — vivid skies, soft cloud shapes, lush illustrated nature.
+        # Cel-shaded but rich in painterly detail, not flat.
+        "scene_suffix": (
+            ", and transform the background and surroundings into a "
+            "hand-painted anime cel-shaded environment with vibrant "
+            "skies, soft cloud shapes, and detailed illustrated scenery"
+        ),
     },
 
     "simpsons": {
@@ -160,6 +178,16 @@ BUILTIN_STYLES: dict[str, dict] = {
         ),
         "guidance": 4.5,
         "strength": 0.65,
+        # Simpsons backgrounds are deliberately flat — bright saturated
+        # color planes, bold outlines, simplified geometric props. NOT
+        # painterly. Echoes the style's flat-color aesthetic so the
+        # background doesn't compete with the foreground subject.
+        "scene_suffix": (
+            ", and transform the background and surroundings into a "
+            "Simpsons-style flat-color cartoon scene with bold black "
+            "outlines, simplified geometric shapes, and saturated "
+            "1990s Springfield aesthetic"
+        ),
     },
 
     "ghibli": {
@@ -180,6 +208,15 @@ BUILTIN_STYLES: dict[str, dict] = {
         ),
         "guidance": 3.5,
         "strength": 0.55,
+        # Ghibli's signature is lush watercolor environments with soft
+        # pastels, dramatic skies, lush nature. The atmospheric haze
+        # is part of the brand — Miyazaki's painters layer warm light
+        # diffusion over the whole scene.
+        "scene_suffix": (
+            ", and transform the background and surroundings into a "
+            "Studio Ghibli watercolor environment with soft pastel "
+            "skies, lush painterly nature, and warm atmospheric haze"
+        ),
     },
 
     "vangogh": {
@@ -197,6 +234,15 @@ BUILTIN_STYLES: dict[str, dict] = {
         ),
         "guidance": 4.0,
         "strength": 0.55,
+        # Van Gogh's backgrounds are the SAME oil paint as the subject
+        # — swirling impasto skies (Starry Night), textured fields,
+        # bold complementary colors. Echoes the main prompt's brush
+        # language so subject and background share the same paint.
+        "scene_suffix": (
+            ", and transform the background and surroundings as a Van "
+            "Gogh oil painting with thick visible impasto brushstrokes, "
+            "swirling textured skies, and bold post-impressionist colors"
+        ),
     },
 
     "pencil": {
@@ -214,6 +260,15 @@ BUILTIN_STYLES: dict[str, dict] = {
         ),
         "guidance": 3.5,
         "strength": 0.50,
+        # Pencil is "render", not "transform" — it's a drawing
+        # technique. Background gets the same monochrome graphite
+        # treatment with cross-hatching, varied tonal density, and
+        # the implied paper substrate of the foreground subject.
+        "scene_suffix": (
+            ", and render the background and surroundings as a "
+            "detailed graphite pencil sketch with fine cross-hatching, "
+            "varied tonal density, and visible paper texture"
+        ),
     },
 }
 
@@ -248,6 +303,14 @@ _USER_STYLE_SCHEMA: dict[str, tuple[str, Callable[[Any], bool]]] = {
         "number 0.0..1.0",
         lambda v: _is_number_not_bool(v) and 0.0 <= v <= 1.0,
     ),
+    # v0.5: optional per-style background directive for scope=scene.
+    # When absent, scope=scene falls back to ``SCOPE_SCENE_SUFFIX_GENERIC``
+    # from images.py. Authors can tune this to match their style's
+    # visual school (watercolor / flat-color / impasto / etc.) — see
+    # built-in BUILTIN_STYLES for examples. The value is appended
+    # verbatim to the prompt, so include a leading separator (e.g.
+    # ``, and transform the background...``).
+    "scene_suffix": ("string", lambda v: isinstance(v, str)),
 }
 
 
