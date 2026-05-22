@@ -1349,11 +1349,15 @@ def stub_mflux(monkeypatch):
     """Replace run_with_stderr_redaction with a controllable stub.
 
     Default returns 0 (success); tests override `state["returncode"]`
-    or `state["raise"]` to drive failure / cancel scenarios."""
+    or `state["raise"]` to drive failure / cancel scenarios.
+
+    v0.2.5: parameter renamed log_path → log_file (BinaryIO) to match
+    the post-FWD-6 signature. The stub records whether a borrowed fd
+    was passed without exercising the actual subprocess stream."""
     state: dict = {"returncode": 0, "raise": None, "calls": []}
 
-    def fake_run(cmd, env, log_path=None):
-        state["calls"].append({"cmd": cmd, "env": env, "log_path": log_path})
+    def fake_run(cmd, env, log_file=None):
+        state["calls"].append({"cmd": cmd, "env": env, "log_file": log_file})
         if state["raise"] is not None:
             raise state["raise"]
         return state["returncode"]

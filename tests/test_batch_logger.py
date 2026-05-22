@@ -171,8 +171,9 @@ def test_batch_logger_iteration_cancelled_marker(logs_dir):
 
 
 def test_batch_logger_markers_append_not_truncate(logs_dir):
-    """Each marker writes to a fresh open_log_file_append handle —
-    earlier content must survive."""
+    """Each marker writes to the persistent fd opened on first write;
+    earlier content must survive (v0.2.5+ holds the fd for the whole
+    batch instead of open/close per marker)."""
     logger = BatchLogger("abc")
     logger.write_header(
         input_path=Path("/x"), styles=["a"], run_dir=Path("/o"),
@@ -189,6 +190,100 @@ def test_batch_logger_markers_append_not_truncate(logs_dir):
     assert content.find("imgen batch") < content.find("[1/2] a")
     assert content.find("[1/2] a") < content.find("[2/2] b")
     assert "FAILED" in content
+
+
+# ── BatchLogger ctxmgr + persistent fd (v0.2.5 — IMP-4) ────────────────
+
+
+def test_batch_logger_works_as_context_manager(logs_dir):
+    """`with BatchLogger(...) as logger:` is the v0.2.5 recommended
+    usage. After __exit__ the fd is closed; writes after __exit__
+    would fail."""
+    with BatchLogger("ctxmgr1") as logger:
+        logger.write_header(
+            input_path=Path("/x"), styles=["a"], run_dir=Path("/o"),
+            backend="qwen", quant=4, preview=False, scope=None, seed=1,
+        )
+        assert "imgen batch" in _read(logger.path)
+    # fd should be closed now.
+    assert logger._fd is None
+
+
+def test_batch_logger_lazy_open_no_file_until_first_write(logs_dir):
+    """Constructor mkdir's LOGS_DIR but should NOT create the log file
+    itself. A BatchLogger that's instantiated then abandoned (e.g.
+    preflight die before write_header) must not leave an empty .log."""
+    logger = BatchLogger("lazy1")
+
+    assert not logger.path.exists(), \
+        "log file must not exist until first write"
+
+    # First write triggers open.
+    logger.iteration_start(idx=1, total=1, style="x", ts=dt.datetime.now())
+    assert logger.path.exists()
+
+
+def test_batch_logger_close_is_idempotent(logs_dir):
+    """close() called twice (e.g. via __exit__ then explicit) must not
+    raise. Closes a closed fd → error."""
+    logger = BatchLogger("idem1")
+    logger.write_header(
+        input_path=Path("/x"), styles=["a"], run_dir=Path("/o"),
+        backend="qwen", quant=4, preview=False, scope=None, seed=1,
+    )
+    logger.close()
+    logger.close()  # must not raise
+
+
+def test_batch_logger_close_safe_with_no_writes(logs_dir):
+    """If a batch errored between construction and any write_*, the fd
+    was never opened. close() should be a silent no-op, not crash."""
+    logger = BatchLogger("noop1")
+    logger.close()  # must not raise
+
+
+def test_batch_logger_borrow_fd_opens_lazily(logs_dir):
+    """borrow_fd() is the entry point for the subprocess stderr-tee.
+    First borrow opens the fd; subsequent borrows return the same one."""
+    logger = BatchLogger("borrow1")
+    assert logger._fd is None
+
+    fd1 = logger.borrow_fd()
+    assert logger._fd is fd1
+    assert logger.path.exists()
+
+    fd2 = logger.borrow_fd()
+    assert fd2 is fd1, "borrow_fd must return the same fd while open"
+
+
+def test_batch_logger_borrowed_fd_writes_interleave_with_markers(logs_dir):
+    """Critical coherence: subprocess writes via borrow_fd() and
+    BatchLogger writes via iteration_* must land in temporal order
+    in the file. Same Python file object, same kernel fd, same
+    append-position → ordered."""
+    logger = BatchLogger("interleave1")
+    logger.write_header(
+        input_path=Path("/x"), styles=["a"], run_dir=Path("/o"),
+        backend="qwen", quant=4, preview=False, scope=None, seed=1,
+    )
+    logger.iteration_start(
+        idx=1, total=1, style="a",
+        ts=dt.datetime(2026, 5, 22, 10, 0, 0),
+    )
+    # Simulate subprocess writing redacted bytes mid-iteration.
+    fd = logger.borrow_fd()
+    fd.write(b"some stderr line\n")
+    fd.flush()
+    logger.iteration_end(idx=1, total=1, style="a", returncode=0, duration=2)
+    logger.close()
+
+    content = _read(logger.path)
+    h_pos = content.find("imgen batch")
+    s_pos = content.find("[1/1] a → 2026")
+    stderr_pos = content.find("some stderr line")
+    e_pos = content.find(" → ok in 2s")
+    # All four blocks present and in expected order.
+    assert -1 < h_pos < s_pos < stderr_pos < e_pos
 
 
 # ── prune_old_batch_logs ────────────────────────────────────────────────

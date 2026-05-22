@@ -264,7 +264,9 @@ def _run_one_iteration(
 
     try:
         returncode = run_with_stderr_redaction(
-            cmd, env=ctx.env, log_path=logger.path if logger else None
+            cmd,
+            env=ctx.env,
+            log_file=logger.borrow_fd() if logger else None,
         )
     except KeyboardInterrupt:
         warn("Cancelled by user")
@@ -778,11 +780,11 @@ def cmd_generate(args) -> int:
 
     # 13) Per-batch log (multi-style only). BatchLogger owns the lifecycle:
     # header here, iteration start/end/cancelled markers inside
-    # _run_one_iteration, retention via runs.prune_old_batch_logs called
-    # from imgen clean. mflux stderr (after token redaction) is tee'd
-    # into the same file by run_with_stderr_redaction. All writes go
-    # through open_log_file_append (binary mode, 0o600 from creation
-    # — see runs.py for the umask rationale).
+    # _run_one_iteration, mflux stderr-tee via borrow_fd() inside
+    # run_with_stderr_redaction, retention via runs.prune_old_batch_logs
+    # called from imgen clean. Held open for the whole batch (v0.2.5
+    # IMP-4 — saves ~200 open/close syscalls at N×M=50); closed in the
+    # try/finally below regardless of how cmd_generate exits.
     logger: BatchLogger | None = None
     if is_batch:
         logger = BatchLogger(batch_id)
@@ -797,69 +799,76 @@ def cmd_generate(args) -> int:
             seed=seed,
         )
 
-    # 14) Minimal env (don't forward random secrets from parent shell).
-    env: dict[str, str] = {}
-    for key in ("PATH", "HOME", "USER", "LANG", "LC_ALL", "TMPDIR",
-                "HF_HOME", "HF_HUB_CACHE", "TRANSFORMERS_CACHE",
-                "MLX_METAL_PRECOMPILE_PATH"):
-        if key in os.environ:
-            env[key] = os.environ[key]
-    if token:
-        env["HF_TOKEN"] = token
-    term = shutil.get_terminal_size(fallback=(80, 24))
-    env["COLUMNS"] = str(term.columns)
-    env["LINES"] = str(term.lines)
+    try:
+        # 14) Minimal env (don't forward random secrets from parent shell).
+        env: dict[str, str] = {}
+        for key in ("PATH", "HOME", "USER", "LANG", "LC_ALL", "TMPDIR",
+                    "HF_HOME", "HF_HUB_CACHE", "TRANSFORMERS_CACHE",
+                    "MLX_METAL_PRECOMPILE_PATH"):
+            if key in os.environ:
+                env[key] = os.environ[key]
+        if token:
+            env["HF_TOKEN"] = token
+        term = shutil.get_terminal_size(fallback=(80, 24))
+        env["COLUMNS"] = str(term.columns)
+        env["LINES"] = str(term.lines)
 
-    # 15) The loop. Failures don't break the batch — log + continue,
-    # surface the summary at the end. Single-style retains v0.2.x exit
-    # semantics (mflux return code passes through).
-    succeeded: list[tuple[str, Path, int]] = []
-    failed: list[tuple[str, int, Path]] = []
-    total = len(iterations)
+        # 15) The loop. Failures don't break the batch — log + continue,
+        # surface the summary at the end. Single-style retains v0.2.x
+        # exit semantics (mflux return code passes through).
+        succeeded: list[tuple[str, Path, int]] = []
+        failed: list[tuple[str, int, Path]] = []
+        total = len(iterations)
 
-    # Bundle the 9 batch-invariant args into a single BatchContext so
-    # _run_one_iteration's signature stays compact — and v0.3.0's
-    # nested N×M loop in commands/batch.py can thread one value through
-    # the inner loop instead of nine. (architect IMP-3 from v0.2.4 review)
-    ctx = BatchContext(
-        backend=backend,
-        seed=seed,
-        width=width,
-        height=height,
-        input_path=input_path,
-        effective_custom_prompt=effective_custom_prompt,
-        args=args,
-        batch_id=batch_id,
-        env=env,
-    )
-
-    for idx, it in enumerate(iterations, start=1):
-        cont = _run_one_iteration(
-            it=it,
-            idx=idx,
-            total=total,
-            is_batch=is_batch,
-            ctx=ctx,
-            logger=logger,
-            succeeded=succeeded,
-            failed=failed,
+        # Bundle the 9 batch-invariant args into a single BatchContext so
+        # _run_one_iteration's signature stays compact — and v0.3.0's
+        # nested N×M loop in commands/batch.py can thread one value
+        # through the inner loop instead of nine. (architect IMP-3 from
+        # v0.2.4 review)
+        ctx = BatchContext(
+            backend=backend,
+            seed=seed,
+            width=width,
+            height=height,
+            input_path=input_path,
+            effective_custom_prompt=effective_custom_prompt,
+            args=args,
+            batch_id=batch_id,
+            env=env,
         )
-        if not cont:
-            return 130
 
-    # 16) Open in Preview (single-style) or Finder (multi-style); silent
-    # no-op on --no-open or when `open` is missing.
-    _open_results(
-        succeeded=succeeded,
-        run_dir=run_dir,
-        is_batch=is_batch,
-        no_open=args.no_open,
-    )
+        for idx, it in enumerate(iterations, start=1):
+            cont = _run_one_iteration(
+                it=it,
+                idx=idx,
+                total=total,
+                is_batch=is_batch,
+                ctx=ctx,
+                logger=logger,
+                succeeded=succeeded,
+                failed=failed,
+            )
+            if not cont:
+                return 130
 
-    # 17) End-of-batch summary (only for multi-style — single-style keeps
-    # the v0.2.x lean output).
-    if is_batch:
-        _print_batch_summary(succeeded, failed, total)
+        # 16) Open in Preview (single-style) or Finder (multi-style);
+        # silent no-op on --no-open or when `open` is missing.
+        _open_results(
+            succeeded=succeeded,
+            run_dir=run_dir,
+            is_batch=is_batch,
+            no_open=args.no_open,
+        )
 
-    # 18) Exit code (single-style passthrough vs multi-style 0/1/5 map).
-    return _exit_code(is_batch=is_batch, succeeded=succeeded, failed=failed)
+        # 17) End-of-batch summary (only for multi-style — single-style
+        # keeps the v0.2.x lean output).
+        if is_batch:
+            _print_batch_summary(succeeded, failed, total)
+
+        # 18) Exit code (single-style passthrough vs multi-style 0/1/5).
+        return _exit_code(
+            is_batch=is_batch, succeeded=succeeded, failed=failed
+        )
+    finally:
+        if logger is not None:
+            logger.close()

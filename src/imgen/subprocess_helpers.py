@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
-from pathlib import Path
+from typing import BinaryIO
 
 __all__ = ["format_cmd", "run_with_stderr_redaction"]
 
@@ -24,7 +24,7 @@ _TOKEN_LEAK_RE = re.compile(rb"hf_[A-Za-z0-9_\-]{36,}")
 def run_with_stderr_redaction(
     cmd: list[str],
     env: dict,
-    log_path: Path | None = None,
+    log_file: BinaryIO | None = None,
 ) -> int:
     """Run subprocess streaming stderr to terminal with HF token patterns
     redacted on the fly.
@@ -33,27 +33,17 @@ def run_with_stderr_redaction(
     buffered so multi-byte UTF-8 sequences (e.g. tqdm's unicode block chars)
     don't get split mid-character.
 
-    log_path (v0.2.3+): if given, the SAME redacted bytes are appended to
-    this file in real time. Same byte stream as the terminal, so the
-    on-disk log is also token-safe. Caller is responsible for creating
-    the parent dir (typically `runs.ensure_logs_dir()`).
+    log_file (v0.2.5+): if given, the SAME redacted bytes are appended to
+    this file object in real time. Same byte stream as the terminal, so
+    the on-disk log is also token-safe. The caller owns the lifecycle —
+    typically a BatchLogger's borrowed fd; this helper writes + flushes
+    but does NOT close. (Was `log_path: Path | None` in v0.2.3-v0.2.4;
+    architect FWD-6 from v0.2.4 review unified ownership under
+    BatchLogger.)
     """
     proc = subprocess.Popen(
         cmd, env=env, stderr=subprocess.PIPE, bufsize=0,
     )
-    # Open via os.open with explicit 0o600 mode so logs survive a hostile
-    # umask on shared Macs — Path.open("ab") would inherit 0o644 from
-    # default umask, making the file world-readable inside LOGS_DIR's
-    # 0o700 wrapper. (security I1 from v0.2.3 review)
-    if log_path is not None:
-        # Lazy import to avoid runs → subprocess_helpers → runs cycle for
-        # callers that don't pass log_path. (Cycle was vs paths.py pre-
-        # v0.2.4; helper moved to runs.py but the lazy-import pattern is
-        # still warranted — keeps the no-log fast path import-light.)
-        from .runs import open_log_file_append
-        log_file = open_log_file_append(log_path)
-    else:
-        log_file = None
     buffer = b""
     try:
         # Explicit guard rather than `assert`: asserts are stripped under
@@ -98,9 +88,6 @@ def run_with_stderr_redaction(
         except subprocess.TimeoutExpired:
             proc.kill()
         raise
-    finally:
-        if log_file is not None:
-            log_file.close()
     return proc.returncode
 
 

@@ -194,10 +194,12 @@ class BatchLogger:
     v0.2.3 had the per-batch log lifecycle split across three modules
     (header in commands/generate.py, iteration markers in the same
     file's loop, stderr-tee in subprocess_helpers.py, retention in
-    commands/clean.py). v0.2.4 (architect item I3) collapses the
-    header + marker concerns into this class so future log-shape
-    changes — per-image rotation, structured JSON markers,
-    per-(input, style) row in v0.3.0 — happen in one place.
+    commands/clean.py). v0.2.4 (architect item I3) collapsed the
+    header + marker concerns into this class. v0.2.5 (architect item
+    IMP-4) folds in fd ownership too — the file is opened lazily on
+    first write and held for the batch lifetime, instead of
+    open/flush/close per marker. At N×M=50 in v0.3.0 that saves ~200
+    open/close syscalls per batch.
 
     Single-style runs do NOT create a BatchLogger; caller gates on
     is_batch. The log *directory* is created eagerly in ``__init__``
@@ -208,16 +210,61 @@ class BatchLogger:
     leave an empty LOGS_DIR if it didn't exist already, which is
     benign (0o700, no content).
 
-    The subprocess stderr-tee still owns its own fd inside
-    run_with_stderr_redaction (it needs raw bytes, not formatted
-    markers). The BatchLogger's .path is what that helper opens.
+    Lifecycle:
+      * ``BatchLogger(batch_id)`` — mkdir's LOGS_DIR, sets self.path
+      * first call to write_header / iteration_* / borrow_fd — opens
+        the underlying file via open_log_file_append (0o600 from
+        creation)
+      * ``close()`` — flushes + closes the fd if it was opened
+      * also usable as a context manager (``with BatchLogger(...) as
+        logger: ...``) — __exit__ calls close().
+
+    The subprocess stderr-tee borrows the open fd via
+    ``borrow_fd()`` and writes redacted bytes through the same file
+    object. BatchLogger remains the owner — subprocess_helpers does
+    NOT close it. (architect FWD-6 from v0.2.4 review)
     """
-    __slots__ = ("_batch_id", "path")
+    __slots__ = ("_batch_id", "_fd", "path")
 
     def __init__(self, batch_id: str) -> None:
         ensure_logs_dir()
         self._batch_id = batch_id
+        self._fd: BinaryIO | None = None
         self.path: Path = LOGS_DIR / f"{batch_id}.log"
+
+    def __enter__(self) -> "BatchLogger":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
+
+    def _ensure_open(self) -> BinaryIO:
+        """Open the log file lazily on first write."""
+        if self._fd is None:
+            self._fd = open_log_file_append(self.path)
+        return self._fd
+
+    def close(self) -> None:
+        """Flush and close the underlying fd if it was opened.
+
+        Safe to call multiple times (second call is a no-op). Safe to
+        call when no writes happened (fd was never opened — also no-op).
+        """
+        if self._fd is not None:
+            try:
+                self._fd.flush()
+            finally:
+                self._fd.close()
+                self._fd = None
+
+    def borrow_fd(self) -> BinaryIO:
+        """Return the open (lazy-opened if needed) file object so the
+        subprocess stderr-tee can write redacted bytes through it.
+
+        Caller writes + flushes but MUST NOT close — BatchLogger owns
+        the lifecycle via its own close() / __exit__.
+        """
+        return self._ensure_open()
 
     def write_header(
         self,
@@ -248,8 +295,9 @@ class BatchLogger:
             f"# backend:  {backend} q{quant}  "
             f"preview={preview}  scope={scope}  seed={seed}\n"
         )
-        with open_log_file_append(self.path) as f:
-            f.write(header.encode())
+        fd = self._ensure_open()
+        fd.write(header.encode())
+        fd.flush()
 
     def iteration_start(
         self, idx: int, total: int, style: str, ts: _dt.datetime
@@ -257,8 +305,9 @@ class BatchLogger:
         """Write the `=== [idx/total] style → <ts> ===` start marker."""
         marker = (f"\n=== [{idx}/{total}] {style} → "
                   f"{ts.isoformat(timespec='seconds')} ===\n")
-        with open_log_file_append(self.path) as f:
-            f.write(marker.encode())
+        fd = self._ensure_open()
+        fd.write(marker.encode())
+        fd.flush()
 
     def iteration_end(
         self, idx: int, total: int, style: str, returncode: int, duration: int
@@ -268,8 +317,9 @@ class BatchLogger:
         status = "ok" if returncode == 0 else f"FAILED exit={returncode}"
         marker = (f"\n=== [{idx}/{total}] {style} → {status} "
                   f"in {duration}s ===\n")
-        with open_log_file_append(self.path) as f:
-            f.write(marker.encode())
+        fd = self._ensure_open()
+        fd.write(marker.encode())
+        fd.flush()
 
     def iteration_cancelled(
         self, idx: int, total: int, style: str, duration: int
@@ -277,8 +327,9 @@ class BatchLogger:
         """Write the CANCELLED marker (KeyboardInterrupt mid-mflux)."""
         marker = (f"\n=== [{idx}/{total}] {style} → "
                   f"CANCELLED in {duration}s ===\n")
-        with open_log_file_append(self.path) as f:
-            f.write(marker.encode())
+        fd = self._ensure_open()
+        fd.write(marker.encode())
+        fd.flush()
 
 
 def prune_old_batch_logs(
