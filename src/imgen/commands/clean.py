@@ -7,7 +7,8 @@ import datetime
 import shutil
 
 from ..colors import C, dim, info, ok, step, warn
-from ..paths import HF_CACHE, LOG_RETENTION_DAYS, LOGS_DIR
+from ..paths import HF_CACHE
+from ..runs import LOG_RETENTION_DAYS, LOGS_DIR
 
 
 def _prune_old_batch_logs(args) -> None:

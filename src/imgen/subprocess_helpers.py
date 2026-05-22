@@ -34,7 +34,7 @@ def run_with_stderr_redaction(
     log_path (v0.2.3+): if given, the SAME redacted bytes are appended to
     this file in real time. Same byte stream as the terminal, so the
     on-disk log is also token-safe. Caller is responsible for creating
-    the parent dir (typically `paths.ensure_logs_dir()`).
+    the parent dir (typically `runs.ensure_logs_dir()`).
     """
     proc = subprocess.Popen(
         cmd, env=env, stderr=subprocess.PIPE, bufsize=0,
@@ -44,9 +44,11 @@ def run_with_stderr_redaction(
     # default umask, making the file world-readable inside LOGS_DIR's
     # 0o700 wrapper. (security I1 from v0.2.3 review)
     if log_path is not None:
-        # Lazy import to avoid the paths → subprocess_helpers → paths cycle
-        # for callers that don't pass log_path.
-        from .paths import open_log_file_append
+        # Lazy import to avoid runs → subprocess_helpers → runs cycle for
+        # callers that don't pass log_path. (Cycle was vs paths.py pre-
+        # v0.2.4; helper moved to runs.py but the lazy-import pattern is
+        # still warranted — keeps the no-log fast path import-light.)
+        from .runs import open_log_file_append
         log_file = open_log_file_append(log_path)
     else:
         log_file = None

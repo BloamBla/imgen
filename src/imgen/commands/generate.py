@@ -24,15 +24,17 @@ from ..history import append_history, load_history
 from ..images import apply_scope, detect_resolution
 from ..paths import (
     DEFAULT_OUTPUT_DIR,
-    LOGS_DIR,
     SAFE_OUTPUT_EXTS,
     VENV_BIN,
+)
+from ..prompt_input import PromptInputError, resolve_prompt
+from ..runs import (
+    LOGS_DIR,
     auto_run_dirname,
     ensure_logs_dir,
     next_available_run_dir,
     open_log_file_append,
 )
-from ..prompt_input import PromptInputError, resolve_prompt
 from ..styles import get_style
 from ..subprocess_helpers import format_cmd, run_with_stderr_redaction
 from ..tokens import load_token

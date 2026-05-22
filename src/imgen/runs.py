@@ -1,0 +1,122 @@
+"""Per-invocation run + log helpers.
+
+A "run" is one `imgen` invocation; in v0.2.3+ a single invocation can
+produce many output files (multi-style), all dropped into the same
+folder `<output-dir>/<auto_run_dirname()>/`. v0.3.0's `imgen batch <dir>`
+will keep this folder-per-invocation contract, just with an N*M loop
+instead of 1*M.
+
+What lives here:
+
+- ``auto_run_dirname`` / ``next_available_run_dir`` — folder-naming
+  for the run.
+- ``LOGS_DIR`` / ``LOG_RETENTION_DAYS`` / ``ensure_logs_dir`` /
+  ``open_log_file_append`` — per-batch log file handling for
+  multi-style runs.
+
+These used to live in ``paths.py`` (v0.2.3); split out in v0.2.4 because
+``paths.py`` was meant for pure filesystem-path constants and the run/
+log helpers had grown date-formatting + retention policy + state-dir
+initialisers beyond that mandate.
+
+``paths.py`` still owns ``STATE_DIR`` and ``ensure_state_dir`` — the
+run/log code here depends on those, never the other way round, keeping
+the import graph acyclic (``runs`` → ``paths``, never reversed).
+"""
+from __future__ import annotations
+
+import datetime as _dt
+import os
+from pathlib import Path
+from typing import BinaryIO
+
+from .paths import STATE_DIR, ensure_state_dir
+
+__all__ = [
+    "LOG_RETENTION_DAYS",
+    "LOGS_DIR",
+    "auto_run_dirname",
+    "ensure_logs_dir",
+    "next_available_run_dir",
+    "open_log_file_append",
+]
+
+# Per-batch logs (v0.2.3+) — one .log file per multi-style invocation,
+# named after batch_id. Single-style generations don't write here.
+# Retention is enforced by `imgen clean` (30 days).
+LOGS_DIR = STATE_DIR / "logs"
+LOG_RETENTION_DAYS = 30
+
+
+def auto_run_dirname(now: _dt.datetime | None = None) -> str:
+    """Folder name for one CLI invocation: '2026-05-21-14-30-12'.
+
+    All-dashes, second precision. Sortable alphabetically = sortable
+    chronologically. No colons (`:`) so the path survives macOS quirks
+    and copy-paste into terminals that quote-mangle `:`. We run mflux
+    serially so no two generations within one invocation finish in the
+    same second; folder-level collisions only arise from scripted
+    double-invokes, handled by `next_available_run_dir`.
+    """
+    if now is None:
+        now = _dt.datetime.now()
+    return now.strftime("%Y-%m-%d-%H-%M-%S")
+
+
+def next_available_run_dir(parent: Path, dirname: str) -> Path:
+    """Return parent/dirname, suffixing `_2`, `_3` if it already exists.
+
+    Pure: does NOT create the directory. Caller mkdir's the returned
+    path after the user passes any confirm gates (so a cancel doesn't
+    orphan an empty dir).
+
+    Probe-then-caller-mkdir has a tiny race window between this call
+    and the eventual `mkdir(parents=True, exist_ok=True)`. For
+    single-user serial CLI usage two `imgen` invocations would have to
+    start within the same second AND target the same auto_run_dirname()
+    to collide — and even then `mkdir(exist_ok=True)` makes both
+    succeed and share the run folder (files inside still collide on
+    `<basename>-<style>.png` only if both use the same input + style).
+    Documented limitation, not a target for atomic-claim today.
+    """
+    target = parent / dirname
+    if not target.exists():
+        return target
+    i = 2
+    while (parent / f"{dirname}_{i}").exists():
+        i += 1
+    return parent / f"{dirname}_{i}"
+
+
+def open_log_file_append(path: Path) -> BinaryIO:
+    """Open a log file for binary append with 0o600 perms from creation.
+
+    Used by per-batch logs (multi-style runs). Default umask on macOS
+    would give 0o644 — world-readable by other users on a shared Mac.
+    LOGS_DIR is already 0o700, but defence-in-depth: keep the files
+    themselves restrictive too, matching how ~/.imgen/hf_token is
+    handled. Token redaction in subprocess_helpers covers HF tokens
+    in the content; this guards against everything else in mflux's
+    stderr (paths, model traces, scope hints).
+
+    Returns a buffered binary file-like object — callers must encode()
+    any strings they want to write.
+    """
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    return os.fdopen(fd, "ab")
+
+
+def ensure_logs_dir() -> None:
+    """Create LOGS_DIR (0o700) under STATE_DIR.
+
+    Used by cmd_generate when it opens a per-batch log for multi-style
+    runs. STATE_DIR is created first so a fresh user never hits ENOENT.
+    """
+    ensure_state_dir()
+    if not LOGS_DIR.exists():
+        LOGS_DIR.mkdir(mode=0o700)
+    elif (LOGS_DIR.stat().st_mode & 0o777) != 0o700:
+        try:
+            LOGS_DIR.chmod(0o700)
+        except OSError:
+            pass

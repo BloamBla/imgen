@@ -1,4 +1,4 @@
-"""Filesystem paths + small run/log helpers used by imgen.
+"""Filesystem path constants used by imgen.
 
 Two install modes:
   - Bootstrap mode: user cloned the repo to ~/imgen (or anywhere), runs
@@ -10,14 +10,17 @@ Two install modes:
 The venv that hosts mflux is always `Path(sys.executable).parent` — works
 for both modes because the entry-point binary always runs under the venv
 where the imgen package itself was installed.
+
+Per-run + per-batch-log helpers (auto_run_dirname, LOGS_DIR, ...) used
+to live here but were moved to ``runs.py`` in v0.2.4 — this module is
+now strictly for filesystem-path constants and the ``ensure_state_dir``
+bootstrap.
 """
 from __future__ import annotations
 
-import datetime as _dt
 import os
 import sys
 from pathlib import Path
-from typing import BinaryIO
 
 __all__ = [
     "CONFIG_FILE",
@@ -26,17 +29,11 @@ __all__ = [
     "HISTORY_FILE",
     "IMGEN_HOME",
     "LEGACY_TOKEN_FILE",
-    "LOG_RETENTION_DAYS",
-    "LOGS_DIR",
     "SAFE_OUTPUT_EXTS",
     "STATE_DIR",
     "TOKEN_FILE",
     "VENV_BIN",
-    "auto_run_dirname",
-    "ensure_logs_dir",
     "ensure_state_dir",
-    "next_available_run_dir",
-    "open_log_file_append",
 ]
 
 # IMGEN_HOME: repo checkout dir. Set by the bash shim at ~/imgen/imgen
@@ -55,11 +52,6 @@ VENV_BIN = Path(sys.executable).parent
 STATE_DIR = Path.home() / ".imgen"
 HISTORY_FILE = STATE_DIR / "history.jsonl"
 CONFIG_FILE = STATE_DIR / "config.toml"
-# Per-batch logs (v0.2.3+) — one .log file per multi-style invocation,
-# named after batch_id. Single-style generations don't write here.
-# Retention is enforced by `imgen clean` (30 days).
-LOGS_DIR = STATE_DIR / "logs"
-LOG_RETENTION_DAYS = 30
 # HF token moved under STATE_DIR in v0.2.2 — `~/.hf_token` was a generic
 # name other HF tooling might claim. Legacy path is still read as a
 # fallback and auto-migrated to TOKEN_FILE on first load. See tokens.py.
@@ -80,66 +72,6 @@ HF_CACHE = Path.home() / ".cache" / "huggingface" / "hub"
 SAFE_OUTPUT_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
 
 
-def auto_run_dirname(now: _dt.datetime | None = None) -> str:
-    """Folder name for one CLI invocation: '2026-05-21-14-30-12'.
-
-    All-dashes, second precision. Sortable alphabetically = sortable
-    chronologically. No colons (`:`) so the path survives macOS quirks
-    and copy-paste into terminals that quote-mangle `:`. We run mflux
-    serially so no two generations within one invocation finish in the
-    same second; folder-level collisions only arise from scripted
-    double-invokes, handled by `next_available_run_dir`.
-    """
-    if now is None:
-        now = _dt.datetime.now()
-    return now.strftime("%Y-%m-%d-%H-%M-%S")
-
-
-def next_available_run_dir(parent: Path, dirname: str) -> Path:
-    """Return parent/dirname, suffixing `_2`, `_3` if it already exists.
-
-    Pure: does NOT create the directory. Caller mkdir's the returned
-    path after the user passes any confirm gates (so a cancel doesn't
-    orphan an empty dir).
-
-    Probe-then-caller-mkdir has a tiny race window between this call
-    and the eventual `mkdir(parents=True, exist_ok=True)`. For
-    single-user serial CLI usage two `imgen` invocations would have to
-    start within the same second AND target the same auto_run_dirname()
-    to collide — and even then `mkdir(exist_ok=True)` makes both
-    succeed and share the run folder (files inside still collide on
-    `<basename>-<style>.png` only if both use the same input + style).
-    Documented limitation, not a target for atomic-claim today; an
-    atomic refactor is queued for v0.2.4 alongside the cmd_generate
-    extraction that moves this call site after the confirm gate.
-    """
-    target = parent / dirname
-    if not target.exists():
-        return target
-    i = 2
-    while (parent / f"{dirname}_{i}").exists():
-        i += 1
-    return parent / f"{dirname}_{i}"
-
-
-def open_log_file_append(path: Path) -> BinaryIO:
-    """Open a log file for binary append with 0o600 perms from creation.
-
-    Used by per-batch logs (multi-style runs). Default umask on macOS
-    would give 0o644 — world-readable by other users on a shared Mac.
-    LOGS_DIR is already 0o700, but defence-in-depth: keep the files
-    themselves restrictive too, matching how ~/.imgen/hf_token is
-    handled. Token redaction in subprocess_helpers covers HF tokens
-    in the content; this guards against everything else in mflux's
-    stderr (paths, model traces, scope hints).
-
-    Returns a buffered binary file-like object — callers must encode()
-    any strings they want to write.
-    """
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-    return os.fdopen(fd, "ab")
-
-
 def ensure_state_dir() -> None:
     """Create STATE_DIR with restrictive perms (history may contain prompts)."""
     if not STATE_DIR.exists():
@@ -147,21 +79,5 @@ def ensure_state_dir() -> None:
     elif (STATE_DIR.stat().st_mode & 0o777) != 0o700:
         try:
             STATE_DIR.chmod(0o700)
-        except OSError:
-            pass
-
-
-def ensure_logs_dir() -> None:
-    """Create LOGS_DIR (0o700) under STATE_DIR.
-
-    Used by cmd_generate when it opens a per-batch log for multi-style
-    runs. STATE_DIR is created first so a fresh user never hits ENOENT.
-    """
-    ensure_state_dir()
-    if not LOGS_DIR.exists():
-        LOGS_DIR.mkdir(mode=0o700)
-    elif (LOGS_DIR.stat().st_mode & 0o777) != 0o700:
-        try:
-            LOGS_DIR.chmod(0o700)
         except OSError:
             pass

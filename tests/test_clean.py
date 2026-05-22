@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from imgen.commands.clean import _prune_old_batch_logs
-from imgen.paths import LOG_RETENTION_DAYS
+from imgen.runs import LOG_RETENTION_DAYS
 
 
 @pytest.fixture

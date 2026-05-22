@@ -1,13 +1,16 @@
-"""Tests for paths.py helpers added in v0.2.3.
+"""Tests for runs.py — folder-per-invocation + per-batch log helpers.
 
-`auto_run_dirname()` and `next_available_run_dir()` back the new
-folder-per-invocation output layout: every `imgen` run drops its
-artefacts into `~/Desktop/imgen/<start-ts>/` instead of a flat
+`auto_run_dirname()` and `next_available_run_dir()` back the folder-per-
+invocation output layout: every `imgen` run drops its artefacts into
+`~/Desktop/imgen/<start-ts>/` instead of a flat
 `~/Desktop/imgen/<basename>_<style>_<id>.png`.
 
 Format is locked at all-dashes (no colons — macOS sometimes refuses
 them in file dialogs / older toolchains), second precision (we run
 serially, no concurrent generations finishing in the same second).
+
+Lived in test_paths.py until v0.2.4 when the helpers were split out
+into a dedicated runs.py module.
 """
 from __future__ import annotations
 
@@ -15,7 +18,7 @@ import datetime as dt
 
 import pytest
 
-from imgen.paths import (
+from imgen.runs import (
     auto_run_dirname,
     ensure_logs_dir,
     next_available_run_dir,
@@ -97,8 +100,9 @@ def test_ensure_logs_dir_creates_with_0o700(tmp_path, monkeypatch):
     were redacted-via-substring (not bullet-proof) so don't leak even
     that to co-tenants."""
     import imgen.paths as paths_mod
+    import imgen.runs as runs_mod
     monkeypatch.setattr(paths_mod, "STATE_DIR", tmp_path / ".imgen")
-    monkeypatch.setattr(paths_mod, "LOGS_DIR", tmp_path / ".imgen" / "logs")
+    monkeypatch.setattr(runs_mod, "LOGS_DIR", tmp_path / ".imgen" / "logs")
 
     ensure_logs_dir()
 
@@ -112,12 +116,13 @@ def test_ensure_logs_dir_creates_with_0o700(tmp_path, monkeypatch):
 
 def test_ensure_logs_dir_idempotent(tmp_path, monkeypatch):
     import imgen.paths as paths_mod
+    import imgen.runs as runs_mod
     state = tmp_path / ".imgen"
     state.mkdir(mode=0o700)
     logs = state / "logs"
     logs.mkdir(mode=0o700)
     monkeypatch.setattr(paths_mod, "STATE_DIR", state)
-    monkeypatch.setattr(paths_mod, "LOGS_DIR", logs)
+    monkeypatch.setattr(runs_mod, "LOGS_DIR", logs)
 
     ensure_logs_dir()  # should not raise on pre-existing dirs
 
@@ -128,12 +133,13 @@ def test_ensure_logs_dir_idempotent(tmp_path, monkeypatch):
 def test_ensure_logs_dir_tightens_loose_perms(tmp_path, monkeypatch):
     """If logs dir somehow exists with 0o755, chmod it back to 0o700."""
     import imgen.paths as paths_mod
+    import imgen.runs as runs_mod
     state = tmp_path / ".imgen"
     state.mkdir(mode=0o700)
     logs = state / "logs"
     logs.mkdir(mode=0o755)
     monkeypatch.setattr(paths_mod, "STATE_DIR", state)
-    monkeypatch.setattr(paths_mod, "LOGS_DIR", logs)
+    monkeypatch.setattr(runs_mod, "LOGS_DIR", logs)
 
     ensure_logs_dir()
 
