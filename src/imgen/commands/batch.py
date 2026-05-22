@@ -60,12 +60,14 @@ from ..runs import (
     Iteration,
 )
 from ..cmd_helpers import (
+    apply_enhance_results_to_iterations,
     build_iterations,
     check_prompt_style_compat,
     estimate_one_seconds,
     exit_code,
     format_duration,
     load_backend_and_token,
+    maybe_enhance_for_command,
     open_results,
     preflight_resources,
     print_batch_summary,
@@ -258,6 +260,44 @@ def cmd_batch(args) -> int:
         ]
         total_iters = len(all_iters)
 
+        # 8b) v0.5 — optional LLM prompt enhancer.
+        # Runs ONCE for the whole N×M batch (single mlx_lm.load
+        # amortised across all prompts; the orchestrator handles per-
+        # prompt skip + all-or-nothing runner fallback). Order matters:
+        # this is BEFORE dry-run so the displayed cmd matches what mflux
+        # would actually receive; BEFORE confirm gate so the user knows
+        # enhancement happened before they say yes to a long batch.
+        #
+        # `prompts_pre_enhance` captures original prompts BEFORE iterations
+        # get rebuilt with enhanced versions — the v=2 history writer in
+        # run_one_iteration needs both pre and post for the prompt_original
+        # field.
+        prompts_pre_enhance = [it.prompt for it in all_iters]
+        enhance_results, enhance_model = maybe_enhance_for_command(
+            args=args,
+            backend_obj=be,
+            iterations=all_iters,
+        )
+        # Splice enhanced prompts back into all_iters AND re-bucket per
+        # input. Sliding cursor preserves per-input group lengths
+        # without assuming uniform M-per-input (future-proof against
+        # per-style skip logic).
+        all_iters = apply_enhance_results_to_iterations(
+            all_iters, enhance_results,
+        )
+        new_per_input_iters: list[
+            tuple[Path, Path, int, int, list[Iteration]]
+        ] = []
+        cursor = 0
+        for input_path, mflux_input, width, height, iters in per_input_iters:
+            group_len = len(iters)
+            new_iters = all_iters[cursor:cursor + group_len]
+            new_per_input_iters.append(
+                (input_path, mflux_input, width, height, new_iters)
+            )
+            cursor += group_len
+        per_input_iters = new_per_input_iters
+
         # `imgen batch` always treats itself as a batch (even N=M=1) so
         # the per-batch log + Finder-open + summary UX is consistent.
         # Upgrade is a fresh batch_id (uuid4[:12] — 48 bits, plenty for
@@ -362,6 +402,11 @@ def cmd_batch(args) -> int:
                 )
                 for it in iters:
                     global_idx += 1
+                    # v0.5: thread enhance metadata. global_idx is 1-based;
+                    # enhance_results / prompts_pre_enhance are 0-based and
+                    # aligned with the flat all_iters list above.
+                    e_result = enhance_results[global_idx - 1]
+                    e_pre = prompts_pre_enhance[global_idx - 1]
                     cont = run_one_iteration(
                         it=it,
                         idx=global_idx,
@@ -371,6 +416,9 @@ def cmd_batch(args) -> int:
                         logger=logger,
                         succeeded=succeeded,
                         failed=failed,
+                        enhance_result=e_result,
+                        enhance_model=enhance_model,
+                        prompt_original=e_pre,
                     )
                     if not cont:
                         # KeyboardInterrupt mid-iteration: per-input
