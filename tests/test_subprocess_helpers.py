@@ -23,7 +23,11 @@ import sys
 
 import pytest
 
-from imgen.subprocess_helpers import _TOKEN_LEAK_RE, run_with_stderr_redaction
+from imgen.subprocess_helpers import (
+    _TOKEN_LEAK_RE,
+    format_cmd,
+    run_with_stderr_redaction,
+)
 
 
 def test_redacts_full_length_token():
@@ -254,3 +258,60 @@ def test_build_mflux_env_forwards_terminal_size(monkeypatch):
     assert "LINES" in env
     assert env["COLUMNS"].isdigit()
     assert env["LINES"].isdigit()
+
+
+# ── format_cmd (python #12 from v0.1.x review — shlex-quoted output) ────
+
+
+def test_format_cmd_keeps_flag_value_pairs_on_same_line():
+    """`--flag value` stays on one line; positional tokens get their own."""
+    out = format_cmd(["mflux", "--prompt", "hello", "--steps", "20"])
+    lines = out.split(" \\\n  ")
+    assert lines[0] == "mflux"
+    assert lines[1] == "--prompt hello"
+    assert lines[2] == "--steps 20"
+
+
+def test_format_cmd_quotes_spaces():
+    """Values with spaces get shlex.quote — paste-safe single-quote wrap."""
+    out = format_cmd(["mflux", "--prompt", "a cat sitting"])
+    assert "--prompt 'a cat sitting'" in out
+
+
+def test_format_cmd_quotes_shell_metacharacters():
+    """`$`, backticks, semicolons, newlines must be neutralized — naive
+    `"`-only escaping (the pre-v0.3.6 implementation) leaked these
+    through verbatim, so pasted output could re-interpret as shell."""
+    out = format_cmd(["mflux", "--prompt", "$(rm -rf ~)"])
+    # shlex.quote wraps in single quotes — $() is inert inside ''.
+    assert "--prompt '$(rm -rf ~)'" in out
+
+    out = format_cmd(["mflux", "--prompt", "`whoami`"])
+    assert "--prompt '`whoami`'" in out
+
+    out = format_cmd(["mflux", "--prompt", "a; rm -rf ~"])
+    assert "--prompt 'a; rm -rf ~'" in out
+
+
+def test_format_cmd_handles_embedded_single_quote():
+    """shlex.quote escapes `'` itself via the `'\\''` idiom — value
+    containing apostrophes still produces a paste-safe single string."""
+    out = format_cmd(["mflux", "--prompt", "it's fine"])
+    # Standard shlex.quote rendering: 'it'"'"'s fine'
+    assert "--prompt 'it'\"'\"'s fine'" in out
+
+
+def test_format_cmd_does_not_quote_safe_values():
+    """Bare alphanumeric / dash / dot values render unchanged — shlex.quote
+    is no-op for shell-safe strings, so the common case stays readable."""
+    out = format_cmd(["mflux", "--steps", "20", "--seed", "42"])
+    # No surrounding quotes added when value is already safe.
+    assert "--steps 20" in out
+    assert "--seed 42" in out
+
+
+def test_format_cmd_quotes_positional_tokens_with_spaces():
+    """Positional tokens (no leading --) also go through shlex.quote so
+    a binary name like `/path with spaces/mflux` is paste-safe too."""
+    out = format_cmd(["/path with spaces/mflux", "--steps", "20"])
+    assert "'/path with spaces/mflux'" in out

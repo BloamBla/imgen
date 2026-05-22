@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -136,9 +137,14 @@ def run_with_stderr_redaction(
 def format_cmd(cmd: list[str]) -> str:
     """Pretty-print a command, keeping --flag value pairs on the same line.
 
-    For human display only — do NOT paste the output into a shell. The
-    quoting here is intentionally naive (only escapes `"`) and won't handle
-    `$`, backticks, or newlines safely. README warns about this.
+    Quoting uses ``shlex.quote`` so values containing spaces, ``$``,
+    backticks, single quotes, or newlines are wrapped/escaped correctly
+    — output is structurally safe to read AND to copy-paste back into a
+    POSIX shell (zsh/bash). README still recommends re-invoking imgen
+    rather than pasting, because the displayed argv reflects what mflux
+    will see, not necessarily what the user originally typed (e.g.
+    --custom-prompt - from stdin is shown as the resolved text).
+    (python #12 from v0.1.x review.)
     """
     parts = []
     i = 0
@@ -147,12 +153,9 @@ def format_cmd(cmd: list[str]) -> str:
         if (token.startswith("--")
                 and i + 1 < len(cmd)
                 and not cmd[i + 1].startswith("--")):
-            value = cmd[i + 1]
-            if " " in value or any(c in value for c in '"\''):
-                value = '"' + value.replace('"', '\\"') + '"'
-            parts.append(f"{token} {value}")
+            parts.append(f"{token} {shlex.quote(cmd[i + 1])}")
             i += 2
         else:
-            parts.append(token)
+            parts.append(shlex.quote(token))
             i += 1
     return " \\\n  ".join(parts)
