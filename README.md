@@ -171,7 +171,12 @@ Both paths cap at 64 KB; missing file, empty content, or specifying both `--cust
 
 ### Don't paste `--dry-run` output into a shell
 
-The pretty-printed command emitted by `--dry-run` is for **reading**, not for re-executing. Quoting is best-effort and won't necessarily protect `$()`, backticks, or newlines embedded in your prompt — pasting the line into a shell could re-interpret those as commands or string substitutions. If you want to actually run with the same args, re-invoke `imgen` with the same flags rather than copy-pasting the displayed command.
+The pretty-printed command from `--dry-run` is for **reading**, not for re-executing. The quoting is structurally correct (shlex.quote — `$()`, backticks, newlines, semicolons all neutralized), so the line **would** run, but:
+
+- It shows what mflux receives — including the **resolved** `--custom-prompt` text (so `--custom-prompt -` from stdin is displayed as the actual prompt, not as `-`) and the full mflux binary path — not the flags you originally typed.
+- Pasting bypasses `imgen`'s preflight (memory forecast, disk check, mflux liveness) and runs mflux directly.
+
+If you want to re-run with the same args, re-invoke `imgen` with the same flags rather than copy-pasting the displayed line.
 
 ## Tuning
 
