@@ -21,6 +21,7 @@ from types import SimpleNamespace
 
 from imgen.commands.generate import (
     _check_prompt_style_compat,
+    _resolve_output_layout,
     _resolve_styles_list,
     _validate_input_path,
 )
@@ -287,3 +288,127 @@ def test_check_prompt_style_compat_empty_string_prompt_treated_as_missing(
             styles_list=["empty"],
             effective_custom_prompt=None,
         )
+
+
+# ── _resolve_output_layout ──────────────────────────────────────────────
+
+
+@pytest.fixture
+def fixed_run_dirname(monkeypatch):
+    """Pin auto_run_dirname → '2026-05-22-10-00-00' for deterministic tests."""
+    monkeypatch.setattr(
+        "imgen.commands.generate.auto_run_dirname",
+        lambda now=None: "2026-05-22-10-00-00",
+    )
+
+
+def test_resolve_output_layout_explicit_file_returns_path_no_run_dir(
+    tmp_path,
+):
+    """--output FILE bypasses the run-folder layout entirely. Returns
+    (resolved_path, None)."""
+    target = tmp_path / "forced.png"
+    args = SimpleNamespace(output=str(target))
+
+    explicit_output, run_dir = _resolve_output_layout(
+        args, config_output_dir=None
+    )
+
+    assert explicit_output == target.resolve()
+    assert run_dir is None
+
+
+def test_resolve_output_layout_explicit_file_expands_tilde(
+    tmp_path, monkeypatch
+):
+    """`--output ~/Pictures/out.png` must expand."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    args = SimpleNamespace(output="~/out.png")
+
+    explicit_output, run_dir = _resolve_output_layout(
+        args, config_output_dir=None
+    )
+
+    assert explicit_output == (tmp_path / "out.png").resolve()
+    assert run_dir is None
+
+
+def test_resolve_output_layout_default_uses_module_default(
+    tmp_path, monkeypatch, fixed_run_dirname
+):
+    """No --output, no --output-dir, no config → fall back to module
+    DEFAULT_OUTPUT_DIR. Verify via monkeypatch since real default is
+    ~/Desktop/imgen (don't want to write there from tests)."""
+    fake_default = tmp_path / "fake_default"
+    monkeypatch.setattr(
+        "imgen.commands.generate.DEFAULT_OUTPUT_DIR", fake_default
+    )
+    args = SimpleNamespace(output=None, output_dir=None)
+
+    explicit_output, run_dir = _resolve_output_layout(
+        args, config_output_dir=None
+    )
+
+    assert explicit_output is None
+    assert run_dir == fake_default / "2026-05-22-10-00-00"
+
+
+def test_resolve_output_layout_cli_output_dir_beats_config(
+    tmp_path, fixed_run_dirname
+):
+    """CLI > config > module default. --output-dir wins even if config
+    sets a different one."""
+    cli_dir = tmp_path / "cli"
+    config_dir = tmp_path / "config"
+    args = SimpleNamespace(output=None, output_dir=str(cli_dir))
+
+    explicit_output, run_dir = _resolve_output_layout(
+        args, config_output_dir=str(config_dir)
+    )
+
+    assert explicit_output is None
+    assert run_dir == cli_dir / "2026-05-22-10-00-00"
+
+
+def test_resolve_output_layout_config_beats_module_default(
+    tmp_path, monkeypatch, fixed_run_dirname
+):
+    """No CLI --output-dir, config set → config used."""
+    monkeypatch.setattr(
+        "imgen.commands.generate.DEFAULT_OUTPUT_DIR",
+        tmp_path / "module_default",
+    )
+    config_dir = tmp_path / "config"
+    args = SimpleNamespace(output=None, output_dir=None)
+
+    explicit_output, run_dir = _resolve_output_layout(
+        args, config_output_dir=str(config_dir)
+    )
+
+    assert explicit_output is None
+    assert run_dir == config_dir / "2026-05-22-10-00-00"
+
+
+def test_resolve_output_layout_does_not_create_run_dir(
+    tmp_path, fixed_run_dirname
+):
+    """Pure: returns the path that *would* be used, caller mkdir's after
+    confirm gate (so cancel doesn't orphan an empty dir)."""
+    args = SimpleNamespace(output=None, output_dir=str(tmp_path))
+
+    _, run_dir = _resolve_output_layout(args, config_output_dir=None)
+
+    assert not run_dir.exists()
+
+
+def test_resolve_output_layout_suffixes_run_dir_on_collision(
+    tmp_path, fixed_run_dirname
+):
+    """If the auto-named folder already exists (rare — scripted double
+    invoke), next_available_run_dir adds `_2`."""
+    (tmp_path / "2026-05-22-10-00-00").mkdir()
+    args = SimpleNamespace(output=None, output_dir=str(tmp_path))
+
+    _, run_dir = _resolve_output_layout(args, config_output_dir=None)
+
+    assert run_dir == tmp_path / "2026-05-22-10-00-00_2"

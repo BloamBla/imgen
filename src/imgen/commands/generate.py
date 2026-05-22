@@ -140,6 +140,36 @@ def _check_prompt_style_compat(
                      "CLI-supplied prompt.")
 
 
+def _resolve_output_layout(
+    args,
+    config_output_dir: str | None,
+) -> tuple[Path | None, Path | None]:
+    """Pick between single-file output and run-folder layout.
+
+    Two mutually exclusive modes:
+      * ``args.output`` (legacy --output FILE) → returns
+        (explicit_path, None). Resolution + ~-expansion applied. The
+        caller writes the single file to this path.
+      * Otherwise the v0.2.3 folder-per-invocation layout → returns
+        (None, run_dir). ``run_dir`` is computed from CLI > config >
+        module-default precedence (via ``effective_output_dir``) plus a
+        timestamp suffix (``auto_run_dirname``) with `_2`/`_3`
+        collision handling. The directory is NOT created here — caller
+        mkdir's after confirm gates so cancel doesn't orphan an empty
+        dir.
+    """
+    if args.output:
+        explicit_output = Path(args.output).expanduser().resolve()
+        return explicit_output, None
+    parent = effective_output_dir(
+        cli_value=getattr(args, "output_dir", None),
+        config_value=config_output_dir,
+        module_default=DEFAULT_OUTPUT_DIR,
+    )
+    run_dir = next_available_run_dir(parent, auto_run_dirname())
+    return None, run_dir
+
+
 def _resolve_styles_list(args, merged_defaults: dict) -> list[str]:
     """Resolve --style into a list of preset names.
 
@@ -233,18 +263,7 @@ def cmd_generate(args) -> int:
         width, height = detect_resolution(input_path, preview=args.preview)
 
     # 5) Output root + run_dir (one folder for all M iterations).
-    if args.output:
-        # Single file, bypass run-folder layout entirely.
-        explicit_output = Path(args.output).expanduser().resolve()
-        run_dir: Path | None = None
-    else:
-        parent = effective_output_dir(
-            cli_value=getattr(args, "output_dir", None),
-            config_value=config_output_dir,
-            module_default=DEFAULT_OUTPUT_DIR,
-        )
-        run_dir = next_available_run_dir(parent, auto_run_dirname())
-        explicit_output = None
+    explicit_output, run_dir = _resolve_output_layout(args, config_output_dir)
 
     # 6) Backend, token, binary (same for all M).
     backend = args.backend
