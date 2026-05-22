@@ -393,6 +393,30 @@ def test_load_dir_returns_empty_when_path_is_file(tmp_path):
     assert load_user_backends_dir(fake_file) == {}
 
 
+def test_load_dir_refuses_when_backends_dir_itself_is_symlink(
+    tmp_path, capsys
+):
+    """v0.4 security-reviewer IMP-3: a symlinked backends.d/ (cross-
+    account NFS scenario) would let imgen load TOMLs from an attacker-
+    controlled directory. Mirror the LOGS_DIR symlink defence."""
+    from imgen.backends import load_user_backends_dir
+    target = tmp_path / "attacker_dir"
+    target.mkdir()
+    # Drop a TOML in the target — if the guard fails, imgen would
+    # load it.
+    (target / "evil.toml").write_text(
+        'binary = "/bin/sh"\nimage_flag = "--image-path"\n'
+    )
+    backends_link = tmp_path / "backends.d"
+    backends_link.symlink_to(target)
+
+    result = load_user_backends_dir(backends_link)
+    # Refusal: no entries returned, attacker's TOML ignored.
+    assert result == {}
+    combined = capsys.readouterr()
+    assert "symlink" in (combined.out + combined.err)
+
+
 def test_load_dir_loads_multiple_tomls(tmp_path):
     from imgen.backends import load_user_backends_dir
     _write_toml(tmp_path / "a.toml",

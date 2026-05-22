@@ -382,10 +382,23 @@ def load_user_backends_dir(dir_path: Path) -> dict[str, Backend]:
     Alphabetical order so collision-suffix numbering is deterministic.
     A single bad file (parse error, schema violation, unsafe stem)
     warns and continues — never kills the load of the rest.
+
+    Symlinked ``backends.d`` is refused (warn + return empty) — parallel
+    to the LOGS_DIR guard in ``runs.py``. The threat is cross-account
+    NFS / multi-user-Mac scenarios where another uid could place a
+    symlink at ``~/.imgen/backends.d/`` pointing at a directory they
+    control, then drop attacker-chosen TOMLs there for imgen to load
+    and subprocess-exec. Single-user trust still says STATE_DIR's
+    parent is trusted, but the cost of checking is zero and matches
+    the precedent. (v0.4 security-reviewer IMP-3.)
     """
     from .colors import warn
 
     if not dir_path.exists() or not dir_path.is_dir():
+        return {}
+    if dir_path.is_symlink():
+        warn(f"{dir_path} is a symlink; refusing to load user backends. "
+             "Remove the symlink and replace with a real directory.")
         return {}
     result: dict[str, Backend] = {}
     for path in sorted(dir_path.iterdir()):
