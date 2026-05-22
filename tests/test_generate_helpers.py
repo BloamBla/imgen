@@ -25,6 +25,7 @@ from imgen.commands.generate import (
     _check_prompt_style_compat,
     _exit_code,
     _load_backend_and_token,
+    _preflight_resources,
     _print_batch_summary,
     _resolve_output_layout,
     _resolve_styles_list,
@@ -1051,3 +1052,119 @@ def test_print_batch_summary_plural_when_total_is_3(capsys):
     )
     out = capsys.readouterr().out
     assert "3 generations" in out
+
+
+# ── _preflight_resources ────────────────────────────────────────────────
+
+
+def _clean_res() -> dict:
+    """check_resources() shape with everything green."""
+    return {
+        "other_mflux_pid": None,
+        "ram_ok": True,
+        "ram_required_gb": 12,
+        "ram_available_gb": 24.0,
+        "ram_total_gb": 64.0,
+        "disk_ok": True,
+        "disk_free_gb": 500.0,
+        "battery_ok": True,
+        "battery_pct": 100,
+    }
+
+
+@pytest.fixture
+def stub_check_resources(monkeypatch):
+    """Return a dict the caller can mutate before _preflight_resources
+    invokes check_resources. Lets each test stage a specific failure."""
+    state = {"res": _clean_res()}
+
+    def fake_check(backend, quant):
+        state["last_call"] = (backend, quant)
+        return state["res"]
+
+    monkeypatch.setattr(
+        "imgen.commands.generate.check_resources", fake_check
+    )
+    return state
+
+
+def test_preflight_resources_force_skips_check(monkeypatch):
+    """--force bypasses preflight entirely. check_resources MUST NOT be
+    called — even reading it would be misleading in a session where
+    psutil reports a stale state."""
+    called = []
+    monkeypatch.setattr(
+        "imgen.commands.generate.check_resources",
+        lambda b, q: called.append((b, q)) or _clean_res(),
+    )
+
+    _preflight_resources(backend="flux", heaviest_quant=8, force=True)
+
+    assert called == [], "force=True must short-circuit before check_resources"
+
+
+def test_preflight_resources_clean_passes(stub_check_resources):
+    """All green → returns None (no SystemExit, no warning crash)."""
+    _preflight_resources(backend="flux", heaviest_quant=8, force=False)
+    # Confirms helper passed backend + quant through.
+    assert stub_check_resources["last_call"] == ("flux", 8)
+
+
+def test_preflight_resources_other_mflux_running_exits_4(
+    stub_check_resources, capsys
+):
+    stub_check_resources["res"]["other_mflux_pid"] = 12345
+
+    with pytest.raises(SystemExit) as exc_info:
+        _preflight_resources(backend="flux", heaviest_quant=8, force=False)
+
+    assert exc_info.value.code == 4
+    err = capsys.readouterr().err
+    assert "Another mflux process" in err
+    assert "12345" in err
+
+
+def test_preflight_resources_low_ram_exits_4(stub_check_resources, capsys):
+    stub_check_resources["res"]["ram_ok"] = False
+    stub_check_resources["res"]["ram_available_gb"] = 4.0
+    stub_check_resources["res"]["ram_required_gb"] = 24
+
+    with pytest.raises(SystemExit) as exc_info:
+        _preflight_resources(backend="flux", heaviest_quant=8, force=False)
+
+    assert exc_info.value.code == 4
+    err = capsys.readouterr().err
+    assert "Not enough RAM" in err
+    # Hint shows the fix menu.
+    assert "--preview" in err or "--quantize" in err
+
+
+def test_preflight_resources_low_disk_warns_not_dies(
+    stub_check_resources, capsys
+):
+    """Disk space is advisory — model download might still fit. Warn,
+    don't bail. One call covers both: SystemExit would propagate up out
+    of the test function (failing it); warning text shows in capsys."""
+    stub_check_resources["res"]["disk_ok"] = False
+    stub_check_resources["res"]["disk_free_gb"] = 2.5
+
+    _preflight_resources(backend="flux", heaviest_quant=8, force=False)
+
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "GB disk free" in combined
+    assert "imgen clean" in combined
+
+
+def test_preflight_resources_low_battery_warns_not_dies(
+    stub_check_resources, capsys
+):
+    """Battery low → advisory; user may have a charger nearby."""
+    stub_check_resources["res"]["battery_ok"] = False
+    stub_check_resources["res"]["battery_pct"] = 12
+
+    _preflight_resources(backend="flux", heaviest_quant=8, force=False)
+
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "Battery" in combined and "12%" in combined

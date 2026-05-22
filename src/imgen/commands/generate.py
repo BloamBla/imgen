@@ -171,6 +171,58 @@ def _resolve_output_layout(
     return None, run_dir
 
 
+def _preflight_resources(
+    *,
+    backend: str,
+    heaviest_quant: int,
+    force: bool,
+) -> None:
+    """Check RAM / disk / battery / parallel-mflux against the heaviest
+    quant in the batch.
+
+    --force skips the entire check (caller already opted into the risk
+    of swap thrashing). Otherwise:
+      * another mflux PID detected → die(4); parallel runs OOM
+      * insufficient RAM → die(4); list specific fixes (--preview,
+        --quantize 4, --force)
+      * low disk → warn (model download might still fit)
+      * low battery → warn (charger may be nearby)
+
+    The two hard failures share exit code 4 (resource class) so callers
+    can grep by code without parsing messages.
+    """
+    if force:
+        return
+    res = check_resources(backend, heaviest_quant)
+
+    if res["other_mflux_pid"] is not None:
+        die(f"Another mflux process is already running (PID "
+            f"{res['other_mflux_pid']}). Two parallel runs will OOM and "
+            "trash each other.",
+            code=4,
+            hint="Wait for it to finish (check with: ps -p "
+                 f"{res['other_mflux_pid']}), or pass --force.")
+
+    if not res["ram_ok"]:
+        die(f"Not enough RAM: need ~{res['ram_required_gb']} GB peak "
+            f"for {backend} q{heaviest_quant}, only "
+            f"{res['ram_available_gb']:.1f} GB available "
+            f"(of {res['ram_total_gb']:.0f} GB total).",
+            code=4,
+            hint=("How to fix:\n"
+                  "     • Close other apps (Chrome often eats 5+ GB)\n"
+                  "     • Drop quant: --quantize 4 (needs ~9 GB for flux)\n"
+                  "     • Or --preview (uses --quantize 4 automatically)\n"
+                  "     • Or --force (swaps to disk, very slow, may freeze)"))
+
+    if not res["disk_ok"]:
+        warn(f"Only {res['disk_free_gb']:.1f} GB disk free — risky if "
+             "model needs download. Consider: imgen clean")
+    if not res["battery_ok"]:
+        warn(f"Battery {res['battery_pct']}% on battery — long runs may "
+             "not finish. Plug in for safety.")
+
+
 def _print_batch_summary(
     succeeded: list[tuple[str, Path, int]],
     failed: list[tuple[str, int, Path]],
@@ -523,35 +575,9 @@ def cmd_generate(args) -> int:
     # is per-style; verifying the first is sufficient and future-proof
     # via max() if per-style quantize is ever added).
     heaviest_quant = max(it.final_quantize for it in iterations)
-    if not args.force:
-        res = check_resources(backend, heaviest_quant)
-
-        if res["other_mflux_pid"] is not None:
-            die(f"Another mflux process is already running (PID "
-                f"{res['other_mflux_pid']}). Two parallel runs will OOM and "
-                "trash each other.",
-                code=4,
-                hint="Wait for it to finish (check with: ps -p "
-                     f"{res['other_mflux_pid']}), or pass --force.")
-
-        if not res["ram_ok"]:
-            die(f"Not enough RAM: need ~{res['ram_required_gb']} GB peak "
-                f"for {backend} q{heaviest_quant}, only "
-                f"{res['ram_available_gb']:.1f} GB available "
-                f"(of {res['ram_total_gb']:.0f} GB total).",
-                code=4,
-                hint=("How to fix:\n"
-                      "     • Close other apps (Chrome often eats 5+ GB)\n"
-                      "     • Drop quant: --quantize 4 (needs ~9 GB for flux)\n"
-                      "     • Or --preview (uses --quantize 4 automatically)\n"
-                      "     • Or --force (swaps to disk, very slow, may freeze)"))
-
-        if not res["disk_ok"]:
-            warn(f"Only {res['disk_free_gb']:.1f} GB disk free — risky if "
-                 "model needs download. Consider: imgen clean")
-        if not res["battery_ok"]:
-            warn(f"Battery {res['battery_pct']}% on battery — long runs may "
-                 "not finish. Plug in for safety.")
+    _preflight_resources(
+        backend=backend, heaviest_quant=heaviest_quant, force=args.force
+    )
 
     # 11) Confirm gate (multi-style only — single-style keeps v0.2.x's
     # zero-prompt UX). --yes skips. Fires AFTER preflight so we never
