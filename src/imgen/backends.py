@@ -34,6 +34,7 @@ __all__ = [
     "Backend",
     "UserBackendError",
     "build_mflux_cmd",
+    "filter_compatible_loras",
     "get_backend",
     "list_backends",
     "load_user_backend_file",
@@ -85,6 +86,17 @@ class Backend:
     # tripwire that catches LLM drift.
     enhance_system_prompt: str | None = None
     enhance_invariants: tuple[str, ...] = ()
+    # v0.6: LoRA compatibility group identifier. Style presets declare a
+    # tuple of compat-groups their LoRAs were trained against (in
+    # ``LoraRef.compatible_with``); at command-construction time, only
+    # LoRAs whose ``compatible_with`` includes this backend's group are
+    # applied. Built-in flux is ``"flux-1"`` (FLUX.1-Kontext-dev shares
+    # the FLUX.1 architecture family with FLUX.1-dev and FLUX.1-schnell
+    # — most FLUX.1 LoRAs work across the family). Built-in qwen is
+    # ``"qwen"``. Empty string (default for user backends that don't
+    # declare it) means "no LoRA support" — any LoRA reference in a
+    # style is silently skipped with a warn for this backend.
+    lora_compat_group: str = ""
 
 
 # System prompts for built-in backends. Module-level constants so tests
@@ -173,6 +185,10 @@ BUILTIN_BACKENDS: dict[str, Backend] = {
         extra_args=("--model", "dev"),
         enhance_system_prompt=_FLUX_KONTEXT_ENHANCE_SYS,
         enhance_invariants=_IDENTITY_ANCHOR_INVARIANTS,
+        # v0.6: FLUX.1-Kontext-dev shares architecture with FLUX.1-dev /
+        # FLUX.1-schnell. Most FLUX.1 LoRAs published on HuggingFace
+        # are trained against FLUX.1-dev and load cleanly on Kontext.
+        lora_compat_group="flux-1",
     ),
     "qwen": Backend(
         binary="mflux-generate-qwen-edit",
@@ -183,6 +199,10 @@ BUILTIN_BACKENDS: dict[str, Backend] = {
         extra_args=("--model", "qwen"),
         enhance_system_prompt=_QWEN_EDIT_ENHANCE_SYS,
         enhance_invariants=_IDENTITY_ANCHOR_INVARIANTS,
+        # Qwen-Image / Qwen-Image-Edit LoRAs are a separate ecosystem
+        # (different transformer architecture, different LoRA shape).
+        # FLUX LoRAs do NOT load on Qwen and vice-versa.
+        lora_compat_group="qwen",
     ),
 }
 
@@ -270,6 +290,17 @@ _USER_BACKEND_SCHEMA: dict[str, tuple[str, Callable[[Any], bool]]] = {
     ),
     "enhance_invariants": (
         "list of strings (no control bytes)", _is_list_of_clean_str,
+    ),
+    # v0.6: LoRA compatibility group identifier (see Backend
+    # dataclass docstring). User backends opt into LoRA support by
+    # declaring this. The string is the identifier style TOMLs use in
+    # their LoraRef.compatible_with field; common values: "flux-1",
+    # "flux-2", "qwen", "z-image", "fibo". Bare lower-case stems for
+    # readability + control-byte safety (it ends up in warn() output
+    # when a LoRA is skipped for compat mismatch).
+    "lora_compat_group": (
+        "non-empty string (no control bytes)",
+        lambda v: isinstance(v, str) and v.strip() != "" and _is_clean_str(v),
     ),
 }
 
@@ -470,6 +501,11 @@ def validate_user_backend_schema(data: dict, source: Path) -> Backend:
     enhance_system_prompt = validated.get("enhance_system_prompt")
     enhance_invariants = tuple(validated.get("enhance_invariants", ()))
 
+    # v0.6: LoRA compat-group identifier. Optional — absent → empty
+    # string → "no LoRA support for this backend" → any LoRA reference
+    # in a style is silently warn-skipped at command-construction time.
+    lora_compat_group = validated.get("lora_compat_group", "")
+
     return Backend(
         binary=validated["binary"],
         needs_token=False,
@@ -481,6 +517,7 @@ def validate_user_backend_schema(data: dict, source: Path) -> Backend:
         secret_required=secret_required,
         enhance_system_prompt=enhance_system_prompt,
         enhance_invariants=enhance_invariants,
+        lora_compat_group=lora_compat_group,
     )
 
 
@@ -656,6 +693,39 @@ def reset_backends_cache() -> None:
     _cached_merged = None
 
 
+def filter_compatible_loras(
+    loras: tuple,  # tuple[styles.LoraRef, ...] — avoid circular import
+    backend: Backend,
+) -> tuple[tuple, tuple]:
+    """Split ``loras`` into (compatible, incompatible) tuples based on
+    ``backend.lora_compat_group``. Each LoraRef's ``compatible_with``
+    field is a tuple of group identifiers; a LoRA is compatible iff
+    that tuple contains the backend's group.
+
+    Empty ``backend.lora_compat_group`` (the default for any backend
+    that hasn't opted into LoRA support) means "no LoRA support" → all
+    LoRAs land in the incompatible bucket. The caller (typically
+    ``build_mflux_cmd``) emits a warn for each incompatible entry
+    rather than silently dropping them — silent drops would make
+    a user with three LoRAs in their style file wonder why only one
+    fired (e.g. a Qwen run with a mix of FLUX and Qwen LoRAs).
+
+    Pure: no I/O, no warnings. ``build_mflux_cmd`` does the warn
+    emission so this stays unit-testable without colors / stderr.
+    """
+    group = backend.lora_compat_group
+    if not group:
+        return ((), tuple(loras))
+    compatible = []
+    incompatible = []
+    for lora in loras:
+        if group in lora.compatible_with:
+            compatible.append(lora)
+        else:
+            incompatible.append(lora)
+    return (tuple(compatible), tuple(incompatible))
+
+
 def build_mflux_cmd(
     *,
     binary: Path,
@@ -673,15 +743,25 @@ def build_mflux_cmd(
     height: int,
     mlx_cache_gb: int,
     battery_stop: int,
+    loras: tuple = (),  # tuple[styles.LoraRef, ...]
 ) -> list[str]:
     """Build the mflux argv for `backend` from already-resolved parameters.
 
-    Pure: no I/O, no env reads, no subprocess. Keyword-only because 15
+    Pure: no I/O, no env reads, no subprocess. Keyword-only because 16
     positional args would be a footgun.
 
     Order preserved from v0.1.x: common args first, then strength (if
     supported), then `extra_args` (e.g. `--model dev`), then negative
-    prompt (if supported and non-empty). Locked in by test_generate_cmd.
+    prompt (if supported and non-empty). v0.6 appends ``--lora-paths``
+    + ``--lora-scales`` AFTER ``extra_args`` so mflux's ``--model``
+    selection happens before LoRA application — same order CLI users
+    typically write by hand.
+
+    ``loras`` is a tuple of :class:`styles.LoraRef`. Only entries whose
+    ``compatible_with`` includes ``backend.lora_compat_group`` are
+    applied; incompatibles emit a warn (visible in ``--dry-run`` output
+    + interactive runs) explaining the mismatch. Empty tuple (default)
+    → no LoRA argv emitted, identical to v0.5 behaviour.
 
     v0.3.2: dropped ``--metadata``. mflux's ``--metadata`` writes a
     ``<output>.metadata.json`` sidecar next to every generated image,
@@ -712,4 +792,24 @@ def build_mflux_cmd(
     cmd += list(backend.extra_args)
     if backend.supports_negative and negative:
         cmd += ["--negative-prompt", negative]
+
+    # v0.6: LoRA argv emission. Compatible entries land as parallel
+    # --lora-paths + --lora-scales lists (mflux accepts space-separated
+    # multi-value args for both). Incompatibles trigger a warn so the
+    # user notices when a Qwen run skips their FLUX-1 LoRAs or vice-
+    # versa — silent drops would be confusing on multi-style runs.
+    if loras:
+        compatible, incompatible = filter_compatible_loras(loras, backend)
+        if incompatible:
+            from .colors import warn
+            for lora in incompatible:
+                warn(
+                    f"LoRA {lora.ref!r} (compat: {sorted(lora.compatible_with)}) "
+                    f"is not compatible with backend "
+                    f"{backend.lora_compat_group!r} — skipping for this "
+                    f"iteration"
+                )
+        if compatible:
+            cmd += ["--lora-paths", *(lora.ref for lora in compatible)]
+            cmd += ["--lora-scales", *(str(lora.weight) for lora in compatible)]
     return cmd

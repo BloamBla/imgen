@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -28,6 +29,7 @@ from ._schema import validate_against_schema
 
 __all__ = [
     "BUILTIN_STYLES",
+    "LoraRef",
     "STYLES",
     "USER_STYLE_MAX_BYTES",
     "StyleNotFound",
@@ -37,9 +39,60 @@ __all__ = [
     "load_user_style_file",
     "load_user_styles_dir",
     "merge_user_styles",
+    "parse_lora_refs",
     "parse_style_list",
     "reset_styles_cache",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class LoraRef:
+    """One LoRA weight delta to apply on top of the base diffusion model.
+
+    Style presets carry a tuple of these. The mflux argv-builder turns
+    each into a (``--lora-paths <ref>``, ``--lora-scales <weight>``)
+    pair, filtered by ``compatible_with`` matching the active backend's
+    ``lora_compat_group``.
+
+    Fields:
+      * ``ref`` — either a HuggingFace repo id (e.g.
+        ``"strangerzonehf/Flux-Animeo-v1-LoRA"``) or an absolute path
+        to a local ``.safetensors`` file. mflux's ``--lora-paths``
+        accepts both shapes.
+      * ``weight`` — scalar multiplier passed via ``--lora-scales``.
+        1.0 = full strength; lower = subtler effect; higher = overshoot
+        (rarely useful, often produces artifacts).
+      * ``compatible_with`` — set of backend ``lora_compat_group``
+        values this LoRA was trained against. A FLUX.1-dev LoRA also
+        works on FLUX.1-Kontext-dev (same architecture family), so the
+        common case is ``("flux-1",)``. FLUX.2 LoRAs are a separate
+        ecosystem (``"flux-2"``); Qwen LoRAs another (``"qwen"``); etc.
+        Mismatched LoRAs are warn-skipped at command-construction time,
+        not silently mis-applied.
+      * ``trigger`` — optional trigger word/phrase the LoRA was trained
+        to activate on. When set, ``build_iterations`` prepends it to
+        the prompt if not already present. Many style LoRAs only
+        produce their effect when the trigger word appears in the
+        prompt (e.g. "Pixar 3D" for Canopus-Pixar-3D-Flux-LoRA).
+
+    Frozen + slots matches the project's other config dataclasses
+    (Iteration, BatchContext, EnhanceResult, BackendHealth,
+    EnhanceHealth). ``__hash__`` stays default-frozen-hashable since
+    every field is hashable — tuples of LoraRef can live in sets if a
+    future caller wants dedup.
+    """
+    ref: str
+    weight: float = 1.0
+    compatible_with: tuple[str, ...] = ("flux-1",)
+    trigger: str | None = None
+
+
+# Cap on a single LoraRef's ref-string length. HF repo ids are well
+# under 200 chars; absolute paths can be longer but 4 KB is more than
+# enough headroom for the longest realistic path. Reject anything
+# beyond that at schema time — a 1 MB string in a TOML field would
+# burn argv space and is almost certainly corruption.
+_LORA_REF_MAX_LEN = 4096
 
 
 class StyleNotFound(KeyError):
@@ -292,6 +345,17 @@ def _is_number_not_bool(v: Any) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
+def _is_lora_list(v: Any) -> bool:
+    """Predicate for the ``loras`` field on user style TOMLs. Must be a
+    list of dicts; each dict's individual fields are validated in
+    :func:`parse_lora_refs`. The schema-level check only confirms the
+    outer shape so an obviously wrong type (string, int, etc.) gets a
+    clean error message before parse_lora_refs is reached."""
+    if not isinstance(v, list):
+        return False
+    return all(isinstance(item, dict) for item in v)
+
+
 _USER_STYLE_SCHEMA: dict[str, tuple[str, Callable[[Any], bool]]] = {
     "prompt": ("string", lambda v: isinstance(v, str) and v.strip() != ""),
     "negative": ("string", lambda v: isinstance(v, str)),
@@ -319,7 +383,97 @@ _USER_STYLE_SCHEMA: dict[str, tuple[str, Callable[[Any], bool]]] = {
         "string (no control bytes)",
         lambda v: isinstance(v, str) and _is_safe_stem(v),
     ),
+    # v0.6: optional list of LoRA weight-delta references. Each entry
+    # is a TOML table ([[lora]]) with fields ref / weight /
+    # compatible_with / trigger — see :class:`LoraRef`. The per-entry
+    # validation happens in :func:`parse_lora_refs` which is called
+    # AFTER schema validation has confirmed the outer shape (list of
+    # dicts). Per-entry errors raise :class:`UserStyleError` carrying
+    # the bad field name for diagnostics.
+    "loras": (
+        "list of TOML tables (see [[lora]] entries)",
+        _is_lora_list,
+    ),
 }
+
+
+# Per-field bounds for a single LoRA entry. Reused by parse_lora_refs.
+_LORA_REF_FIELD_SCHEMA: dict[str, tuple[str, Callable[[Any], bool]]] = {
+    "ref": (
+        "non-empty string, <= 4 KB, no control bytes "
+        "(HF repo id or absolute path)",
+        lambda v: (
+            isinstance(v, str)
+            and v.strip() != ""
+            and len(v) <= _LORA_REF_MAX_LEN
+            and _is_safe_stem(v)
+        ),
+    ),
+    "weight": (
+        "number -2.0..2.0 (1.0 = full strength; rarely useful "
+        "outside ~0.3..1.2)",
+        lambda v: _is_number_not_bool(v) and -2.0 <= v <= 2.0,
+    ),
+    "compatible_with": (
+        "list of non-empty strings (lora_compat_group names like "
+        "'flux-1', 'flux-2', 'qwen')",
+        lambda v: (
+            isinstance(v, list)
+            and len(v) >= 1
+            and all(
+                isinstance(g, str) and g.strip() != "" and _is_safe_stem(g)
+                for g in v
+            )
+        ),
+    ),
+    "trigger": (
+        "string (no control bytes) or omitted",
+        lambda v: isinstance(v, str) and _is_safe_stem(v),
+    ),
+}
+
+
+def parse_lora_refs(
+    raw_loras: list[dict],
+    source: Path | str,
+) -> tuple[LoraRef, ...]:
+    """Validate + convert the ``loras`` field's list-of-dicts shape into
+    a tuple of :class:`LoraRef` instances.
+
+    Each entry's ``ref`` is required; every other field has a sensible
+    default (``weight=1.0``, ``compatible_with=("flux-1",)``,
+    ``trigger=None``). Per-entry validation uses the same (desc,
+    predicate) pattern as the top-level schema; bad values raise
+    :class:`UserStyleError` carrying the source + entry index for
+    diagnostics.
+
+    Returns a tuple (matches :class:`LoraRef`'s frozen-dataclass
+    expectations); the caller stores it on the style preset dict.
+    """
+    result: list[LoraRef] = []
+    for idx, entry in enumerate(raw_loras):
+        if "ref" not in entry:
+            raise UserStyleError(
+                f"{source}: loras[{idx}] missing required field 'ref'"
+            )
+        # Validate every present field against the per-field schema.
+        # Use the existing _schema helper so error messages match the
+        # style of the rest of the styles.py validation surface.
+        validated = validate_against_schema(
+            entry, _LORA_REF_FIELD_SCHEMA, UserStyleError,
+            source=f"{source} loras[{idx}]",
+        )
+        # Defaults for omitted optional fields.
+        weight = validated.get("weight", 1.0)
+        compat = tuple(validated.get("compatible_with", ("flux-1",)))
+        trigger = validated.get("trigger")
+        result.append(LoraRef(
+            ref=validated["ref"],
+            weight=float(weight),
+            compatible_with=compat,
+            trigger=trigger,
+        ))
+    return tuple(result)
 
 
 def load_user_style_file(path: Path) -> dict[str, Any]:
@@ -351,9 +505,18 @@ def load_user_style_file(path: Path) -> dict[str, Any]:
     except (OSError, tomllib.TOMLDecodeError) as e:
         raise UserStyleError(f"{path}: {e}") from e
 
-    return validate_against_schema(
+    validated = validate_against_schema(
         raw, _USER_STYLE_SCHEMA, UserStyleError, source=str(path),
     )
+    # v0.6: post-process the raw ``loras`` list-of-dicts into a tuple of
+    # :class:`LoraRef` instances. The schema only validates the outer
+    # shape (list of dicts) so per-entry field errors carry a more
+    # specific "loras[N].field" diagnostic location. The result is
+    # stored back on the preset dict so cmd_helpers.build_iterations
+    # can read it directly without re-parsing.
+    if "loras" in validated:
+        validated["loras"] = parse_lora_refs(validated["loras"], path)
+    return validated
 
 
 def _is_safe_stem(stem: str) -> bool:

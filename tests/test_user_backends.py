@@ -232,6 +232,82 @@ def test_validator_rejects_enhance_invariants_with_control_bytes():
         validate_user_backend_schema(data, Path("test.toml"))
 
 
+# ── v0.6: lora_compat_group field on user backends ──────────────────
+
+
+def test_validator_accepts_lora_compat_group():
+    """User backends opt into LoRA support by declaring their compat
+    group identifier (matches LoraRef.compatible_with in style TOMLs).
+    Common values: "flux-1", "flux-2", "qwen". Bare lower-case
+    stems."""
+    data = {
+        "binary": "x", "image_flag": "--image-path",
+        "lora_compat_group": "flux-2",
+    }
+    be = validate_user_backend_schema(data, Path("test.toml"))
+    assert be.lora_compat_group == "flux-2"
+
+
+def test_validator_lora_compat_group_defaults_to_empty():
+    """Absent → "" → "this backend has no LoRA support" → any LoRA
+    declared in a style is silently warn-skipped for this backend.
+    Defensive default matches built-in backends' implicit no-LoRA
+    state for any backend that doesn't opt in."""
+    data = {"binary": "x", "image_flag": "--image-path"}
+    be = validate_user_backend_schema(data, Path("test.toml"))
+    assert be.lora_compat_group == ""
+
+
+def test_validator_rejects_empty_lora_compat_group():
+    """Empty string is the "no LoRA" sentinel — users who explicitly
+    set it to "" mean the same as omitting, but it's confusing to
+    accept both. Reject empty so the user sees a clean error."""
+    data = {
+        "binary": "x", "image_flag": "--image-path",
+        "lora_compat_group": "   ",
+    }
+    with pytest.raises(UserBackendError, match="lora_compat_group"):
+        validate_user_backend_schema(data, Path("test.toml"))
+
+
+def test_validator_rejects_lora_compat_group_with_control_bytes():
+    data = {
+        "binary": "x", "image_flag": "--image-path",
+        "lora_compat_group": "flux\x1b-1",
+    }
+    with pytest.raises(UserBackendError, match="lora_compat_group"):
+        validate_user_backend_schema(data, Path("test.toml"))
+
+
+def test_validator_rejects_non_string_lora_compat_group():
+    data = {
+        "binary": "x", "image_flag": "--image-path",
+        "lora_compat_group": 42,
+    }
+    with pytest.raises(UserBackendError, match="lora_compat_group"):
+        validate_user_backend_schema(data, Path("test.toml"))
+
+
+# ── Built-in backends carry lora_compat_group (lock-in) ─────────────
+
+
+def test_builtin_flux_carries_flux1_lora_compat_group():
+    """Built-in flux backend declares ``"flux-1"`` so FLUX.1-family
+    LoRAs (the bulk of what's published on HF for FLUX.1-dev) apply
+    cleanly to FLUX.1-Kontext-dev. Lock-in test against accidental
+    drop of the field."""
+    from imgen.backends import BUILTIN_BACKENDS
+    assert BUILTIN_BACKENDS["flux"].lora_compat_group == "flux-1"
+
+
+def test_builtin_qwen_carries_qwen_lora_compat_group():
+    """Qwen LoRAs are a separate ecosystem from FLUX. The "qwen"
+    group identifier ensures FLUX LoRAs don't accidentally apply to
+    Qwen backends (different transformer architecture)."""
+    from imgen.backends import BUILTIN_BACKENDS
+    assert BUILTIN_BACKENDS["qwen"].lora_compat_group == "qwen"
+
+
 def test_validator_converts_extra_args_list_to_tuple():
     """Backend.extra_args is tuple[str, ...] (frozen-dataclass-friendly).
     TOML deserializes arrays into Python list, so the validator converts."""
