@@ -109,6 +109,24 @@ def _confirm_batch(
     return ans in ("y", "yes")
 
 
+def _validate_input_path(image_arg: str) -> Path:
+    """Resolve, expand ~, and verify the user-supplied input image.
+
+    Returns the absolute resolved Path. Exits with code 2 on missing
+    file or non-file (directory, special device). Resolution happens
+    here once per invocation so downstream mflux subprocess and history
+    entries record absolute paths regardless of cwd at call time.
+    """
+    input_path = Path(image_arg).expanduser().resolve()
+    if not input_path.exists():
+        die(f"Image not found: {input_path}",
+            code=2,
+            hint="Check the path. Use absolute path if unsure.")
+    if not input_path.is_file():
+        die(f"Not a file: {input_path}", code=2)
+    return input_path
+
+
 def cmd_generate(args) -> int:
     # Config-aware defaults (config.toml [defaults] merged over module
     # DEFAULTS, populated in cli.main). For old callers that bypass
@@ -117,13 +135,7 @@ def cmd_generate(args) -> int:
     config_output_dir = getattr(args, "imgen_config_output_dir", None)
 
     # 1) Validate input ONCE for all iterations.
-    input_path = Path(args.image).expanduser().resolve()
-    if not input_path.exists():
-        die(f"Image not found: {input_path}",
-            code=2,
-            hint="Check the path. Use absolute path if unsure.")
-    if not input_path.is_file():
-        die(f"Not a file: {input_path}", code=2)
+    input_path = _validate_input_path(args.image)
 
     # 2) Normalise --style → list[str]. args.style is None (not passed) or
     # the result of parse_style_list (which already validated names + de-
