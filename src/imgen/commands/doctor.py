@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+import re
+import shlex
 import sys
 from pathlib import Path
 
@@ -26,6 +28,91 @@ from ..paths import (
 )
 from ..styles import BUILTIN_STYLES, list_styles, load_user_styles_dir
 from ..tokens import active_token_path, check_token_perms, load_token
+
+# Shell rc files where setup.py may have written `alias imgen=<path>`.
+# Order matters only for the "first hit wins" tie-break — divergence
+# across multiple shells is surfaced for each file independently so the
+# user sees every stale entry.
+_RC_FILES_REL = (
+    Path(".zshrc"),
+    Path(".bash_profile"),
+    Path(".bashrc"),
+    Path(".config") / "fish" / "config.fish",
+)
+
+# Matches `alias imgen=<value>` at line start (allowing leading
+# whitespace). The value is captured greedily to end-of-line and then
+# unwrapped with shlex.split so quoting / trailing comments are handled
+# the same way the shell would.
+_ALIAS_RE = re.compile(r"^\s*alias\s+imgen\s*=\s*(\S.*?)\s*$", re.MULTILINE)
+
+
+def parse_imgen_alias(rc_content: str) -> Path | None:
+    """Extract the path the last ``alias imgen=...`` line points to.
+
+    Returns None if no such alias is present, or the value can't be
+    parsed (malformed quoting). The last match wins to match shell
+    semantics — a later definition in the file overrides earlier ones.
+
+    Pure function for testability; the doctor wrapper iterates rc files
+    and prints. shlex.split with ``comments=True`` handles both the
+    shlex.quote output that ``setup.py`` writes (single-quoted on
+    paths with spaces, bare otherwise) and trailing `# comments`.
+    """
+    matches = _ALIAS_RE.findall(rc_content)
+    if not matches:
+        return None
+    try:
+        tokens = shlex.split(matches[-1], comments=True)
+    except ValueError:
+        return None
+    if not tokens:
+        return None
+    return Path(tokens[0])
+
+
+def check_alias_consistency(
+    home: Path,
+    imgen_home: Path | None,
+) -> list[tuple[Path, Path, str]]:
+    """Report each shell rc file's alias status vs the expected path.
+
+    Pure function: returns a list of ``(rc_file, aliased_path, status)``
+    tuples where status ∈ ``{"match", "mismatch", "unparsable"}``. The
+    doctor printer turns these into ok/warn lines. RC files with no
+    ``alias imgen=`` line are simply not included.
+
+    Returns ``[]`` for pipx mode (``imgen_home=None``) — no alias is
+    ever written there, so divergence is impossible by construction.
+    (architect #1 from v0.1.x review — covers the "user moved the
+    repo directory after bootstrap.sh" footgun.)
+    """
+    if imgen_home is None:
+        return []
+    expected = (imgen_home / "imgen").resolve()
+    results: list[tuple[Path, Path, str]] = []
+    for rel in _RC_FILES_REL:
+        rc = home / rel
+        if not rc.exists():
+            continue
+        try:
+            content = rc.read_text(errors="replace")
+        except OSError:
+            continue
+        aliased = parse_imgen_alias(content)
+        if aliased is None:
+            continue
+        # resolve() collapses /Users/foo/./imgen vs /Users/foo/imgen and
+        # follows symlinks — both legitimate forms of the same target
+        # are treated as a match.
+        try:
+            aliased_resolved = aliased.resolve()
+        except OSError:
+            results.append((rc, aliased, "unparsable"))
+            continue
+        status = "match" if aliased_resolved == expected else "mismatch"
+        results.append((rc, aliased, status))
+    return results
 
 
 def detect_install_collision(
@@ -214,6 +301,26 @@ def cmd_doctor(_args) -> int:
     collision = detect_install_collision(Path.home(), IMGEN_HOME)
     if collision:
         warn(collision)
+    # Bootstrap-mode users get an alias in their shell rc that points at
+    # `IMGEN_HOME/imgen`. If the user moved the repo after running
+    # `bootstrap.sh`, the alias silently still points at the old location
+    # and runs stale code on every invocation. Surface divergence here
+    # so the fix (`imgen setup` to rewrite the alias) is obvious.
+    # (architect #1 from v0.1.x review.)
+    alias_results = check_alias_consistency(Path.home(), IMGEN_HOME)
+    for rc, aliased, status in alias_results:
+        if status == "match":
+            ok(f"shell alias in {rc.name} matches IMGEN_HOME")
+        elif status == "mismatch":
+            warn(f"shell alias in {rc.name} points at {aliased}, but "
+                 f"IMGEN_HOME is {IMGEN_HOME} — stale alias from a "
+                 f"previous install. Run `imgen setup` to refresh.")
+            issues += 1
+        else:  # "unparsable" — broken symlink in alias path; rare
+            warn(f"shell alias in {rc.name} points at {aliased} which "
+                 "couldn't be resolved (broken symlink?). "
+                 "Run `imgen setup` to refresh.")
+            issues += 1
 
     # User config
     print()
