@@ -21,6 +21,7 @@ from types import SimpleNamespace
 
 from imgen.commands.generate import (
     _check_prompt_style_compat,
+    _load_backend_and_token,
     _resolve_output_layout,
     _resolve_styles_list,
     _validate_input_path,
@@ -412,3 +413,128 @@ def test_resolve_output_layout_suffixes_run_dir_on_collision(
     _, run_dir = _resolve_output_layout(args, config_output_dir=None)
 
     assert run_dir == tmp_path / "2026-05-22-10-00-00_2"
+
+
+# ── _load_backend_and_token ─────────────────────────────────────────────
+
+
+@pytest.fixture
+def fake_venv(tmp_path, monkeypatch):
+    """Stub VENV_BIN to a tmp dir and pre-create both backend binaries.
+
+    Lets tests assert binary path resolution without depending on a real
+    mflux install. Individual tests may delete a binary to exercise the
+    missing-binary branch."""
+    venv = tmp_path / "venv-bin"
+    venv.mkdir()
+    (venv / "mflux-generate-kontext").write_bytes(b"#!/bin/sh\n")
+    (venv / "mflux-generate-qwen-edit").write_bytes(b"#!/bin/sh\n")
+    monkeypatch.setattr("imgen.commands.generate.VENV_BIN", venv)
+    return venv
+
+
+@pytest.fixture
+def passing_checks(monkeypatch):
+    """Stub check_venv + check_mflux to True. Individual tests override
+    to False to exercise the not-installed branch."""
+    monkeypatch.setattr("imgen.commands.generate.check_venv", lambda: True)
+    monkeypatch.setattr("imgen.commands.generate.check_mflux", lambda: True)
+
+
+def test_load_backend_and_token_flux_with_token(
+    fake_venv, passing_checks, monkeypatch
+):
+    monkeypatch.setattr(
+        "imgen.commands.generate.load_token", lambda: "hf_TOKEN_VALUE"
+    )
+
+    backend, be, token, binary = _load_backend_and_token(
+        SimpleNamespace(backend="flux")
+    )
+
+    assert backend == "flux"
+    assert be.needs_token is True
+    assert token == "hf_TOKEN_VALUE"
+    assert binary == fake_venv / "mflux-generate-kontext"
+
+
+def test_load_backend_and_token_flux_without_token_exits_3(
+    fake_venv, passing_checks, monkeypatch, capsys
+):
+    """FLUX is gated — missing HF token must fail fast with the setup
+    hint, not silently call mflux and hit a 401 mid-run."""
+    monkeypatch.setattr("imgen.commands.generate.load_token", lambda: None)
+
+    with pytest.raises(SystemExit) as exc_info:
+        _load_backend_and_token(SimpleNamespace(backend="flux"))
+
+    assert exc_info.value.code == 3
+    err = capsys.readouterr().err
+    assert "FLUX backend requires HuggingFace token" in err
+
+
+def test_load_backend_and_token_qwen_no_token_needed(
+    fake_venv, passing_checks, monkeypatch
+):
+    """Qwen is open-weights — no token. load_token must not even be
+    called (defensive: avoids touching the keyring/disk for nothing)."""
+    called = []
+    monkeypatch.setattr(
+        "imgen.commands.generate.load_token",
+        lambda: called.append("load_token") or None,
+    )
+
+    backend, be, token, binary = _load_backend_and_token(
+        SimpleNamespace(backend="qwen")
+    )
+
+    assert backend == "qwen"
+    assert be.needs_token is False
+    assert token is None
+    assert binary == fake_venv / "mflux-generate-qwen-edit"
+    assert called == [], "load_token() should NOT be invoked for open backends"
+
+
+def test_load_backend_and_token_venv_check_failure_exits_3(
+    fake_venv, monkeypatch, capsys
+):
+    monkeypatch.setattr("imgen.commands.generate.check_venv", lambda: False)
+    monkeypatch.setattr("imgen.commands.generate.check_mflux", lambda: True)
+    monkeypatch.setattr("imgen.commands.generate.load_token", lambda: "x")
+
+    with pytest.raises(SystemExit) as exc_info:
+        _load_backend_and_token(SimpleNamespace(backend="qwen"))
+
+    assert exc_info.value.code == 3
+    assert "mflux not installed" in capsys.readouterr().err
+
+
+def test_load_backend_and_token_mflux_check_failure_exits_3(
+    fake_venv, monkeypatch, capsys
+):
+    monkeypatch.setattr("imgen.commands.generate.check_venv", lambda: True)
+    monkeypatch.setattr("imgen.commands.generate.check_mflux", lambda: False)
+    monkeypatch.setattr("imgen.commands.generate.load_token", lambda: "x")
+
+    with pytest.raises(SystemExit) as exc_info:
+        _load_backend_and_token(SimpleNamespace(backend="qwen"))
+
+    assert exc_info.value.code == 3
+    assert "mflux not installed" in capsys.readouterr().err
+
+
+def test_load_backend_and_token_missing_binary_exits_3(
+    fake_venv, passing_checks, monkeypatch, capsys
+):
+    """venv reports installed but the per-backend binary is missing —
+    half-broken state, point at `imgen upgrade`."""
+    (fake_venv / "mflux-generate-qwen-edit").unlink()
+    monkeypatch.setattr("imgen.commands.generate.load_token", lambda: "x")
+
+    with pytest.raises(SystemExit) as exc_info:
+        _load_backend_and_token(SimpleNamespace(backend="qwen"))
+
+    assert exc_info.value.code == 3
+    err = capsys.readouterr().err
+    assert "Backend binary not found" in err
+    assert "imgen upgrade" in err

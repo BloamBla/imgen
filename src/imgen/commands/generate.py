@@ -170,6 +170,43 @@ def _resolve_output_layout(
     return None, run_dir
 
 
+def _load_backend_and_token(args) -> tuple[str, "object", str | None, Path]:
+    """Resolve backend metadata, HF token, and binary path.
+
+    Returns ``(backend_name, backend_dataclass, token_or_none, binary_path)``.
+    Exits with code 3 (missing-tool class) on:
+      * gated backend without a token
+      * venv / mflux not installed
+      * the per-backend binary not present in VENV_BIN
+
+    The token is loaded lazily — only invoked when the backend's
+    ``needs_token`` is True so open backends (qwen) don't touch the
+    keyring/disk for nothing.
+    """
+    backend = args.backend
+    be = BACKENDS[backend]
+    token: str | None = None
+    if be.needs_token:
+        token = load_token()
+        if not token:
+            die("FLUX backend requires HuggingFace token",
+                code=3,
+                hint="Run: imgen setup   (or use --backend qwen)")
+
+    if not check_venv() or not check_mflux():
+        die("mflux not installed",
+            code=3,
+            hint="Run: imgen setup")
+
+    binary = VENV_BIN / be.binary
+    if not binary.exists():
+        die(f"Backend binary not found: {binary}",
+            code=3,
+            hint="Run: imgen upgrade")
+
+    return backend, be, token, binary
+
+
 def _resolve_styles_list(args, merged_defaults: dict) -> list[str]:
     """Resolve --style into a list of preset names.
 
@@ -266,26 +303,7 @@ def cmd_generate(args) -> int:
     explicit_output, run_dir = _resolve_output_layout(args, config_output_dir)
 
     # 6) Backend, token, binary (same for all M).
-    backend = args.backend
-    be = BACKENDS[backend]
-    token: str | None = None
-    if be.needs_token:
-        token = load_token()
-        if not token:
-            die("FLUX backend requires HuggingFace token",
-                code=3,
-                hint="Run: imgen setup   (or use --backend qwen)")
-
-    if not check_venv() or not check_mflux():
-        die("mflux not installed",
-            code=3,
-            hint="Run: imgen setup")
-
-    binary = VENV_BIN / be.binary
-    if not binary.exists():
-        die(f"Backend binary not found: {binary}",
-            code=3,
-            hint="Run: imgen upgrade")
+    backend, be, token, binary = _load_backend_and_token(args)
 
     # 7) Seed — one seed for the whole invocation so multi-style runs use
     # the same noise pattern (only style differs → fair preset comparison).
