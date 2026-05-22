@@ -48,10 +48,19 @@ def test_iteration_constructs_with_all_fields():
 
 def test_iteration_is_frozen():
     """v0.2.3 batch design pre-builds all iterations then loops — any
-    field mutation mid-loop would be a bug. Catch it at write-time."""
+    field mutation mid-loop would be a bug. Catch it at write-time.
+
+    The exception OR-set is a defensive belt-and-braces — FrozenInstance-
+    Error inherits from TypeError on CPython 3.12, but if a regression
+    drops `frozen=True` while keeping `slots=True`, the mutation might
+    succeed silently inside __slots__. The positive read-back assertion
+    after the raise catches THAT regression too. (python NIT)"""
     it = _make_iteration()
-    with pytest.raises((AttributeError, TypeError)):  # FrozenInstanceError → TypeError on 3.12
+    with pytest.raises((AttributeError, TypeError)):
         it.style_name = "ghibli"  # type: ignore[misc]
+    # If frozen=True were silently dropped, the line above would not
+    # raise and we'd observe "ghibli" here.
+    assert it.style_name == "anime"
 
 
 def test_iteration_has_slots_no_dict():
@@ -61,6 +70,9 @@ def test_iteration_has_slots_no_dict():
     assert not hasattr(it, "__dict__")
     with pytest.raises((AttributeError, TypeError)):
         it.nonexistent_typo_field = "x"  # type: ignore[attr-defined]
+    # Even if the raise above somehow allowed the set, slots should
+    # have rejected the new attribute name entirely.
+    assert not hasattr(it, "nonexistent_typo_field")
 
 
 def test_iteration_equality_by_fields():

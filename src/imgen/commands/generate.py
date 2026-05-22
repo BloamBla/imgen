@@ -15,7 +15,7 @@ import subprocess
 import uuid
 from pathlib import Path
 
-from ..backends import BACKENDS, build_mflux_cmd
+from ..backends import BACKENDS, Backend, build_mflux_cmd
 from ..checks import check_mflux, check_resources, check_venv
 from ..colors import C, die, err, info, ok, step, warn
 from ..config import effective_output_dir
@@ -264,6 +264,13 @@ def _run_one_iteration(
     duration = int((datetime.datetime.now() - started).total_seconds())
     history_entry["duration_sec"] = duration
     history_entry["status"] = "success" if returncode == 0 else "failed"
+    # Known limitation (v0.2.4 review IMP-2, deferred to v0.2.5):
+    # if append_history() were to raise (it can't today — history.py
+    # already swallows OSError and returns 0), the iteration_end log
+    # marker below would be skipped and the next iteration's start
+    # marker would land flush against this one, looking like a hung
+    # iteration. Wrap-in-try is the v0.2.5 fix; the failure path is
+    # unreachable in current code so no behavioural impact today.
     append_history(history_entry)
 
     if logger is not None:
@@ -543,7 +550,9 @@ def _build_iterations(
     return iterations
 
 
-def _load_backend_and_token(args) -> tuple[str, "object", str | None, Path]:
+def _load_backend_and_token(
+    args,
+) -> tuple[str, Backend, str | None, Path]:
     """Resolve backend metadata, HF token, and binary path.
 
     Returns ``(backend_name, backend_dataclass, token_or_none, binary_path)``.

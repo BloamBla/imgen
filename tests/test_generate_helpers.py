@@ -999,19 +999,10 @@ def test_print_batch_summary_all_ok(capsys):
     assert "failed" not in out.lower()
 
 
-def test_print_batch_summary_all_failed(capsys):
-    _print_batch_summary(
-        succeeded=[],
-        failed=[_fail("anime", 1), _fail("ghibli", 7)],
-        total=2,
-    )
-    out = capsys.readouterr().out + capsys.readouterr().err
-    # err() goes to stderr; recombine for assertion.
-
-
 def test_print_batch_summary_all_failed_lists_each(capsys):
     """Every failed style needs to surface (else user can't tell which
-    succeeded and which need retry)."""
+    succeeded and which need retry). No 'N ok' line when succeeded is
+    empty — the `if succeeded:` guard skips it."""
     _print_batch_summary(
         succeeded=[],
         failed=[_fail("anime", 1), _fail("ghibli", 7)],
@@ -1022,7 +1013,7 @@ def test_print_batch_summary_all_failed_lists_each(capsys):
     assert "2 failed" in combined
     assert "anime" in combined and "exit 1" in combined
     assert "ghibli" in combined and "exit 7" in combined
-    assert " ok" not in combined.replace(" 0 ok", "")  # no "N ok" line
+    assert " ok" not in combined
 
 
 def test_print_batch_summary_mixed(capsys):
@@ -1283,9 +1274,10 @@ def test_open_results_unsafe_extension_warns_no_open(
     assert ".sh" in out
 
 
-def test_open_results_swallows_filenotfound(monkeypatch, tmp_path):
+def test_open_results_swallows_filenotfound_single(monkeypatch, tmp_path):
     """If `open` binary somehow isn't there (very unusual on macOS),
-    don't crash the whole CLI — generation already succeeded."""
+    don't crash the whole CLI — generation already succeeded.
+    Single-style branch."""
     img = tmp_path / "out.png"
     img.touch()
 
@@ -1301,6 +1293,29 @@ def test_open_results_swallows_filenotfound(monkeypatch, tmp_path):
         succeeded=[("anime", img, 1)],
         run_dir=None,
         is_batch=False,
+        no_open=False,
+    )
+
+
+def test_open_results_swallows_filenotfound_multi(monkeypatch, tmp_path):
+    """Same defence-in-depth for the multi-style (Finder) branch —
+    architect NIT-5: the v0.2.3 → v0.2.4 extraction kept the try/except
+    in both branches; both deserve coverage."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    def raising_run(argv, check=False, **kwargs):
+        raise FileNotFoundError("no such binary: open")
+
+    monkeypatch.setattr(
+        "imgen.commands.generate.subprocess.run", raising_run
+    )
+
+    # Should NOT raise.
+    _open_results(
+        succeeded=[("anime", run_dir / "x.png", 1)],
+        run_dir=run_dir,
+        is_batch=True,
         no_open=False,
     )
 
@@ -1550,7 +1565,9 @@ def test_run_one_iteration_log_markers_written_when_logger_given(
     assert logger.path.exists()
     content = logger.path.read_bytes().decode()
     assert "[1/2] anime" in content
-    assert " ok " in content
+    # Tightened from " ok " — anchor against the actual marker shape so
+    # a stray " ok " elsewhere can't satisfy the assertion.
+    assert " → ok in " in content
 
 
 def test_run_one_iteration_log_markers_record_cancel(
@@ -1565,7 +1582,13 @@ def test_run_one_iteration_log_markers_record_cancel(
     )
 
     content = logger.path.read_bytes().decode()
+    # Both markers must be present — start was written BEFORE the
+    # KeyboardInterrupt; cancel was written AFTER. Locks the ordering
+    # so a refactor that moves iteration_start past the try doesn't
+    # silently lose the start record. (architect NIT-7)
+    assert "[1/2] anime" in content
     assert "CANCELLED" in content
+    assert content.index("[1/2] anime") < content.rindex("[1/2] anime")
 
 
 def test_run_one_iteration_log_skipped_when_logger_none(

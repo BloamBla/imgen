@@ -167,9 +167,13 @@ class BatchLogger:
     per-(input, style) row in v0.3.0 — happen in one place.
 
     Single-style runs do NOT create a BatchLogger; caller gates on
-    is_batch. The log file is created lazily on first write so a
-    BatchLogger that the batch never writes to (e.g. an error before
-    write_header) doesn't leave an empty file behind.
+    is_batch. The log *directory* is created eagerly in ``__init__``
+    (LOGS_DIR mkdir + chmod 0o700); the log *file* is created lazily
+    on first write via open_log_file_append, so a BatchLogger whose
+    batch never writes (e.g. an error between construction and
+    write_header) doesn't leave an empty file behind — but it may
+    leave an empty LOGS_DIR if it didn't exist already, which is
+    benign (0o700, no content).
 
     The subprocess stderr-tee still owns its own fd inside
     run_with_stderr_redaction (it needs raw bytes, not formatted
