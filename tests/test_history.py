@@ -177,6 +177,59 @@ def test_replay_entry_namespace_has_explicit_v021_fields(tmp_state_dir, monkeypa
         "replay Namespace missing imgen_merged_defaults"
 
 
+def test_replay_entry_namespace_has_explicit_v05_enhance_fields(
+    tmp_state_dir, monkeypatch,
+):
+    """v0.5 added args.enhance / args.enhance_model / args.enhance_temperature
+    / args.imgen_config_enhance to the cmd_generate surface. Replay must
+    pin those explicitly in _REPLAY_DEFAULTS so the policy "replay never
+    auto-enhances" is loud (AttributeError on a missing field) rather
+    than silent (getattr-with-default flow). Closes architect CRITICAL
+    #1 from the v0.5 pre-tag review."""
+    import imgen.commands.history as history_cmd
+    captured_args = {}
+
+    def fake_cmd_generate(args):
+        captured_args["args"] = args
+        return 0
+
+    monkeypatch.setattr(history_cmd, "cmd_generate", fake_cmd_generate)
+
+    # A v=2 entry written by an --enhance-prompt run. Replay reconstructs
+    # args from the entry's stored fields; the enhance_* args should be
+    # forced to "off" regardless of the entry's enhanced=True history.
+    entry = {
+        "id": 1,
+        "v": 2,
+        "input": "/some.jpg",
+        "style": "anime",
+        "backend": "flux",
+        "quantize": 8, "steps": 20, "guidance": 3.5, "strength": 0.55,
+        # v0.5 fields on the entry — replay sees these but ignores
+        # for purposes of re-enhancing.
+        "enhanced": True,
+        "enhance_model": "mlx-community/Qwen2.5-7B-Instruct-4bit",
+        "enhance_fallback_reason": None,
+        "prompt_original": "raw pre-LLM prompt",
+        "prompt": "raw POST-LLM enhanced prompt",
+    }
+    history_cmd.replay_entry(entry)
+    args = captured_args["args"]
+
+    # All four v0.5 fields present on the Namespace.
+    assert hasattr(args, "enhance"), "replay Namespace missing enhance"
+    assert args.enhance is False, (
+        "replay must NOT auto-enhance — would surprise users and pay "
+        "a 4 GB download + 5 s inference cost they didn't ask for"
+    )
+    assert hasattr(args, "enhance_model")
+    assert args.enhance_model is None
+    assert hasattr(args, "enhance_temperature")
+    assert args.enhance_temperature is None
+    assert hasattr(args, "imgen_config_enhance")
+    assert args.imgen_config_enhance == {}
+
+
 # ── v=2 schema migration (v0.5 — LLM prompt enhancer) ──────────────────
 
 

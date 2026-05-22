@@ -282,6 +282,7 @@ def maybe_enhance_for_command(
         results = [
             EnhanceResult(
                 final_prompt=it.prompt,
+                original_prompt=it.prompt,
                 was_enhanced=False,
                 fallback_reason="user_opt_out",
                 was_truncated=False,
@@ -314,8 +315,15 @@ def maybe_enhance_for_command(
         # the "your enhancer is broken, fix it" kind of feedback.
         reasons = {r.fallback_reason for r in results}
         if reasons == {"runner_error"}:
+            # !r-format the runner-error message: raw_llm_output here is
+            # the str(RunnerError) which may contain ANSI escape bytes
+            # bubbled up from mlx_lm / huggingface_hub error tracebacks.
+            # Mirrors v0.4 security-reviewer IMP-2 pattern for any
+            # user-supplied / library-supplied string reaching the
+            # terminal — escapes become literal \x1b instead of clearing
+            # the user's screen or setting their terminal title.
             warn("Enhance runner failed; running with original prompts. "
-                 f"Reason: {results[0].raw_llm_output}")
+                 f"Reason: {results[0].raw_llm_output!r}")
         else:
             warn(f"No prompts enhanced. Reasons: {sorted(reasons)}")
     else:
@@ -376,7 +384,6 @@ def run_one_iteration(
     failed: list[tuple[str, int, Path]],
     enhance_result: EnhanceResult | None = None,
     enhance_model: str | None = None,
-    prompt_original: str | None = None,
 ) -> bool:
     """Execute one mflux iteration end-to-end.
 
@@ -443,15 +450,13 @@ def run_one_iteration(
     # When enhance_result is None (legacy callers that haven't been
     # updated to pass it), the history entry stays in v0.4.x shape
     # except for the always-v=2 stamp added by append_history.
+    #
+    # The pre-enhance prompt is read directly from
+    # enhance_result.original_prompt — the orchestrator captures it
+    # at every fallback path, eliminating the v0.5 Phase C-1
+    # parallel-list dance (which was fragile against reordering).
     if enhance_result is not None:
-        # prompt_original is the PRE-enhance text — captured by the
-        # caller before iterations were rebuilt with enhanced prompts.
-        # If the caller doesn't pass it (defensive), we fall back to
-        # it.prompt which equals the enhanced version when enhancement
-        # ran successfully — not ideal but not corrupt either.
-        history_entry["prompt_original"] = (
-            prompt_original if prompt_original is not None else it.prompt
-        )
+        history_entry["prompt_original"] = enhance_result.original_prompt
         history_entry["enhanced"] = enhance_result.was_enhanced
         # ``enhance_model`` is recorded ONLY when the LLM actually
         # produced an enhanced prompt that made it through invariants.

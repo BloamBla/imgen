@@ -72,6 +72,22 @@ def _safe_output_path(s: str) -> str:
     return s
 
 
+def _clean_model_ref(s: str) -> str:
+    """argparse validator for ``--enhance-model``: reject empty and any
+    C0/DEL/C1 control bytes. Symmetric with the ``[enhance] model``
+    schema validator in ``config.py``. (v0.5 security IMP-4.)"""
+    if not s.strip():
+        raise argparse.ArgumentTypeError(
+            "--enhance-model must be a non-empty HF repo or absolute path"
+        )
+    if any(c < ' ' or c == '\x7f' or '\x80' <= c <= '\x9f' for c in s):
+        raise argparse.ArgumentTypeError(
+            "--enhance-model contains control bytes (C0/DEL/C1) — "
+            "reject so they don't reach mlx_lm.load or terminal output"
+        )
+    return s
+
+
 # ── Parser ───────────────────────────────────────────────────────────────
 
 def build_parser(
@@ -342,7 +358,7 @@ def _add_enhance_args(p: argparse.ArgumentParser) -> None:
              "`[enhance] default = true` in config.toml).",
     )
     group.add_argument(
-        "--enhance-model", type=str, default=None, metavar="REF",
+        "--enhance-model", type=_clean_model_ref, default=None, metavar="REF",
         help="HF repo or local path for the enhancer LLM (overrides "
              "[enhance] model in config.toml).",
     )

@@ -76,13 +76,18 @@ def test_preset_has_explicit_preservation_clause(name):
 
 @pytest.mark.parametrize("name", ALL_STYLES)
 def test_preset_drops_legacy_keep_face_identity_phrasing(name):
-    """v0.3.4: the terse legacy "keep face identity" / "keep pose"
-    phrasing is replaced by the explicit "while preserving …" block.
-    Locking against accidental drift back to the old wording.
+    """The terse legacy "keep face identity" / "keep pose" phrasing
+    from early built-in prompts is replaced by the explicit
+    "while preserving the facial identity / exact facial features /
+    recognizable expression, hairstyle, body proportions, and pose"
+    block. Locks against accidental drift back to the old wording —
+    that wording lost the identity-anchor entirely in scope=scene.
 
-    (The legacy substrings remain in SCOPE_SCENE_REPLACEMENTS for
-    back-compat with user-defined styles still using them, but
-    no built-in should produce them.)"""
+    The v0.3.x ``SCOPE_SCENE_REPLACEMENTS`` substring-rewrite table
+    that translated this legacy phrasing to scene-anchored language
+    was deleted in the v0.5 ``apply_scope`` rewrite — built-ins now
+    ship with the explicit preservation clause directly, no rewrite
+    needed."""
     prompt = STYLES[name]["prompt"]
     assert "keep face identity" not in prompt
     assert "keep pose" not in prompt

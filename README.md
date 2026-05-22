@@ -254,6 +254,8 @@ imgen photo.jpg --style anime --enhance-prompt   # first run downloads ~4 GB
 
 After the one-time download, the AI adds ~3-5 seconds per image to the FLUX wall-clock. Negligible on a 15-minute Q8 generation. For an `imgen batch` of 20 photos × 3 styles = 60 outputs, the AI loads **once** for the whole batch and amortises across all 60 prompts.
 
+`--dry-run` with `--enhance-prompt` STILL runs the enhancer so the displayed mflux command matches what would actually execute. For a large batch this is non-trivial cost (~5-10 s cold load + ~3 s × N×M prompts) just to see the cmd printed. If you're sanity-checking the cmd structure and don't care about the enhanced prompt, drop `--enhance-prompt` (or pass `--no-enhance`) from the dry-run invocation.
+
 ### Determinism
 
 At the default `temperature=0.0`, the expansion is deterministic: same input prompt + same AI model → same expanded prompt. This means `imgen replay <id>` reproduces the original image bit-for-bit when both runs use `--enhance-prompt`. If you want creative variation, pass `--enhance-temperature 0.5` (or higher).

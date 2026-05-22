@@ -169,6 +169,67 @@ def test_validator_fills_defaults_for_optional_fields():
     assert be.needs_token is False
     assert be.secret_env_var is None
     assert be.secret_required is True
+    # v0.5: enhance_* fields default to None / empty tuple → user
+    # backend cleanly opts out of the LLM enhancer.
+    assert be.enhance_system_prompt is None
+    assert be.enhance_invariants == ()
+
+
+# ── v0.5: optional enhance_* fields on user backends ────────────────────
+
+
+def test_validator_accepts_enhance_system_prompt():
+    """User backends may declare their own enhancer system prompt to
+    enable ``--enhance-prompt`` for that backend. Mirrors the built-in
+    flux/qwen pattern (different prompt conventions, different system
+    instructions). Closes architect CRITICAL #2 from v0.5 pre-tag
+    review."""
+    data = {
+        "binary": "x", "image_flag": "--image-path",
+        "enhance_system_prompt": "You expand prompts for MyModel.",
+    }
+    be = validate_user_backend_schema(data, Path("test.toml"))
+    assert be.enhance_system_prompt == "You expand prompts for MyModel."
+    assert be.enhance_invariants == ()  # absent → default empty tuple
+
+
+def test_validator_accepts_enhance_invariants():
+    """``enhance_invariants`` is a list of identity-anchor substrings
+    that the LLM output must preserve. Comes in as TOML list, stored
+    as tuple to match the frozen Backend dataclass shape."""
+    data = {
+        "binary": "x", "image_flag": "--image-path",
+        "enhance_system_prompt": "...",
+        "enhance_invariants": ["preserving", "identity"],
+    }
+    be = validate_user_backend_schema(data, Path("test.toml"))
+    assert be.enhance_invariants == ("preserving", "identity")
+    assert isinstance(be.enhance_invariants, tuple)
+
+
+def test_validator_rejects_enhance_system_prompt_with_control_bytes():
+    """Symmetric with extra_args defence. The enhance system prompt
+    ends up in subprocess argv (via JSON stdin to enhance_runner) AND
+    in dry-run terminal display — a ``\\x1b`` byte could leak terminal
+    escapes."""
+    data = {
+        "binary": "x", "image_flag": "--image-path",
+        "enhance_system_prompt": "evil\x1b[2J prompt",
+    }
+    with pytest.raises(UserBackendError, match="enhance_system_prompt.*control"):
+        validate_user_backend_schema(data, Path("test.toml"))
+
+
+def test_validator_rejects_enhance_invariants_with_control_bytes():
+    """Each invariant string flows into history.jsonl + log files. Apply
+    the same control-byte filter as extra_args."""
+    data = {
+        "binary": "x", "image_flag": "--image-path",
+        "enhance_system_prompt": "...",
+        "enhance_invariants": ["good", "bad\x1b[m"],
+    }
+    with pytest.raises(UserBackendError, match="enhance_invariants.*control"):
+        validate_user_backend_schema(data, Path("test.toml"))
 
 
 def test_validator_converts_extra_args_list_to_tuple():

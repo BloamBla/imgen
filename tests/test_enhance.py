@@ -368,7 +368,7 @@ class TestDecideFinalPrompt:
 class TestEnhanceResultDataclass:
     def test_is_frozen(self):
         result = EnhanceResult(
-            final_prompt="x", was_enhanced=False,
+            final_prompt="x", original_prompt="x", was_enhanced=False,
             fallback_reason="user_opt_out", was_truncated=False,
             raw_llm_output=None,
         )
@@ -381,7 +381,7 @@ class TestEnhanceResultDataclass:
         # type — CPython raises TypeError for frozen-dataclass setattr
         # of a slotted name in some builds, AttributeError in others.
         result = EnhanceResult(
-            final_prompt="x", was_enhanced=False,
+            final_prompt="x", original_prompt="x", was_enhanced=False,
             fallback_reason=None, was_truncated=False,
             raw_llm_output=None,
         )
@@ -394,6 +394,76 @@ class TestEnhanceResultDataclass:
         # on dataclasses that aren't meant to be set keys / dict keys.
         # Matches Iteration, BatchContext.
         assert EnhanceResult.__hash__ is None
+
+    def test_carries_original_prompt(self):
+        """v0.5 architect IMP #4 — every result records BOTH the
+        post-LLM ``final_prompt`` and the pre-LLM ``original_prompt``.
+        Eliminates the parallel-list dance that v0.5 Phase C-1
+        originally shipped (fragile against any code reorder
+        between "capture originals" and "splice enhanced back")."""
+        result = EnhanceResult(
+            final_prompt="ENH: x",
+            original_prompt="x",
+            was_enhanced=True,
+            fallback_reason=None,
+            was_truncated=False,
+            raw_llm_output="ENH: x",
+        )
+        assert result.final_prompt == "ENH: x"
+        assert result.original_prompt == "x"
+
+
+class TestDecideFinalPromptOriginalPromptCapture:
+    """v0.5 architect IMP #4: decide_final_prompt stamps the original
+    on every result, regardless of which fallback path fired. Eliminates
+    the need for callers to keep a parallel pre-enhance list aligned
+    with the iteration index."""
+
+    def test_path1_disabled_records_original(self):
+        from imgen.enhance import decide_final_prompt
+        result = decide_final_prompt(
+            original="raw input",
+            enhanced_or_none=None,
+            invariants=(),
+            disabled_reason="user_opt_out",
+        )
+        assert result.original_prompt == "raw input"
+        assert result.final_prompt == "raw input"  # fell back
+
+    def test_path2_empty_llm_output_records_original(self):
+        from imgen.enhance import decide_final_prompt
+        result = decide_final_prompt(
+            original="raw input",
+            enhanced_or_none="",
+            invariants=(),
+        )
+        assert result.original_prompt == "raw input"
+        assert result.fallback_reason == "empty_llm_output"
+
+    def test_path4_invariant_violated_records_original(self):
+        from imgen.enhance import decide_final_prompt
+        result = decide_final_prompt(
+            original="raw preserving identity",
+            enhanced_or_none="rewritten without anchor",
+            invariants=("preserving",),
+        )
+        assert result.original_prompt == "raw preserving identity"
+        assert result.fallback_reason == "invariant_violated"
+        # final_prompt fell back to original even though raw LLM output
+        # was non-empty.
+        assert result.final_prompt == "raw preserving identity"
+
+    def test_path5_success_records_original(self):
+        from imgen.enhance import decide_final_prompt
+        result = decide_final_prompt(
+            original="raw preserving identity",
+            enhanced_or_none="rewritten preserving identity richer",
+            invariants=("preserving",),
+        )
+        assert result.original_prompt == "raw preserving identity"
+        assert result.was_enhanced is True
+        # final_prompt is the enhanced version on success.
+        assert result.final_prompt == "rewritten preserving identity richer"
 
 
 # ── Backend.enhance_* fields lock-in ───────────────────────────────────

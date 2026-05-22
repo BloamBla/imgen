@@ -267,12 +267,8 @@ def cmd_batch(args) -> int:
         # this is BEFORE dry-run so the displayed cmd matches what mflux
         # would actually receive; BEFORE confirm gate so the user knows
         # enhancement happened before they say yes to a long batch.
-        #
-        # `prompts_pre_enhance` captures original prompts BEFORE iterations
-        # get rebuilt with enhanced versions — the v=2 history writer in
-        # run_one_iteration needs both pre and post for the prompt_original
-        # field.
-        prompts_pre_enhance = [it.prompt for it in all_iters]
+        # The pre-enhance prompt is captured inside each EnhanceResult's
+        # original_prompt field (no parallel list needed).
         enhance_results, enhance_model = maybe_enhance_for_command(
             args=args,
             backend_obj=be,
@@ -403,10 +399,10 @@ def cmd_batch(args) -> int:
                 for it in iters:
                     global_idx += 1
                     # v0.5: thread enhance metadata. global_idx is 1-based;
-                    # enhance_results / prompts_pre_enhance are 0-based and
-                    # aligned with the flat all_iters list above.
-                    e_result = enhance_results[global_idx - 1]
-                    e_pre = prompts_pre_enhance[global_idx - 1]
+                    # enhance_results is 0-based and aligned with the flat
+                    # all_iters list above. The pre-enhance prompt is
+                    # carried inside enhance_results[i].original_prompt —
+                    # no parallel list to keep in sync.
                     cont = run_one_iteration(
                         it=it,
                         idx=global_idx,
@@ -416,9 +412,8 @@ def cmd_batch(args) -> int:
                         logger=logger,
                         succeeded=succeeded,
                         failed=failed,
-                        enhance_result=e_result,
+                        enhance_result=enhance_results[global_idx - 1],
                         enhance_model=enhance_model,
-                        prompt_original=e_pre,
                     )
                     if not cont:
                         # KeyboardInterrupt mid-iteration: per-input

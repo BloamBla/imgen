@@ -236,6 +236,15 @@ def _is_list_of_clean_str(v: Any) -> bool:
     )
 
 
+def _is_clean_str(v: Any) -> bool:
+    """String with no C0/DEL/C1 control bytes. Used for user-supplied
+    fields that flow into prompts / log files / terminal output (the
+    enhance system prompt is a prime example: it's a free-form
+    instruction the user types into a TOML, and it ends up displayed
+    in dry-run output and the per-batch log)."""
+    return isinstance(v, str) and not _has_control_bytes(v)
+
+
 _USER_BACKEND_SCHEMA: dict[str, tuple[str, Callable[[Any], bool]]] = {
     "binary": ("non-empty string", _is_str_nonempty),
     "image_flag": (
@@ -245,6 +254,21 @@ _USER_BACKEND_SCHEMA: dict[str, tuple[str, Callable[[Any], bool]]] = {
     "supports_strength": ("bool", lambda v: isinstance(v, bool)),
     "supports_negative": ("bool", lambda v: isinstance(v, bool)),
     "extra_args": (
+        "list of strings (no control bytes)", _is_list_of_clean_str,
+    ),
+    # v0.5: optional per-backend enhancer config. A user backend may
+    # declare its own system prompt + identity-anchor invariants so
+    # ``--enhance-prompt`` works on it the same way it works on the
+    # built-in flux/qwen backends. Both fields are optional — absent →
+    # Backend.enhance_system_prompt stays None → enhancer cleanly skips
+    # with ``fallback_reason="not_supported_by_backend"`` (no crash,
+    # just a no-op for that backend). control-byte filter on the
+    # system prompt because it ends up in subprocess argv (via JSON
+    # stdin to enhance_runner) AND in dry-run terminal display.
+    "enhance_system_prompt": (
+        "string (no control bytes)", _is_clean_str,
+    ),
+    "enhance_invariants": (
         "list of strings (no control bytes)", _is_list_of_clean_str,
     ),
 }
@@ -439,6 +463,13 @@ def validate_user_backend_schema(data: dict, source: Path) -> Backend:
     # extra_args is a list[str] in TOML; Backend wants tuple[str, ...].
     extra_args = tuple(validated["extra_args"])
 
+    # v0.5 enhancer fields. Both optional — absent → Backend defaults
+    # (None / empty tuple) → enhancer cleanly skips this backend with
+    # ``fallback_reason="not_supported_by_backend"``. enhance_invariants
+    # is a list in TOML; Backend wants tuple[str, ...].
+    enhance_system_prompt = validated.get("enhance_system_prompt")
+    enhance_invariants = tuple(validated.get("enhance_invariants", ()))
+
     return Backend(
         binary=validated["binary"],
         needs_token=False,
@@ -448,6 +479,8 @@ def validate_user_backend_schema(data: dict, source: Path) -> Backend:
         extra_args=extra_args,
         secret_env_var=secret_env_var,
         secret_required=secret_required,
+        enhance_system_prompt=enhance_system_prompt,
+        enhance_invariants=enhance_invariants,
     )
 
 

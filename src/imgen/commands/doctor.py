@@ -272,7 +272,13 @@ def check_enhance_health(
 
     eff = effective_enhance(cli_enable=None, config_enhance=enhance_cfg)
     model_ref = eff["model"]
-    enabled_default = bool(eff["enabled"])  # the [enhance] default key
+    # Read the raw config "default" key directly rather than the resolved
+    # "enabled" — when cli_enable=None they happen to be equal, but the
+    # variable name should reflect WHICH source we're reading. Surfacing
+    # it as "config says enhance is default-on" is clearer than the
+    # implicit detour through effective_enhance's CLI override logic.
+    # (v0.5 python-reviewer I-2.)
+    enabled_default = bool(enhance_cfg.get("default", False))
 
     cache_dir = _hf_cache_dir_for(model_ref, hf_cache)
     model_cached = cache_dir.is_dir()

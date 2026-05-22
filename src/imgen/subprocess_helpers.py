@@ -15,7 +15,12 @@ import subprocess
 import sys
 from typing import BinaryIO
 
-__all__ = ["build_mflux_env", "format_cmd", "run_with_stderr_redaction"]
+__all__ = [
+    "build_enhance_env",
+    "build_mflux_env",
+    "format_cmd",
+    "run_with_stderr_redaction",
+]
 
 
 # Single source of truth for the env allow-list reaching the mflux
@@ -74,6 +79,46 @@ def build_mflux_env(
     env["COLUMNS"] = str(term.columns)
     env["LINES"] = str(term.lines)
     return env
+
+
+# Minimal environment for the v0.5 LLM prompt-enhancer subprocess
+# (``python -m imgen.enhance_runner``). Same allow-list discipline as
+# the mflux env above: explicitly enumerate everything the subprocess
+# needs, deny everything else by default. Notably HF_TOKEN is NOT
+# forwarded — the default Qwen2.5-7B-Instruct-4bit model is open-
+# license. Custom enhance models that need auth should be pre-cached
+# out-of-band (``huggingface-cli download``) with HF_HOME pointing at
+# the cache. Keeps the runner's network surface to "fetch open models
+# only", matching the runner's own minimal-permissions design.
+# (v0.5 security-reviewer IMP-1.)
+_ENHANCE_ENV_ALLOWLIST: tuple[str, ...] = (
+    # Filesystem + locale plumbing the Python interpreter needs.
+    "PATH", "HOME", "USER", "LANG", "LC_ALL", "TMPDIR",
+    # HuggingFace cache redirection. The runner needs to find the
+    # already-downloaded model; without these the parent's HF cache
+    # config doesn't cross the subprocess boundary, so the runner
+    # would silently re-download to its own default location.
+    "HF_HOME", "HF_HUB_CACHE", "TRANSFORMERS_CACHE",
+    # MLX kernel cache (shared with mflux above).
+    "MLX_METAL_PRECOMPILE_PATH",
+)
+
+
+def build_enhance_env() -> dict[str, str]:
+    """Minimal environment for the enhance_runner subprocess. Mirrors
+    :func:`build_mflux_env`'s allow-list discipline; specifically does
+    NOT forward ``HF_TOKEN`` or anything else the user's shell may
+    carry (AWS creds, GH tokens, SSH agents, etc.). The runner does
+    subprocess JSON I/O + mlx_lm inference, nothing else.
+
+    Terminal size is also NOT forwarded — the runner has no TUI
+    output, only structured JSON on stdout."""
+    return {
+        k: os.environ[k]
+        for k in _ENHANCE_ENV_ALLOWLIST
+        if k in os.environ
+    }
+
 
 # Minimum 36 chars after `hf_` so a truncated prefix at a buffer boundary
 # (e.g. `hf_AbC\n` flushed via the last-`\r`-or-`\n` rule before the rest

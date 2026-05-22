@@ -178,6 +178,7 @@ def _make_stub_orchestrator(
             if fallback_reason is not None:
                 results.append(EnhanceResult(
                     final_prompt=p,
+                    original_prompt=p,
                     was_enhanced=False,
                     fallback_reason=fallback_reason,
                     was_truncated=False,
@@ -186,6 +187,7 @@ def _make_stub_orchestrator(
             else:
                 results.append(EnhanceResult(
                     final_prompt=transform(p),
+                    original_prompt=p,
                     was_enhanced=True,
                     fallback_reason=None,
                     was_truncated=False,

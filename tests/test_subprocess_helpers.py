@@ -362,3 +362,75 @@ def test_build_mflux_env_backward_compatible_no_kwargs():
     env_without_token = build_mflux_env(token=None)
     assert env_with_token["HF_TOKEN"] == "hf_x"
     assert "HF_TOKEN" not in env_without_token
+
+
+# ── build_enhance_env (v0.5 — minimal env for the enhancer subprocess) ─
+
+from imgen.subprocess_helpers import build_enhance_env
+
+
+def test_build_enhance_env_includes_hf_cache_keys(monkeypatch):
+    """Runner needs HF cache redirection so it finds the already-
+    downloaded model. Without these, mlx_lm would silently re-download
+    to its own default location."""
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setenv("HF_HOME", "/Volumes/ssd/hf")
+    monkeypatch.setenv("HF_HUB_CACHE", "/Volumes/ssd/hf/hub")
+    env = build_enhance_env()
+    assert env["PATH"] == "/usr/bin:/bin"
+    assert env["HF_HOME"] == "/Volumes/ssd/hf"
+    assert env["HF_HUB_CACHE"] == "/Volumes/ssd/hf/hub"
+
+
+def test_build_enhance_env_does_not_forward_hf_token(monkeypatch):
+    """Key v0.5 security gate (IMP-1): HF_TOKEN must NOT cross into
+    the runner subprocess. The default Qwen model is open-license,
+    and propagating the user's HF token to a separate subprocess
+    that downloads arbitrary models would leak the token via
+    huggingface_hub's HTTP error tracebacks on any failure."""
+    monkeypatch.setenv("PATH", "/usr/bin")
+    monkeypatch.setenv("HF_TOKEN", "hf_supersecret_should_not_leak")
+    env = build_enhance_env()
+    assert "HF_TOKEN" not in env, (
+        f"HF_TOKEN leaked into enhance_runner env: {env.get('HF_TOKEN')!r}"
+    )
+
+
+def test_build_enhance_env_does_not_forward_arbitrary_secrets(monkeypatch):
+    """Sibling secrets (AWS, GH, etc.) the user's shell may carry are
+    also denied. Same allow-list discipline as build_mflux_env."""
+    monkeypatch.setenv("PATH", "/usr/bin")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "AKIA...secret")
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_secret")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-secret")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret")
+    env = build_enhance_env()
+    assert "AWS_SECRET_ACCESS_KEY" not in env
+    assert "GITHUB_TOKEN" not in env
+    assert "OPENAI_API_KEY" not in env
+    assert "ANTHROPIC_API_KEY" not in env
+
+
+def test_build_enhance_env_does_not_forward_terminal_size(monkeypatch):
+    """The runner has no TUI output (only structured JSON). COLUMNS /
+    LINES are mflux-specific (tqdm renders progress bars there); the
+    runner doesn't need them. Don't forward."""
+    monkeypatch.setenv("PATH", "/usr/bin")
+    monkeypatch.setenv("COLUMNS", "120")
+    monkeypatch.setenv("LINES", "40")
+    env = build_enhance_env()
+    assert "COLUMNS" not in env
+    assert "LINES" not in env
+
+
+def test_build_enhance_env_omits_keys_not_in_parent(monkeypatch):
+    """Missing-from-parent keys aren't synthesised. Returns only what
+    exists in the parent's environment, filtered by the allowlist."""
+    # Clear every allowlisted key but PATH.
+    for k in ("HF_HOME", "HF_HUB_CACHE", "TRANSFORMERS_CACHE",
+              "MLX_METAL_PRECOMPILE_PATH", "HOME", "USER", "LANG",
+              "LC_ALL", "TMPDIR"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("PATH", "/usr/bin")
+    env = build_enhance_env()
+    assert env == {"PATH": "/usr/bin"}

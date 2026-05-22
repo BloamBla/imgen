@@ -15,7 +15,9 @@ from .generate import cmd_generate
 
 # Fields the replay Namespace must carry so cmd_generate doesn't have to
 # rely on getattr-with-default. Each is what cmd_generate reads for a
-# "user didn't pass this flag" semantics.
+# "user didn't pass this flag" semantics. Explicit fields > silent
+# getattr fallbacks — keeps a future required arg from silently
+# producing surprising replay behaviour.
 _REPLAY_DEFAULTS = {
     "prompt_file": None,
     "output_dir": None,
@@ -27,6 +29,21 @@ _REPLAY_DEFAULTS = {
     "yes": False,
     "imgen_merged_defaults": DEFAULTS,
     "imgen_config_output_dir": None,
+    # v0.5 enhance surface — replay deliberately does NOT auto-enhance
+    # even when the original entry was generated with --enhance-prompt.
+    # Reason: the enhancer is opt-in by user intent; silently re-enhancing
+    # on replay would surprise users (and pay a 4 GB download + 5 s
+    # inference cost they didn't ask for). To exactly reproduce an
+    # enhanced run, the user must re-pass --enhance-prompt at the
+    # replay call site (a future v0.5.x --re-enhance flag is on the
+    # backlog). Pinning these as explicit False/None values surfaces a
+    # missing flag as a loud AttributeError instead of a silent fallback
+    # through getattr — mirrors the v0.2 architect #7 "explicit fields"
+    # contract for the rest of this Namespace.
+    "enhance": False,
+    "enhance_model": None,
+    "enhance_temperature": None,
+    "imgen_config_enhance": {},
 }
 
 

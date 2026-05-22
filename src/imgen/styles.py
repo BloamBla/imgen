@@ -309,8 +309,16 @@ _USER_STYLE_SCHEMA: dict[str, tuple[str, Callable[[Any], bool]]] = {
     # visual school (watercolor / flat-color / impasto / etc.) — see
     # built-in BUILTIN_STYLES for examples. The value is appended
     # verbatim to the prompt, so include a leading separator (e.g.
-    # ``, and transform the background...``).
-    "scene_suffix": ("string", lambda v: isinstance(v, str)),
+    # ``, and transform the background...``). Control-byte filter
+    # (C0/DEL/C1) because the suffix flows into the prompt → subprocess
+    # argv → per-batch log files → terminal display via dry-run output;
+    # an ESC byte here could clear the user's screen on `cat <log>`.
+    # Symmetric with the v0.4 `extra_args` defence in backends.
+    # (v0.5 security-reviewer IMP-3.)
+    "scene_suffix": (
+        "string (no control bytes)",
+        lambda v: isinstance(v, str) and _is_safe_stem(v),
+    ),
 }
 
 

@@ -132,14 +132,30 @@ UI_SCHEMA: dict[str, _SchemaEntry] = {
 # max_tokens  = LLM output cap. 200 is generous for ~60-80 token expansions.
 # timeout_s   = wall-clock cap on the runner subprocess; kills it if
 #               mlx_lm hangs.
+def _is_model_ref(v: Any) -> bool:
+    """``[enhance] model`` validator: non-empty, no C0/DEL/C1 control bytes.
+
+    The field flows into mlx_lm.load (HF repo id) AND into our terminal
+    display (doctor's "Enhance" section). A control byte here could leak
+    escape sequences into the user's terminal on `imgen doctor` output.
+    (v0.5 security-reviewer IMP-4.)
+    """
+    if not (isinstance(v, str) and v.strip() != ""):
+        return False
+    return not any(
+        c < ' ' or c == '\x7f' or '\x80' <= c <= '\x9f'
+        for c in v
+    )
+
+
 ENHANCE_SCHEMA: dict[str, _SchemaEntry] = {
     "default": (
         "bool (true / false)",
         lambda v: isinstance(v, bool),
     ),
     "model": (
-        "non-empty string (HF repo or absolute path)",
-        lambda v: isinstance(v, str) and v.strip() != "",
+        "non-empty string (HF repo or absolute path, no control bytes)",
+        _is_model_ref,
     ),
     "temperature": (
         "number 0.0..2.0",

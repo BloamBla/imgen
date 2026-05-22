@@ -35,6 +35,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -92,14 +93,21 @@ class EnhanceResult:
     """Outcome of an enhancement attempt — what goes to mflux + history.
 
     ``final_prompt`` is what callers must use (always non-empty if
-    ``original`` was non-empty). ``was_enhanced`` is True when the
-    LLM's expansion survived all checks and is in ``final_prompt``;
-    False means we fell back to ``original``. ``fallback_reason``
-    explains why fallback happened (or is None if no fallback).
-    ``raw_llm_output`` is kept for history / debug — None when the
-    LLM was never invoked (disabled / too-long input).
+    ``original_prompt`` was non-empty). ``original_prompt`` is the
+    pre-LLM constructed prompt — kept verbatim so the v=2 history
+    writer has both pre and post versions of every iteration without
+    needing a parallel list aligned with the iteration index (the
+    parallel-list approach v0.5 Phase C-1 shipped was fragile: any
+    reordering of "capture originals" vs "splice enhanced back into
+    iterations" silently corrupted history). ``was_enhanced`` is True
+    when the LLM's expansion survived all checks and is in
+    ``final_prompt``; False means we fell back to original.
+    ``fallback_reason`` explains why fallback happened (or is None if
+    no fallback). ``raw_llm_output`` is kept for history / debug —
+    None when the LLM was never invoked (disabled / too-long input).
     """
     final_prompt: str
+    original_prompt: str
     was_enhanced: bool
     fallback_reason: str | None
     was_truncated: bool
@@ -275,6 +283,7 @@ def decide_final_prompt(
     if enhanced_or_none is None:
         return EnhanceResult(
             final_prompt=original,
+            original_prompt=original,
             was_enhanced=False,
             fallback_reason=disabled_reason,
             was_truncated=False,
@@ -288,6 +297,7 @@ def decide_final_prompt(
     if not cleaned:
         return EnhanceResult(
             final_prompt=original,
+            original_prompt=original,
             was_enhanced=False,
             fallback_reason="empty_llm_output",
             was_truncated=False,
@@ -304,6 +314,7 @@ def decide_final_prompt(
     if not ok:
         return EnhanceResult(
             final_prompt=original,
+            original_prompt=original,
             was_enhanced=False,
             fallback_reason="invariant_violated",
             was_truncated=False,
@@ -313,6 +324,7 @@ def decide_final_prompt(
     # Path 5: Valid enhancement — return it (possibly truncated).
     return EnhanceResult(
         final_prompt=capped,
+        original_prompt=original,
         was_enhanced=True,
         fallback_reason=None,
         was_truncated=was_truncated,
@@ -450,6 +462,16 @@ def run_with_mlx_lm(
     )
     payload_json = json.dumps(payload, ensure_ascii=False)
 
+    # v0.5 security-reviewer IMP-1: explicit minimal env. Without this
+    # subprocess.run inherits the full parent environment — including
+    # HF_TOKEN, AWS credentials, GH tokens, etc. that the runner has no
+    # business seeing. Mirrors the build_mflux_env discipline applied to
+    # mflux subprocess calls. build_enhance_env() forwards only PATH,
+    # HOME, USER, locale, TMPDIR, and HF cache paths — and explicitly
+    # does NOT forward HF_TOKEN.
+    from .subprocess_helpers import build_enhance_env
+    runner_env = build_enhance_env()
+
     try:
         result = subprocess.run(
             cmd,
@@ -458,6 +480,7 @@ def run_with_mlx_lm(
             text=True,
             timeout=timeout,
             check=False,  # we inspect returncode ourselves for diagnostics
+            env=runner_env,
         )
     except subprocess.TimeoutExpired as e:
         raise RunnerError(
@@ -517,7 +540,7 @@ def enhance_iteration_prompts(
     temperature: float,
     max_tokens: int,
     timeout_s: float = DEFAULT_ENHANCE_TIMEOUT_S,
-    run_llm=run_with_mlx_lm,
+    run_llm: Callable[..., list[str]] = run_with_mlx_lm,
 ) -> list[EnhanceResult]:
     """Top-level orchestrator: enhance a batch of iteration prompts.
 
@@ -552,6 +575,7 @@ def enhance_iteration_prompts(
         return [
             EnhanceResult(
                 final_prompt=p,
+                original_prompt=p,
                 was_enhanced=False,
                 fallback_reason="not_supported_by_backend",
                 was_truncated=False,
@@ -572,6 +596,7 @@ def enhance_iteration_prompts(
                 reason = "input_too_long"
             pre_results[i] = EnhanceResult(
                 final_prompt=p,
+                original_prompt=p,
                 was_enhanced=False,
                 fallback_reason=reason,
                 was_truncated=False,
@@ -606,6 +631,7 @@ def enhance_iteration_prompts(
         return [
             EnhanceResult(
                 final_prompt=p,
+                original_prompt=p,
                 was_enhanced=False,
                 fallback_reason="runner_error",
                 was_truncated=False,
