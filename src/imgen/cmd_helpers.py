@@ -53,10 +53,11 @@ that genuinely stay generate-private keep the underscore.
 from __future__ import annotations
 
 import datetime
+import os
 import subprocess
 from pathlib import Path
 
-from .backends import BACKENDS, Backend, build_mflux_cmd
+from .backends import Backend, build_mflux_cmd, get_backend
 from .checks import check_mflux, check_resources, check_venv
 from .colors import C, die, err, ok, step, warn
 from .config import effective_output_dir
@@ -647,21 +648,40 @@ def build_iterations(
 
 def load_backend_and_token(
     args,
-) -> tuple[str, Backend, str | None, Path]:
-    """Resolve backend metadata, HF token, and binary path.
+) -> tuple[str, Backend, str | None, Path, tuple[str, str] | None]:
+    """Resolve backend metadata, HF token, binary path, and custom secret.
 
-    Returns ``(backend_name, backend_dataclass, token_or_none, binary_path)``.
+    Returns a 5-tuple:
+    ``(backend_name, backend_dataclass, token_or_none, binary_path,
+    backend_secret_or_none)``. The fifth slot is for v0.4 custom
+    backends: a ``(env_var_name, value)`` pair that the subprocess
+    env builder will inject under the declared name. None for
+    built-ins and for custom backends whose ``[secret]`` section is
+    absent.
+
     Exits with code 3 (missing-tool class) on:
-      * gated backend without a token
+      * gated built-in backend without an HF token (FLUX path)
+      * custom backend declaring ``secret_env_var`` with
+        ``required=True`` and the env var unset in the parent shell
       * venv / mflux not installed
-      * the per-backend binary not present in VENV_BIN
+      * the per-backend binary not present (on PATH for bare names,
+        or absent at the declared absolute path)
 
-    The token is loaded lazily — only invoked when the backend's
-    ``needs_token`` is True so open backends (qwen) don't touch the
-    keyring/disk for nothing.
+    The HF token is loaded lazily — only when ``needs_token`` is True
+    (FLUX). Open backends (qwen) and custom backends never touch
+    ~/.imgen/hf_token.
+
+    Binary resolution branches on shape:
+      * Bare name (no '/') → ``VENV_BIN / be.binary``. Built-ins and
+        user backends installed alongside mflux land here.
+      * Absolute path (starts with '/') → used as-is. Lets a user
+        point at a fork or experimental binary outside VENV_BIN.
+      Schema validator enforces these two shapes; we trust that here.
     """
     backend = args.backend
-    be = BACKENDS[backend]
+    be = get_backend(backend)
+
+    # ── HF token (FLUX-specific legacy path) ─────────────────────
     token: str | None = None
     if be.needs_token:
         token = load_token()
@@ -670,18 +690,45 @@ def load_backend_and_token(
                 code=3,
                 hint="Run: imgen setup   (or use --backend qwen)")
 
+    # ── Custom-backend secret (v0.4) ─────────────────────────────
+    backend_secret: tuple[str, str] | None = None
+    if be.secret_env_var is not None:
+        value = os.environ.get(be.secret_env_var)
+        if value:
+            backend_secret = (be.secret_env_var, value)
+        elif be.secret_required:
+            die(
+                f"Backend '{backend}' requires env var "
+                f"{be.secret_env_var!r} to be set, but it's missing "
+                "from the environment",
+                code=3,
+                hint=f"export {be.secret_env_var}=... in your shell rc "
+                     "(or set secret.required=false in the backend TOML)",
+            )
+        # else: required=False — silent skip, subprocess inherits no
+        # secret, backend's binary will handle its own auth failure.
+
+    # ── venv + mflux sanity ──────────────────────────────────────
     if not check_venv() or not check_mflux():
         die("mflux not installed",
             code=3,
             hint="Run: imgen setup")
 
-    binary = VENV_BIN / be.binary
+    # ── Binary path resolution ───────────────────────────────────
+    if be.binary.startswith("/"):
+        # Absolute path — validator already confirmed it exists at
+        # schema time, but re-check here in case the file was removed
+        # between TOML load and command execution.
+        binary = Path(be.binary)
+    else:
+        # Bare name — resolve against VENV_BIN (mflux convention).
+        binary = VENV_BIN / be.binary
     if not binary.exists():
         die(f"Backend binary not found: {binary}",
             code=3,
             hint="Run: imgen upgrade")
 
-    return backend, be, token, binary
+    return backend, be, token, binary, backend_secret
 
 
 def resolve_styles_list(args, merged_defaults: dict) -> list[str]:

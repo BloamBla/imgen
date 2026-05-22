@@ -64,9 +64,10 @@ def stub_backend(monkeypatch, tmp_path):
     fake_binary.write_text("#!/bin/sh\nexit 0\n")
     fake_binary.chmod(0o755)
 
-    def fake_load(args) -> tuple[str, object, str | None, Path]:
+    def fake_load(args) -> tuple[str, object, str | None, Path, tuple[str, str] | None]:
         be = BACKENDS["flux"]
-        return ("flux", be, "hf_faketoken", fake_binary)
+        # v0.4: 5th element is the custom-backend secret tuple (None for FLUX).
+        return ("flux", be, "hf_faketoken", fake_binary, None)
 
     monkeypatch.setattr(
         "imgen.commands.batch.load_backend_and_token", fake_load

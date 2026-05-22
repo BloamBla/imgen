@@ -189,8 +189,8 @@ def cmd_generate(args) -> int:
         # 5) Output root + run_dir (one folder for all M iterations).
         explicit_output, run_dir = resolve_output_layout(args, config_output_dir)
 
-        # 6) Backend, token, binary (same for all M).
-        backend, be, token, binary = load_backend_and_token(args)
+        # 6) Backend, token, binary, custom-secret (same for all M).
+        backend, be, token, binary, backend_secret = load_backend_and_token(args)
 
         # 7) Seed — one seed for the whole invocation so multi-style runs use
         # the same noise pattern (only style differs → fair preset comparison).
@@ -304,7 +304,7 @@ def cmd_generate(args) -> int:
             # Shared with cmd_batch via subprocess_helpers.build_mflux_env —
             # single source of truth for the allow-list (IMP-5 from v0.3.0
             # review; was duplicated between batch.py and here).
-            env = build_mflux_env(token)
+            env = build_mflux_env(token=token, backend_secret=backend_secret)
 
             # 15) The loop. Failures don't break the batch — log + continue,
             # surface the summary at the end. Single-style retains v0.2.x

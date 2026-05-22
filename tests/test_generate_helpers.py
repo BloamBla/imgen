@@ -476,7 +476,7 @@ def test_load_backend_and_token_flux_with_token(
         "imgen.cmd_helpers.load_token", lambda: "hf_TOKEN_VALUE"
     )
 
-    backend, be, token, binary = load_backend_and_token(
+    backend, be, token, binary, backend_secret = load_backend_and_token(
         SimpleNamespace(backend="flux")
     )
 
@@ -484,6 +484,8 @@ def test_load_backend_and_token_flux_with_token(
     assert be.needs_token is True
     assert token == "hf_TOKEN_VALUE"
     assert binary == fake_venv / "mflux-generate-kontext"
+    # Built-in FLUX doesn't use the v0.4 custom-secret slot.
+    assert backend_secret is None
 
 
 def test_load_backend_and_token_flux_without_token_exits_3(
@@ -512,7 +514,7 @@ def test_load_backend_and_token_qwen_no_token_needed(
         lambda: called.append("load_token") or None,
     )
 
-    backend, be, token, binary = load_backend_and_token(
+    backend, be, token, binary, backend_secret = load_backend_and_token(
         SimpleNamespace(backend="qwen")
     )
 
@@ -520,6 +522,7 @@ def test_load_backend_and_token_qwen_no_token_needed(
     assert be.needs_token is False
     assert token is None
     assert binary == fake_venv / "mflux-generate-qwen-edit"
+    assert backend_secret is None
     assert called == [], "load_token() should NOT be invoked for open backends"
 
 
@@ -566,6 +569,144 @@ def test_load_backend_and_token_missing_binary_exits_3(
     err = capsys.readouterr().err
     assert "Backend binary not found" in err
     assert "imgen upgrade" in err
+
+
+# ── v0.4: custom-backend secret resolution in load_backend_and_token ────
+
+
+def _install_custom_backend(monkeypatch, tmp_path, name: str, **toml_kv):
+    """Helper to drop a user backends.d/<name>.toml + reset the cache.
+
+    toml_kv is rendered into TOML key = value lines; nested [secret]
+    keys go through `secret__env_var = "..."` then get rewritten.
+    Returns the path written for convenience."""
+    import imgen.backends as backends_mod
+    import imgen.paths as paths_mod
+    state = tmp_path / ".imgen"
+    state.mkdir(exist_ok=True)
+    backends_dir = state / "backends.d"
+    backends_dir.mkdir(exist_ok=True)
+
+    lines = []
+    secret_lines = []
+    for k, v in toml_kv.items():
+        if k.startswith("secret_"):
+            sk = k[len("secret_"):]
+            if isinstance(v, bool):
+                secret_lines.append(f"{sk} = {str(v).lower()}")
+            else:
+                secret_lines.append(f'{sk} = "{v}"')
+        else:
+            if isinstance(v, bool):
+                lines.append(f"{k} = {str(v).lower()}")
+            elif isinstance(v, list):
+                rendered = ", ".join(f'"{x}"' for x in v)
+                lines.append(f"{k} = [{rendered}]")
+            else:
+                lines.append(f'{k} = "{v}"')
+    if secret_lines:
+        lines.append("\n[secret]")
+        lines.extend(secret_lines)
+
+    toml_path = backends_dir / f"{name}.toml"
+    toml_path.write_text("\n".join(lines) + "\n")
+    monkeypatch.setattr(paths_mod, "STATE_DIR", state)
+    backends_mod.reset_backends_cache()
+    return toml_path
+
+
+def test_load_custom_backend_forwards_secret_when_env_set(
+    fake_venv, passing_checks, monkeypatch, tmp_path
+):
+    """v0.4: custom backend with a declared secret env var, value
+    present in os.environ → returned as the 5th tuple element."""
+    fake_binary = fake_venv / "mflux-generate-fake"
+    fake_binary.write_bytes(b"#!/bin/sh\n")
+    _install_custom_backend(
+        monkeypatch, tmp_path, "myback",
+        binary="mflux-generate-fake",
+        image_flag="--image-path",
+        secret_env_var="MYBACK_API_KEY",
+    )
+    monkeypatch.setenv("MYBACK_API_KEY", "secret_value_123")
+
+    backend, be, token, binary, backend_secret = load_backend_and_token(
+        SimpleNamespace(backend="myback")
+    )
+
+    assert backend == "myback"
+    assert token is None  # custom backend, no HF token
+    assert backend_secret == ("MYBACK_API_KEY", "secret_value_123")
+
+
+def test_load_custom_backend_dies_when_required_secret_missing(
+    fake_venv, passing_checks, monkeypatch, tmp_path, capsys
+):
+    """secret_required=True (default) + env var unset → die with code 3
+    and a hint to set it in shell rc. No silent fall-through."""
+    (fake_venv / "mflux-generate-fake").write_bytes(b"#!/bin/sh\n")
+    _install_custom_backend(
+        monkeypatch, tmp_path, "myback",
+        binary="mflux-generate-fake",
+        image_flag="--image-path",
+        secret_env_var="MYBACK_API_KEY",
+    )
+    monkeypatch.delenv("MYBACK_API_KEY", raising=False)
+
+    with pytest.raises(SystemExit) as exc_info:
+        load_backend_and_token(SimpleNamespace(backend="myback"))
+
+    assert exc_info.value.code == 3
+    err = capsys.readouterr().err
+    assert "MYBACK_API_KEY" in err
+    assert "export" in err  # hint
+
+
+def test_load_custom_backend_silent_skip_when_optional_secret_missing(
+    fake_venv, passing_checks, monkeypatch, tmp_path
+):
+    """secret_required=False + env var unset → backend_secret is None,
+    no die. The backend's binary handles its own auth failure if any."""
+    (fake_venv / "mflux-generate-fake").write_bytes(b"#!/bin/sh\n")
+    _install_custom_backend(
+        monkeypatch, tmp_path, "myback",
+        binary="mflux-generate-fake",
+        image_flag="--image-path",
+        secret_env_var="MYBACK_API_KEY",
+        secret_required=False,
+    )
+    monkeypatch.delenv("MYBACK_API_KEY", raising=False)
+
+    backend, be, token, binary, backend_secret = load_backend_and_token(
+        SimpleNamespace(backend="myback")
+    )
+
+    assert backend_secret is None
+
+
+def test_load_custom_backend_absolute_binary_path_used_as_is(
+    passing_checks, monkeypatch, tmp_path
+):
+    """A user backend with an absolute binary path skips VENV_BIN
+    resolution entirely. The path must still exist at exec time."""
+    abs_binary = tmp_path / "elsewhere" / "weird-bin"
+    abs_binary.parent.mkdir()
+    abs_binary.write_bytes(b"#!/bin/sh\n")
+    _install_custom_backend(
+        monkeypatch, tmp_path, "weirdo",
+        binary=str(abs_binary),
+        image_flag="--image-path",
+    )
+
+    backend, be, token, binary, backend_secret = load_backend_and_token(
+        SimpleNamespace(backend="weirdo")
+    )
+
+    assert binary == abs_binary
+    assert backend_secret is None
+    # Reset cache for test isolation.
+    import imgen.backends as backends_mod
+    backends_mod.reset_backends_cache()
 
 
 # ── build_iterations ───────────────────────────────────────────────────

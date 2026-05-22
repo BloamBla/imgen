@@ -194,8 +194,8 @@ def cmd_batch(args) -> int:
         "return run_dir for this path"
     )
 
-    # 5) Backend, token, binary (shared across the whole grid).
-    backend, be, token, binary = load_backend_and_token(args)
+    # 5) Backend, token, binary, custom-secret (shared across the whole grid).
+    backend, be, token, binary, backend_secret = load_backend_and_token(args)
 
     # 6) Single seed for the whole batch so the same noise pattern
     # applies to every (input, style) — fair side-by-side preset
@@ -307,7 +307,7 @@ def cmd_batch(args) -> int:
         # the try block so an OSError during write_header doesn't leak
         # the lazily-opened fd. Logger held open for the whole batch
         # (persistent-fd design — saves O(N×M) open/close syscalls).
-        env = build_mflux_env(token)
+        env = build_mflux_env(token=token, backend_secret=backend_secret)
         succeeded: list[tuple[str, Path, int]] = []
         failed: list[tuple[str, int, Path]] = []
         logger: BatchLogger | None = None
