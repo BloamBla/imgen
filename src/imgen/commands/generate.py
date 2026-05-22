@@ -109,6 +109,42 @@ def _confirm_batch(
     return ans in ("y", "yes")
 
 
+def _resolve_styles_list(args, merged_defaults: dict) -> list[str]:
+    """Resolve --style into a list of preset names.
+
+    args.style is either None (not passed) or a pre-validated, de-duped
+    list (parser.parse_style_list rejected unknown names already). When
+    unset, fall back to the config-merged default style and verify it
+    exists — config.toml may point at a preset the user later removed
+    from styles.d/.
+
+    Also enforces the --output FILE + multi-style mutex: --output writes
+    to one path, M styles → M files needs a directory. Reject upfront so
+    the user gets a clear hint before any subprocess spawns.
+    """
+    if args.style:
+        styles_list: list[str] = args.style
+    else:
+        default_name = merged_defaults["style"]
+        try:
+            get_style(default_name)
+        except KeyError:
+            die(f"Default style '{default_name}' not found",
+                code=2,
+                hint="Check ~/.imgen/config.toml [defaults] style, "
+                     "or run: imgen --list-styles")
+        styles_list = [default_name]
+
+    if args.output and len(styles_list) > 1:
+        die(f"--output FILE writes to one path; multi-style "
+            f"(--style {','.join(styles_list)} → {len(styles_list)} files) "
+            "needs a directory.",
+            code=2,
+            hint="Drop --output, or use --output-dir PATH instead.")
+
+    return styles_list
+
+
 def _validate_input_path(image_arg: str) -> Path:
     """Resolve, expand ~, and verify the user-supplied input image.
 
@@ -137,33 +173,8 @@ def cmd_generate(args) -> int:
     # 1) Validate input ONCE for all iterations.
     input_path = _validate_input_path(args.image)
 
-    # 2) Normalise --style → list[str]. args.style is None (not passed) or
-    # the result of parse_style_list (which already validated names + de-
-    # duped). Fall back to the config-merged default when not passed.
-    if args.style:
-        styles_list: list[str] = args.style
-    else:
-        # Default style — verify it exists; provide a useful hint if not
-        # (could be a config.toml [defaults] style pointing at something
-        # that no longer exists).
-        default_name = merged_defaults["style"]
-        try:
-            get_style(default_name)
-        except KeyError:
-            die(f"Default style '{default_name}' not found",
-                code=2,
-                hint="Check ~/.imgen/config.toml [defaults] style, "
-                     "or run: imgen --list-styles")
-        styles_list = [default_name]
-
-    # 2a) --output FILE writes to one path — multi-style would clobber
-    # the same destination M times. Reject upfront.
-    if args.output and len(styles_list) > 1:
-        die(f"--output FILE writes to one path; multi-style "
-            f"(--style {','.join(styles_list)} → {len(styles_list)} files) "
-            "needs a directory.",
-            code=2,
-            hint="Drop --output, or use --output-dir PATH instead.")
+    # 2) Resolve --style → list[str], rejecting --output + multi-style upfront.
+    styles_list = _resolve_styles_list(args, merged_defaults)
 
     # 3) Resolve effective custom prompt — could be argv text, stdin
     # (--custom-prompt -), or a file (--prompt-file). File/stdin paths
