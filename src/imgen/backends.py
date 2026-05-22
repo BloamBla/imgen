@@ -478,9 +478,10 @@ def _load_merged_backends() -> dict[str, Backend]:
     global _cached_merged
     if _cached_merged is None:
         # Local import to avoid module-load circularity with paths.py.
-        from .paths import STATE_DIR
-        user = load_user_backends_dir(STATE_DIR / "backends.d")
-        _cached_merged = merge_user_backends(BUILTIN_BACKENDS, user)
+        from .paths import BACKENDS_D
+        _cached_merged = merge_user_backends(
+            BUILTIN_BACKENDS, load_user_backends_dir(BACKENDS_D)
+        )
     return _cached_merged
 
 

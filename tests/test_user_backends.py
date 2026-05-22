@@ -537,7 +537,13 @@ def test_merge_strip_then_resuffix_for_user_name_with_trailing_NNNN(capsys):
 def isolated_backends_dir(tmp_path, monkeypatch):
     """Redirect STATE_DIR/backends.d/ to a tmp_path location so a real
     ~/.imgen/backends.d/ doesn't leak into the test. Also resets the
-    in-process cache so each test sees a fresh load."""
+    in-process cache so each test sees a fresh load.
+
+    Patches BOTH ``STATE_DIR`` and ``BACKENDS_D`` — the latter is a
+    module-level constant captured at paths.py import time, so a
+    ``STATE_DIR`` monkeypatch alone leaves BACKENDS_D pointing at the
+    real ``~/.imgen/backends.d/``. (v0.4 architect IMP-4 trap.)
+    """
     import imgen.backends as backends_mod
     import imgen.paths as paths_mod
     state = tmp_path / ".imgen"
@@ -545,6 +551,7 @@ def isolated_backends_dir(tmp_path, monkeypatch):
     backends_dir = state / "backends.d"
     backends_dir.mkdir()
     monkeypatch.setattr(paths_mod, "STATE_DIR", state)
+    monkeypatch.setattr(paths_mod, "BACKENDS_D", backends_dir)
     backends_mod.reset_backends_cache()
     yield backends_dir
     backends_mod.reset_backends_cache()

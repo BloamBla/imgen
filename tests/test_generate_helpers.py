@@ -611,6 +611,10 @@ def _install_custom_backend(monkeypatch, tmp_path, name: str, **toml_kv):
     toml_path = backends_dir / f"{name}.toml"
     toml_path.write_text("\n".join(lines) + "\n")
     monkeypatch.setattr(paths_mod, "STATE_DIR", state)
+    # v0.4 architect IMP-4: BACKENDS_D is a paths.py module constant
+    # captured at import time; STATE_DIR monkeypatch alone leaves it
+    # pointing at the real ~/.imgen/backends.d/. Rebind explicitly.
+    monkeypatch.setattr(paths_mod, "BACKENDS_D", backends_dir)
     backends_mod.reset_backends_cache()
     return toml_path
 

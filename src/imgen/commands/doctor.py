@@ -25,6 +25,7 @@ from ..paths import (
     HF_CACHE,
     IMGEN_HOME,
     STATE_DIR,
+    STYLES_D,
     VENV_BIN,
 )
 from ..backends import BUILTIN_BACKENDS, get_backend, list_backends
@@ -177,7 +178,7 @@ def cmd_doctor(_args) -> int:
     else:
         err("Built-in styles registry is empty")
         issues += 1
-    user_styles_dir = STATE_DIR / "styles.d"
+    user_styles_dir = STYLES_D
     user_styles = load_user_styles_dir(user_styles_dir)
     if user_styles:
         ok(f"User styles ({user_styles_dir}): "

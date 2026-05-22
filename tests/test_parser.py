@@ -193,6 +193,7 @@ def test_parser_loads_user_backends_before_choices(tmp_path, monkeypatch):
         'binary = "mflux-generate-fake"\nimage_flag = "--image-path"\n'
     )
     monkeypatch.setattr(paths_mod, "STATE_DIR", state)
+    monkeypatch.setattr(paths_mod, "BACKENDS_D", state / "backends.d")
     backends_mod.reset_backends_cache()
     try:
         parser = build_parser()
@@ -213,6 +214,7 @@ def test_parser_rejects_unknown_backend(tmp_path, monkeypatch):
     state.mkdir()
     (state / "backends.d").mkdir()  # empty
     monkeypatch.setattr(paths_mod, "STATE_DIR", state)
+    monkeypatch.setattr(paths_mod, "BACKENDS_D", state / "backends.d")
     backends_mod.reset_backends_cache()
     try:
         parser = build_parser()
@@ -243,6 +245,7 @@ def test_print_backends_shows_builtins(tmp_path, monkeypatch, capsys):
     state.mkdir()
     (state / "backends.d").mkdir()
     monkeypatch.setattr(paths_mod, "STATE_DIR", state)
+    monkeypatch.setattr(paths_mod, "BACKENDS_D", state / "backends.d")
     backends_mod.reset_backends_cache()
     try:
         rc = print_backends()
@@ -273,6 +276,7 @@ def test_print_backends_marks_custom_and_secret(tmp_path, monkeypatch, capsys):
         'required = true\n'
     )
     monkeypatch.setattr(paths_mod, "STATE_DIR", state)
+    monkeypatch.setattr(paths_mod, "BACKENDS_D", state / "backends.d")
     backends_mod.reset_backends_cache()
     try:
         print_backends()

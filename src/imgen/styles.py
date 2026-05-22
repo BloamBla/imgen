@@ -411,9 +411,10 @@ def _load_merged_styles() -> dict[str, dict]:
     global _cached_merged
     if _cached_merged is None:
         # Local import to avoid module-load circularity with paths.py
-        from .paths import STATE_DIR
-        user = load_user_styles_dir(STATE_DIR / "styles.d")
-        _cached_merged = merge_user_styles(BUILTIN_STYLES, user)
+        from .paths import STYLES_D
+        _cached_merged = merge_user_styles(
+            BUILTIN_STYLES, load_user_styles_dir(STYLES_D)
+        )
     return _cached_merged
 
 

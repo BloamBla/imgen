@@ -31,6 +31,12 @@ def tmp_state_dir(tmp_path, monkeypatch):
 
     monkeypatch.setattr(paths_mod, "STATE_DIR", state_dir)
     monkeypatch.setattr(paths_mod, "HISTORY_FILE", history_file)
+    # v0.4 architect IMP-4 made STYLES_D / BACKENDS_D module constants
+    # in paths.py — captured at import time, so STATE_DIR monkeypatch
+    # alone doesn't update them. Rebind explicitly here so any test
+    # using this fixture sees the tmp state_dir for both subdirs.
+    monkeypatch.setattr(paths_mod, "STYLES_D", state_dir / "styles.d")
+    monkeypatch.setattr(paths_mod, "BACKENDS_D", state_dir / "backends.d")
     # history.py imported HISTORY_FILE at module load — rebind locally too
     monkeypatch.setattr(history_mod, "HISTORY_FILE", history_file)
     # runs.py captured LOGS_DIR at module load (= STATE_DIR / "logs"),
@@ -39,8 +45,8 @@ def tmp_state_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(runs_mod, "LOGS_DIR", logs_dir)
     # styles.py caches the merged built-in + user-styles dict on first
     # access; reset so a test using this fixture sees the patched
-    # STATE_DIR/styles.d (which is empty in the tmp dir) rather than
-    # the real ~/.imgen/styles.d state from a previous test.
+    # STYLES_D (empty in the tmp dir) rather than the real
+    # ~/.imgen/styles.d state from a previous test.
     monkeypatch.setattr(styles_mod, "_cached_merged", None)
 
     return state_dir

@@ -23,6 +23,7 @@ import sys
 from pathlib import Path
 
 __all__ = [
+    "BACKENDS_D",
     "CONFIG_FILE",
     "DEFAULT_OUTPUT_DIR",
     "HF_CACHE",
@@ -31,6 +32,7 @@ __all__ = [
     "LEGACY_TOKEN_FILE",
     "SAFE_OUTPUT_EXTS",
     "STATE_DIR",
+    "STYLES_D",
     "TOKEN_FILE",
     "VENV_BIN",
     "ensure_state_dir",
@@ -64,6 +66,13 @@ LEGACY_TOKEN_FILE = Path.home() / ".hf_token"
 # env at module import → tests had no way to override).
 DEFAULT_OUTPUT_DIR = Path.home() / "Desktop" / "imgen"
 HF_CACHE = Path.home() / ".cache" / "huggingface" / "hub"
+# User-extension subdirectories under STATE_DIR. Single source of
+# truth — setup.py creates these on first run, styles.py/backends.py
+# scan them at startup, doctor.py reports their contents. Centralized
+# here to prevent drift across modules (v0.4 architect IMP-4 — same
+# rationale as shell_rc.ALL_RC_FILES_REL added in v0.3.6).
+STYLES_D = STATE_DIR / "styles.d"
+BACKENDS_D = STATE_DIR / "backends.d"
 
 # Output extensions allowed for --output and auto-`open`. macOS `open`
 # delegates to the registered app for the extension, so .terminal /

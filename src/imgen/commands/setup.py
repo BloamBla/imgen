@@ -13,11 +13,13 @@ from ..colors import C, dim, die, info, ok, step, warn
 from ..defaults import DEFAULTS
 from ..shell_rc import RC_FILE_BY_SHELL
 from ..paths import (
+    BACKENDS_D,
     CONFIG_FILE,
     DEFAULT_OUTPUT_DIR,
     IMGEN_HOME,
     LEGACY_TOKEN_FILE,
     STATE_DIR,
+    STYLES_D,
     TOKEN_FILE,
     VENV_BIN,
 )
@@ -149,7 +151,7 @@ def cmd_setup(_args) -> int:
 
     # User-styles directory (empty placeholder so the user finds where to
     # drop their .toml files without reading README first)
-    styles_dir = STATE_DIR / "styles.d"
+    styles_dir = STYLES_D
     if not styles_dir.exists():
         # 0o700 for consistency with STATE_DIR — user-authored style
         # presets may embed proprietary prompts.
@@ -172,7 +174,7 @@ def cmd_setup(_args) -> int:
     # User-backends directory (v0.4 — same pattern as styles.d).
     # 0o700 + README that doubles as schema docs + an explicit security
     # warning, since `binary = ...` becomes an actual subprocess exec.
-    backends_dir = STATE_DIR / "backends.d"
+    backends_dir = BACKENDS_D
     if not backends_dir.exists():
         backends_dir.mkdir(mode=0o700)
         (backends_dir / "README.txt").write_text(
