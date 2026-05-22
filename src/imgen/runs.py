@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
@@ -35,11 +36,37 @@ from .paths import STATE_DIR, ensure_state_dir
 __all__ = [
     "LOG_RETENTION_DAYS",
     "LOGS_DIR",
+    "Iteration",
     "auto_run_dirname",
     "ensure_logs_dir",
     "next_available_run_dir",
     "open_log_file_append",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class Iteration:
+    """One (input, style) generation slot inside a single CLI invocation.
+
+    cmd_generate pre-builds the whole list before any subprocess work so
+    dry-run can show every entry and resource preflight runs against the
+    heaviest quant in the batch. Frozen so the post-build loop can't
+    accidentally mutate an entry mid-iteration; slots so typos in field
+    access raise instead of landing on __dict__.
+
+    Field order matches the legacy dict-of-strings shape (style_name,
+    prompt, negative, final_steps, ...) so the v0.2.4 extraction is a
+    mechanical replace with no semantic shift.
+    """
+    style_name: str
+    prompt: str
+    negative: str
+    final_steps: int
+    final_quantize: int
+    final_guidance: float
+    final_strength: float
+    output_path: Path
+    cmd: list[str]
 
 # Per-batch logs (v0.2.3+) — one .log file per multi-style invocation,
 # named after batch_id. Single-style generations don't write here.
