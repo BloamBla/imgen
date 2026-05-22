@@ -215,12 +215,27 @@ def load_user_style_file(path: Path) -> dict[str, Any]:
     return validated
 
 
+def _is_safe_stem(stem: str) -> bool:
+    """Reject C0 controls and DEL in a style filename stem.
+
+    macOS APFS allows these bytes in filenames; if they end up as style
+    names they ride into BatchLogger.write_header / _print_batch_summary
+    output, surviving in logs and stdout where they can clear screens,
+    inject window-title escapes, or otherwise mess up the user's terminal
+    when they later `cat ~/.imgen/logs/<id>.log`. (security N3 from
+    v0.2.4 review)
+    """
+    return not any(c < ' ' or c == '\x7f' for c in stem)
+
+
 def load_user_styles_dir(dir_path: Path) -> dict[str, dict]:
     """Scan a directory for `*.toml` files; return {filename_stem: preset}.
 
     Files are processed in alphabetical filename order so the conflict-
     resolution suffixes are deterministic. A single bad file warns but
-    doesn't kill the rest of the load.
+    doesn't kill the rest of the load. Stems containing C0 controls
+    (0x00–0x1F) or DEL (0x7F) are rejected for safety — see
+    `_is_safe_stem`.
     """
     from .colors import warn
 
@@ -229,6 +244,12 @@ def load_user_styles_dir(dir_path: Path) -> dict[str, dict]:
     result: dict[str, dict] = {}
     for path in sorted(dir_path.iterdir()):
         if path.suffix != ".toml" or not path.is_file():
+            continue
+        if not _is_safe_stem(path.stem):
+            # Show the printable-repr so the warn() itself doesn't
+            # propagate the escape into the user's terminal.
+            warn(f"Skipping {path.name!r}: control bytes in filename "
+                 "(unsafe to use as a style name)")
             continue
         try:
             result[path.stem] = load_user_style_file(path)

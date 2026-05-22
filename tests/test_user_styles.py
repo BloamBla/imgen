@@ -160,6 +160,61 @@ def test_load_user_styles_dir_skips_non_toml(tmp_path):
     assert set(result.keys()) == {"good"}
 
 
+def test_load_user_styles_dir_rejects_control_bytes_in_stem(tmp_path, capsys):
+    """ANSI-escape and C0-control bytes embedded in a style filename
+    would flow into BatchLogger.write_header and _print_batch_summary's
+    output, surviving in logs the user later cat's. Reject at load time
+    with a warn() so the bad style never registers.
+
+    The threat is bounded by single-user trust on ~/.imgen/styles.d/
+    but cheap to close. Surface gets worse in v0.3.0 when
+    `imgen batch <dir>` accepts directory names too. (security N3 from
+    v0.2.4 review)"""
+    d = tmp_path / "styles.d"
+    d.mkdir()
+    # ESC (0x1B) embedded in stem — would clear screen if printed.
+    (d / "good.toml").write_text('prompt = "good"')
+    (d / "evil\x1B[2J.toml").write_text('prompt = "evil"')
+
+    result = load_user_styles_dir(d)
+
+    # Only the safe-named file registers.
+    assert set(result.keys()) == {"good"}
+    out = capsys.readouterr().out
+    # The warn() mentions the rejected file name (sanitised in output)
+    # and the reason.
+    assert "control" in out.lower() or "unsafe" in out.lower()
+
+
+def test_load_user_styles_dir_rejects_del_byte_in_stem(tmp_path, capsys):
+    """0x7F (DEL) is the other C0-adjacent byte some terminals act on
+    — covered by the same `c < ' ' or c == '\\x7f'` predicate."""
+    d = tmp_path / "styles.d"
+    d.mkdir()
+    (d / "good.toml").write_text('prompt = "good"')
+    (d / "evil\x7Fname.toml").write_text('prompt = "evil"')
+
+    result = load_user_styles_dir(d)
+    assert "good" in result
+    # Only good. Anything matching r'^evil' shouldn't be in result.
+    assert not any(k.startswith("evil") for k in result)
+
+
+def test_load_user_styles_dir_keeps_unicode_stems(tmp_path):
+    """Non-ASCII printable filenames (e.g. emoji, Cyrillic) survive —
+    the predicate is on control bytes, not on ASCII-ness. Don't
+    accidentally lock out colleagues with localised filenames."""
+    d = tmp_path / "styles.d"
+    d.mkdir()
+    (d / "японский.toml").write_text('prompt = "japan"')
+    (d / "anime🎨.toml").write_text('prompt = "art"')
+
+    result = load_user_styles_dir(d)
+
+    assert "японский" in result
+    assert "anime🎨" in result
+
+
 def test_load_user_styles_dir_alphabetical_order(tmp_path):
     """Sort order determines which user-style gets the lower suffix on
     conflict — pin it to filename alphabetical so behavior is predictable."""
