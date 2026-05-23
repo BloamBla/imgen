@@ -207,12 +207,7 @@ class EnhanceHealth:
     recent_runs_succeeded: int  # of those, how many enhanced=True
 
 
-# v0.6.2 (architect I-3): canonical helper now lives in
-# ``imgen.hf_cache``. Keep this private alias so callers within doctor.py
-# can stay unchanged and tests importing the private symbol still pass —
-# delete the alias in v0.7 once the rename has propagated through the
-# codebase + any downstream test code.
-from ..hf_cache import hf_cache_dir_for as _hf_cache_dir_for
+from ..hf_cache import hf_cache_dir_for
 
 
 def _dir_size_bytes(p: Path) -> int:
@@ -274,7 +269,7 @@ def check_enhance_health(
     # (v0.5 python-reviewer I-2.)
     enabled_default = bool(enhance_cfg.get("default", False))
 
-    cache_dir = _hf_cache_dir_for(model_ref, hf_cache)
+    cache_dir = hf_cache_dir_for(model_ref, hf_cache)
     model_cached = cache_dir.is_dir()
     cache_size: int | None = None
     if model_cached:

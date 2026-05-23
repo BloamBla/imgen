@@ -30,6 +30,7 @@ __all__ = [
     "HISTORY_FILE",
     "IMGEN_HOME",
     "LEGACY_TOKEN_FILE",
+    "MFLUX_LORAS_CACHE",
     "SAFE_OUTPUT_EXTS",
     "STATE_DIR",
     "STYLES_D",
@@ -66,6 +67,19 @@ LEGACY_TOKEN_FILE = Path.home() / ".hf_token"
 # env at module import → tests had no way to override).
 DEFAULT_OUTPUT_DIR = Path.home() / "Desktop" / "imgen"
 HF_CACHE = Path.home() / ".cache" / "huggingface" / "hub"
+# mflux's LoRA download cache lives under platformdirs.user_cache_dir
+# ("mflux") + "/loras" — on macOS that's ``~/Library/Caches/mflux/loras``.
+# Used by ``--list-loras`` to probe whether a built-in / user LoRA's
+# weights are already on disk. Same ``models--<author>--<name>``
+# convention inside as the standard HF cache, so ``hf_cache_dir_for``
+# returns a valid path under either root. (v0.6.4 task #21 — v0.6.3's
+# --list-loras reported "not downloaded" for every LoRA because it
+# only probed HF_CACHE; mflux actually writes here.) The env var
+# ``MFLUX_CACHE_DIR`` overrides mflux's root; we ignore it here for
+# simplicity since the override is rare and probe is read-only — if a
+# user sets it AND complains about --list-loras being stale, we'll
+# bridge the override.
+MFLUX_LORAS_CACHE = Path.home() / "Library" / "Caches" / "mflux" / "loras"
 # User-extension subdirectories under STATE_DIR. Single source of
 # truth — setup.py creates these on first run, styles.py/backends.py
 # scan them at startup, doctor.py reports their contents. Centralized

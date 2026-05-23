@@ -55,6 +55,7 @@ from __future__ import annotations
 import datetime
 import os
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 from dataclasses import replace as _dataclass_replace
@@ -787,6 +788,170 @@ def exit_code(
 # ── Iteration plan + backend resolution + styles list ───────────────────
 
 
+@dataclass(frozen=True, slots=True)
+class IterationParams:
+    """Resolved numeric params for one iteration after CLI > preset >
+    defaults precedence is applied. Returned by
+    :func:`_resolve_iteration_params` so the outer loop only assembles
+    the :class:`Iteration` from named, validated values.
+    """
+    final_steps: int
+    final_quantize: int
+    final_guidance: float
+    final_strength: float
+
+
+def _resolve_iteration_params(
+    *,
+    args,
+    preset,  # Style instance
+    merged_defaults: dict,
+) -> IterationParams:
+    """Apply v0.3.x parameter precedence rules and return the resolved
+    numeric quartet (steps / quantize / guidance / strength).
+
+    Precedence (locked by tests):
+      * ``steps``    : CLI > preview > merged_defaults  (preset.steps
+                       intentionally NOT honoured — preview must win
+                       when the user picks it for speed)
+      * ``quantize`` : CLI > preview > merged_defaults  (same reasoning)
+      * ``guidance`` : CLI > preset  > merged_defaults
+      * ``strength`` : CLI > preset  > merged_defaults
+
+    Extracted v0.6.4 from ``build_iterations`` per the v0.6.2 architect
+    IMP-2 split. Pure: no I/O, no mutation.
+    """
+    if args.steps is not None:
+        final_steps = args.steps
+    elif args.preview:
+        final_steps = PREVIEW_OVERRIDES["steps"]
+    else:
+        final_steps = merged_defaults["steps"]
+
+    if args.quantize is not None:
+        final_quantize = args.quantize
+    elif args.preview:
+        final_quantize = PREVIEW_OVERRIDES["quantize"]
+    else:
+        final_quantize = merged_defaults["quantize"]
+
+    if args.guidance is not None:
+        final_guidance = args.guidance
+    elif "guidance" in preset:
+        final_guidance = preset["guidance"]
+    else:
+        final_guidance = merged_defaults["guidance"]
+
+    if args.strength is not None:
+        final_strength = args.strength
+    elif "strength" in preset:
+        final_strength = preset["strength"]
+    else:
+        final_strength = merged_defaults["strength"]
+
+    return IterationParams(
+        final_steps=final_steps,
+        final_quantize=final_quantize,
+        final_guidance=final_guidance,
+        final_strength=final_strength,
+    )
+
+
+def _resolve_iteration_prompt(
+    *,
+    preset,  # Style instance
+    args,
+    effective_custom_prompt: str | None,
+    style_was_explicit: bool,
+) -> str:
+    """Resolve the prompt text for one iteration. 3-way dispatch:
+
+      * explicit full-style + ``--custom-prompt``     → AUGMENTATION
+        (preset prompt with scope applied + ``", " + custom``)
+      * any ``--custom-prompt`` else                   → custom verbatim
+        (covers param-only styles + the v0.3.5 bare-custom-prompt UX
+        fix where the default style's prompt is bypassed)
+      * no ``--custom-prompt``                         → preset.prompt
+        with optional scope substitution
+
+    Extracted v0.6.4 from ``build_iterations`` per the v0.6.2 architect
+    IMP-2 split. Pure: no I/O, no mutation. Returns ``None`` for the
+    param-only-style-without-custom-prompt case (caller passes through
+    to mflux; mflux requires a prompt so an empty value will fail
+    cleanly there).
+    """
+    preset_prompt = preset.get("prompt")
+    if effective_custom_prompt and preset_prompt and style_was_explicit:
+        # v0.3.5 augmentation: explicit full-style + custom-prompt → the
+        # preset prompt is the BASE (scope applied to it), then the
+        # user's --custom-prompt text is appended as a final detail.
+        # Lets the user share one common addition ("wearing a red
+        # kimono") across multiple styles in the same invocation via
+        # `-s anime,ghibli,pixar --custom-prompt "..."`.
+        #
+        # Scope applies only to the base — the user's added text is
+        # passed through verbatim so scope-mode replacements don't
+        # accidentally touch user wording (e.g. their literal "this
+        # person" stays "this person", not rewritten).
+        base = preset_prompt
+        if args.scope:
+            base = apply_scope(
+                base, args.scope, scene_suffix=preset.get("scene_suffix"),
+            )
+        return base + ", " + effective_custom_prompt
+    if effective_custom_prompt:
+        # Custom-only path: either a param-only style (no `prompt`
+        # field) or the v0.3.5 bare-custom-prompt UX fix (no explicit
+        # --style → default style's params apply but its prompt is
+        # bypassed so "Pixar 3D + sepia" nonsense doesn't happen).
+        return effective_custom_prompt
+    # No custom-prompt → preset prompt is the prompt.
+    prompt = preset_prompt
+    if args.scope:
+        prompt = apply_scope(
+            prompt, args.scope, scene_suffix=preset.get("scene_suffix"),
+        )
+    return prompt
+
+
+def _resolve_iteration_loras(
+    *,
+    preset,  # Style instance
+    args,
+    be,
+    prompt: str,
+) -> tuple[tuple[LoraRef, ...], tuple[LoraRef, ...], tuple[LoraRef, ...], str]:
+    """Resolve the LoRA stack for one iteration + emit the prompt with
+    trigger words prepended.
+
+    Returns ``(effective_loras, compatible_loras, incompat_loras,
+    prompt_with_triggers)``:
+
+      * ``effective_loras`` — style + CLI stack post-``--no-lora``
+        opt-out; what flows into ``build_mflux_cmd`` for argv emission.
+      * ``compatible_loras`` — subset that matches the backend's
+        ``lora_compat_group``; what lands on :class:`Iteration.loras`
+        + drives trigger-word prepending.
+      * ``incompat_loras`` — subset that does NOT match. Caller
+        accumulates these into the cross-iteration dedup set.
+      * ``prompt_with_triggers`` — input ``prompt`` with each
+        compatible LoRA's trigger word prepended if missing.
+
+    Extracted v0.6.4 from ``build_iterations`` per the v0.6.2 architect
+    IMP-2 split. Pure: no I/O, no mutation of inputs. The warn for
+    incompat LoRAs is emitted once-per-pair by the orchestrator after
+    its loop completes (v0.6.x IMP-3 dedup).
+    """
+    cli_lora_list = getattr(args, "lora", None)
+    no_lora = bool(getattr(args, "no_lora", False))
+    effective_loras = resolve_effective_loras(preset, cli_lora_list, no_lora)
+    compatible_loras, incompat_loras = filter_compatible_loras(
+        effective_loras, be,
+    )
+    prompt_with_triggers = prepend_trigger_words(prompt, compatible_loras)
+    return effective_loras, compatible_loras, incompat_loras, prompt_with_triggers
+
+
 def build_iterations(
     *,
     styles_list: list[str],
@@ -851,101 +1016,43 @@ def build_iterations(
 
     for style_name in styles_list:
         preset = get_style(style_name)
-        preset_prompt = preset.get("prompt")
 
-        if effective_custom_prompt and preset_prompt and style_was_explicit:
-            # v0.3.5 augmentation: explicit full-style + custom-prompt
-            # → preset prompt is the BASE (scope applied to it), then
-            # user's --custom-prompt text is appended as a final detail.
-            # Lets the user share one common addition ("wearing a red
-            # kimono") across multiple styles in the same invocation
-            # via `-s anime,ghibli,pixar --custom-prompt "..."`.
-            #
-            # Scope applies only to the base — the user's added text is
-            # passed through verbatim so scope-mode replacements don't
-            # accidentally touch user wording (e.g. their literal
-            # "this person" stays "this person", not rewritten).
-            base = preset_prompt
-            if args.scope:
-                base = apply_scope(
-                    base, args.scope,
-                    scene_suffix=preset.get("scene_suffix"),
-                )
-            prompt = base + ", " + effective_custom_prompt
-        elif effective_custom_prompt:
-            # Custom-only path:
-            #   * param-only style (no `prompt` field) — style provides
-            #     params, user provides the prompt
-            #   * OR no explicit --style — default style's params apply
-            #     but its prompt is bypassed (UX wart fix: a bare
-            #     `imgen photo.jpg --custom-prompt "..."` no longer
-            #     blends the default Pixar prompt with the user's text)
-            prompt = effective_custom_prompt
-        else:
-            # No custom-prompt → preset prompt is the prompt.
-            prompt = preset_prompt
-            if args.scope:
-                prompt = apply_scope(
-                    prompt, args.scope,
-                    scene_suffix=preset.get("scene_suffix"),
-                )
+        # 1. Prompt construction (3-way dispatch: augmentation /
+        # custom-only / preset-only). Scope substitution baked in.
+        prompt = _resolve_iteration_prompt(
+            preset=preset,
+            args=args,
+            effective_custom_prompt=effective_custom_prompt,
+            style_was_explicit=style_was_explicit,
+        )
 
         negative = preset.get("negative", "")
 
-        if args.steps is not None:
-            final_steps = args.steps
-        elif args.preview:
-            final_steps = PREVIEW_OVERRIDES["steps"]
-        else:
-            final_steps = merged_defaults["steps"]
+        # 2. Numeric parameter precedence (CLI > preview > preset >
+        # defaults; rules vary per field — locked by tests).
+        params = _resolve_iteration_params(
+            args=args, preset=preset, merged_defaults=merged_defaults,
+        )
 
-        if args.quantize is not None:
-            final_quantize = args.quantize
-        elif args.preview:
-            final_quantize = PREVIEW_OVERRIDES["quantize"]
-        else:
-            final_quantize = merged_defaults["quantize"]
-
-        if args.guidance is not None:
-            final_guidance = args.guidance
-        elif "guidance" in preset:
-            final_guidance = preset["guidance"]
-        else:
-            final_guidance = merged_defaults["guidance"]
-
-        if args.strength is not None:
-            final_strength = args.strength
-        elif "strength" in preset:
-            final_strength = preset["strength"]
-        else:
-            final_strength = merged_defaults["strength"]
-
+        # 3. Output path: explicit --output FILE (legacy single-file
+        # path) wins; otherwise <run_dir>/<input.stem>-<style>.png.
         if explicit_output is not None:
             output_path = explicit_output
         else:
             output_path = run_dir / f"{input_path.stem}-{style_name}.png"
 
-        # v0.6: resolve the LoRA stack for this iteration. Style's
-        # ``loras`` (parsed in styles.py Phase 1A) + CLI ``--lora`` (if
-        # any) + ``--no-lora`` opt-out. Then prepend any missing
-        # trigger words for COMPATIBLE LoRAs (compat filter avoids
-        # cluttering the prompt with triggers for LoRAs that won't
-        # actually fire on this backend — incompatible LoRAs are
-        # collected for a single deduped warn after the iteration loop).
-        cli_lora_list = getattr(args, "lora", None)
-        no_lora = bool(getattr(args, "no_lora", False))
-        effective_loras = resolve_effective_loras(
-            preset, cli_lora_list, no_lora,
+        # 4. LoRA stack: style + CLI minus --no-lora opt-out; filter for
+        # backend compat; prepend trigger words for compatible LoRAs.
+        # Incompatibles roll up into the dedup accumulators so the
+        # post-loop warn block emits once per unique (group, ref).
+        (
+            effective_loras,
+            compatible_loras,
+            iter_incompat,
+            prompt,
+        ) = _resolve_iteration_loras(
+            preset=preset, args=args, be=be, prompt=prompt,
         )
-        compatible_loras, iter_incompat = filter_compatible_loras(
-            effective_loras, be,
-        )
-        # v0.6.x backlog python IMP-3: collect (backend_group, ref) pairs
-        # so we can warn once per unique pair after the loop. N×M batches
-        # would otherwise emit M warns per input × N inputs = N×M total
-        # for the same incompat LoRA. The caller can also pass a shared
-        # `warned_incompat_loras` set to dedup across build_iterations
-        # calls (cmd_batch uses this for N×M dedup → 1 warn total).
         if iter_incompat:
             incompat_keys.update(
                 (be.lora_compat_group, lora.ref) for lora in iter_incompat
@@ -955,8 +1062,8 @@ def build_iterations(
                     (be.lora_compat_group, lora.ref),
                     tuple(sorted(lora.compatible_with)),
                 )
-        prompt = prepend_trigger_words(prompt, compatible_loras)
 
+        # 5. Argv assembly for this iteration.
         cmd = build_mflux_cmd(
             binary=binary,
             backend=be,
@@ -964,10 +1071,10 @@ def build_iterations(
             output_path=output_path,
             prompt=prompt,
             negative=negative,
-            quantize=final_quantize,
-            steps=final_steps,
-            guidance=final_guidance,
-            strength=final_strength,
+            quantize=params.final_quantize,
+            steps=params.final_steps,
+            guidance=params.final_guidance,
+            strength=params.final_strength,
             seed=seed,
             width=width,
             height=height,
@@ -980,10 +1087,10 @@ def build_iterations(
             style_name=style_name,
             prompt=prompt,
             negative=negative,
-            final_steps=final_steps,
-            final_quantize=final_quantize,
-            final_guidance=final_guidance,
-            final_strength=final_strength,
+            final_steps=params.final_steps,
+            final_quantize=params.final_quantize,
+            final_guidance=params.final_guidance,
+            final_strength=params.final_strength,
             output_path=output_path,
             cmd=cmd,
             # The compat-filtered stack — incompatible LoRAs already

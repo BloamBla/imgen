@@ -549,23 +549,22 @@ def print_backends() -> int:
     return 0
 
 
-# v0.6.2 (architect I-3): canonical helper now lives in
-# ``imgen.hf_cache``. The private alias preserves the test surface that
-# imported ``parser._lora_hf_cache_dir`` directly.
-#
-# Security note (v0.6 security-reviewer IMP-2): the only consumer today
-# is ``print_loras`` which calls ``cache_dir.is_dir()`` — a stat-only
-# probe with no read or write. Even if ``repo`` is user-attacker-
-# controlled and points at ``//host/share`` or ``/Volumes/external``,
-# the worst outcome is "this path is reported as cached/not-cached in
-# --list-loras" — information disclosure bounded to "does that
-# filesystem path exist", which same-uid attackers can already
-# determine via plain ``stat()``. Do NOT add file-read consumers
-# without first anchoring under ``HF_CACHE``.
-from .hf_cache import hf_cache_dir_for as _lora_hf_cache_dir
+# Security note (v0.6 security-reviewer IMP-2): the only consumer of
+# ``hf_cache_dir_for`` from this module is ``print_loras`` below, which
+# calls ``cache_dir.is_dir()`` — a stat-only probe with no read or write.
+# Even if ``repo`` is user-attacker-controlled and points at
+# ``//host/share`` or ``/Volumes/external``, the worst outcome is "this
+# path is reported as cached/not-cached in --list-loras" — information
+# disclosure bounded to "does that filesystem path exist", which same-uid
+# attackers can already determine via plain ``stat()``. Do NOT add
+# file-read consumers without first anchoring under ``HF_CACHE``.
+from .hf_cache import hf_cache_dir_for
 
 
-def print_loras(hf_cache: Path | None = None) -> int:
+def print_loras(
+    hf_cache: Path | None = None,
+    mflux_loras_cache: Path | None = None,
+) -> int:
     """Handler for the top-level --list-loras flag (v0.6).
 
     Walks every style in the merged registry and surfaces its
@@ -574,12 +573,25 @@ def print_loras(hf_cache: Path | None = None) -> int:
     group(s), and whether the weights are already cached locally so
     the user can predict cold-download cost.
 
-    ``hf_cache`` parameter exists for tests (so they can point at a
-    tmp directory and not depend on the real ``~/.cache/huggingface/
-    hub/`` state). Production calls with ``None`` → ``HF_CACHE``.
+    Two cache roots are probed (v0.6.4 task #21): the standard HF hub
+    cache (``~/.cache/huggingface/hub/``) which is where most
+    ``huggingface_hub.snapshot_download`` calls land, AND mflux's
+    private LoRA cache (``~/Library/Caches/mflux/loras/``) which is
+    where mflux's own LoRA downloader writes. v0.6.3 only probed the
+    HF hub cache and so reported "not downloaded" for every built-in
+    LoRA after a successful smoke run — the weights were in mflux's
+    cache, not HF's. We now report "cached" when EITHER root has the
+    ``models--<author>--<name>`` directory.
+
+    Both ``hf_cache`` and ``mflux_loras_cache`` parameters exist for
+    tests (point at tmp directories). Production passes ``None`` for
+    both → :data:`HF_CACHE` + :data:`MFLUX_LORAS_CACHE` from paths.py.
     """
     if hf_cache is None:
         hf_cache = HF_CACHE
+    if mflux_loras_cache is None:
+        from .paths import MFLUX_LORAS_CACHE
+        mflux_loras_cache = MFLUX_LORAS_CACHE
     step("Available LoRAs")
 
     text_only: list[str] = []
@@ -604,8 +616,14 @@ def print_loras(hf_cache: Path | None = None) -> int:
                 if lora.ref.startswith("/"):
                     cached = "local" if Path(lora.ref).is_file() else "missing"
                 else:
-                    cache_dir = _lora_hf_cache_dir(lora.ref, hf_cache)
-                    cached = "cached" if cache_dir.is_dir() else "not downloaded"
+                    # v0.6.4 task #21: check both caches; mflux writes
+                    # to its own LoRA cache, not the HF hub cache.
+                    hf_dir = hf_cache_dir_for(lora.ref, hf_cache)
+                    mflux_dir = hf_cache_dir_for(lora.ref, mflux_loras_cache)
+                    cached = (
+                        "cached" if hf_dir.is_dir() or mflux_dir.is_dir()
+                        else "not downloaded"
+                    )
                 trigger = f' trigger="{lora.trigger}"' if lora.trigger else ""
                 compat = ",".join(lora.compatible_with)
                 print(f"    {C.BOLD}{style_name:14}{C.END} "

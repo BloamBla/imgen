@@ -47,6 +47,48 @@ __all__ = [
 
 
 @dataclass(frozen=True, slots=True)
+class LoraRef:
+    """One LoRA weight delta to apply on top of the base diffusion model.
+
+    Style presets carry a tuple of these. The mflux argv-builder turns
+    each into a (``--lora-paths <ref>``, ``--lora-scales <weight>``)
+    pair, filtered by ``compatible_with`` matching the active backend's
+    ``lora_compat_group``.
+
+    Fields:
+      * ``ref`` — either a HuggingFace repo id (e.g.
+        ``"strangerzonehf/Flux-Animeo-v1-LoRA"``) or an absolute path
+        to a local ``.safetensors`` file. mflux's ``--lora-paths``
+        accepts both shapes.
+      * ``weight`` — scalar multiplier passed via ``--lora-scales``.
+        1.0 = full strength; lower = subtler effect; higher = overshoot
+        (rarely useful, often produces artifacts).
+      * ``compatible_with`` — set of backend ``lora_compat_group``
+        values this LoRA was trained against. A FLUX.1-dev LoRA also
+        works on FLUX.1-Kontext-dev (same architecture family), so the
+        common case is ``("flux-1",)``. FLUX.2 LoRAs are a separate
+        ecosystem (``"flux-2"``); Qwen LoRAs another (``"qwen"``); etc.
+        Mismatched LoRAs are warn-skipped at command-construction time,
+        not silently mis-applied.
+      * ``trigger`` — optional trigger word/phrase the LoRA was trained
+        to activate on. When set, ``build_iterations`` prepends it to
+        the prompt if not already present. Many style LoRAs only
+        produce their effect when the trigger word appears in the
+        prompt (e.g. "Pixar 3D" for Canopus-Pixar-3D-Flux-LoRA).
+
+    Frozen + slots matches the project's other config dataclasses
+    (Iteration, BatchContext, EnhanceResult, BackendHealth,
+    EnhanceHealth). ``__hash__`` stays default-frozen-hashable since
+    every field is hashable — tuples of LoraRef can live in sets if a
+    future caller wants dedup.
+    """
+    ref: str
+    weight: float = 1.0
+    compatible_with: tuple[str, ...] = ("flux-1",)
+    trigger: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class Style:
     """v0.6.2 (architect I-2): promotion of the v0.1.x ``dict[str, Any]``
     preset shape into a frozen+slots dataclass. Six fields cover the
@@ -100,7 +142,7 @@ class Style:
     guidance: float | None = None
     strength: float | None = None
     scene_suffix: str | None = None
-    loras: "tuple[LoraRef, ...]" = ()
+    loras: tuple[LoraRef, ...] = ()
 
     # Dict-compat read surface. Read-only by virtue of frozen=True; the
     # underlying fields cannot be set, so __setitem__ would always raise.
@@ -134,48 +176,6 @@ class Style:
         if not isinstance(key, str) or key.startswith("_"):
             return default
         return getattr(self, key, default)
-
-
-@dataclass(frozen=True, slots=True)
-class LoraRef:
-    """One LoRA weight delta to apply on top of the base diffusion model.
-
-    Style presets carry a tuple of these. The mflux argv-builder turns
-    each into a (``--lora-paths <ref>``, ``--lora-scales <weight>``)
-    pair, filtered by ``compatible_with`` matching the active backend's
-    ``lora_compat_group``.
-
-    Fields:
-      * ``ref`` — either a HuggingFace repo id (e.g.
-        ``"strangerzonehf/Flux-Animeo-v1-LoRA"``) or an absolute path
-        to a local ``.safetensors`` file. mflux's ``--lora-paths``
-        accepts both shapes.
-      * ``weight`` — scalar multiplier passed via ``--lora-scales``.
-        1.0 = full strength; lower = subtler effect; higher = overshoot
-        (rarely useful, often produces artifacts).
-      * ``compatible_with`` — set of backend ``lora_compat_group``
-        values this LoRA was trained against. A FLUX.1-dev LoRA also
-        works on FLUX.1-Kontext-dev (same architecture family), so the
-        common case is ``("flux-1",)``. FLUX.2 LoRAs are a separate
-        ecosystem (``"flux-2"``); Qwen LoRAs another (``"qwen"``); etc.
-        Mismatched LoRAs are warn-skipped at command-construction time,
-        not silently mis-applied.
-      * ``trigger`` — optional trigger word/phrase the LoRA was trained
-        to activate on. When set, ``build_iterations`` prepends it to
-        the prompt if not already present. Many style LoRAs only
-        produce their effect when the trigger word appears in the
-        prompt (e.g. "Pixar 3D" for Canopus-Pixar-3D-Flux-LoRA).
-
-    Frozen + slots matches the project's other config dataclasses
-    (Iteration, BatchContext, EnhanceResult, BackendHealth,
-    EnhanceHealth). ``__hash__`` stays default-frozen-hashable since
-    every field is hashable — tuples of LoraRef can live in sets if a
-    future caller wants dedup.
-    """
-    ref: str
-    weight: float = 1.0
-    compatible_with: tuple[str, ...] = ("flux-1",)
-    trigger: str | None = None
 
 
 # Cap on a single LoraRef's ref-string length. HF repo ids are well

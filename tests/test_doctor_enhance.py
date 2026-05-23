@@ -22,17 +22,22 @@ import pytest
 from imgen.commands.doctor import (
     EnhanceHealth,
     _dir_size_bytes,
-    _hf_cache_dir_for,
     check_enhance_health,
 )
+from imgen.hf_cache import hf_cache_dir_for
 
 
-# ── _hf_cache_dir_for ──────────────────────────────────────────────────
+# ── hf_cache_dir_for ───────────────────────────────────────────────────
+#
+# v0.6.4 (architect v0.6.2 NIT-2): historically imported via the private
+# alias ``doctor._hf_cache_dir_for``. After hf_cache.py extraction the
+# canonical public name is ``imgen.hf_cache.hf_cache_dir_for``; the
+# doctor/parser private aliases were retired alongside this test update.
 
 
 class TestHFCacheDirFor:
     def test_standard_hf_repo(self, tmp_path):
-        result = _hf_cache_dir_for(
+        result = hf_cache_dir_for(
             "mlx-community/Qwen2.5-7B-Instruct-4bit", tmp_path,
         )
         assert result == tmp_path / "models--mlx-community--Qwen2.5-7B-Instruct-4bit"
@@ -41,20 +46,20 @@ class TestHFCacheDirFor:
         """org/sub-name/variant — only the first slash becomes '--' on
         HF's side (snapshot), but huggingface_hub's actual layout uses
         '--' for every '/' in the repo id. Lock-in test."""
-        result = _hf_cache_dir_for("a/b/c", tmp_path)
+        result = hf_cache_dir_for("a/b/c", tmp_path)
         assert result == tmp_path / "models--a--b--c"
 
     def test_absolute_local_path_passes_through(self, tmp_path):
         """User points --enhance-model at a local checkpoint dir →
         treat the path as-is, don't slap a models-- prefix on."""
         abs_path = "/abs/path/to/local_model"
-        result = _hf_cache_dir_for(abs_path, tmp_path)
+        result = hf_cache_dir_for(abs_path, tmp_path)
         assert result == Path(abs_path)
 
     def test_empty_string_returns_cache_root(self, tmp_path):
         # Defensive: if config is empty, fall back to cache root rather
         # than create a weird `models--` directory.
-        result = _hf_cache_dir_for("", tmp_path)
+        result = hf_cache_dir_for("", tmp_path)
         assert result == tmp_path
 
 

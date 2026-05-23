@@ -334,17 +334,18 @@ def test_print_loras_lists_text_only_styles_separately(tmp_path, capsys):
 
 
 def test_print_loras_marks_cached_when_hf_dir_present(tmp_path, capsys):
-    """When the HF cache contains the LoRA's `models--<author>--<name>`
-    directory, the line reads `(cached)`; an absent dir reads
-    `(not downloaded)`. Lets the user see cold-download cost up front.
+    """When the HF hub cache contains the LoRA's
+    `models--<author>--<name>` directory, the line reads `(cached)`.
 
-    v0.6.1: only ghibli ships a built-in LoRA. Pre-create its cache
-    layout and assert the line marks it cached.
+    Tests cache-resolution against the standard ``~/.cache/huggingface
+    /hub/`` root. Pair test ``..._mflux_cache_dir_present`` covers the
+    mflux loras cache root.
     """
     from imgen.parser import print_loras
     cached_dir = tmp_path / "models--openfree--flux-chatgpt-ghibli-lora"
     cached_dir.mkdir()
-    print_loras(hf_cache=tmp_path)
+    # Empty mflux cache → only HF hub cache hit.
+    print_loras(hf_cache=tmp_path, mflux_loras_cache=tmp_path / "empty")
     out = capsys.readouterr().out
     ghibli_lines = [
         line for line in out.splitlines()
@@ -352,6 +353,54 @@ def test_print_loras_marks_cached_when_hf_dir_present(tmp_path, capsys):
     ]
     assert ghibli_lines, "expected ghibli LoRA line in --list-loras output"
     assert "(cached)" in ghibli_lines[0]
+
+
+def test_print_loras_marks_cached_when_mflux_dir_present(tmp_path, capsys):
+    """v0.6.4 task #21 regression: when the LoRA weights are in mflux's
+    private cache (~/Library/Caches/mflux/loras/) but NOT in the
+    standard HF hub cache, --list-loras still reports `(cached)`.
+
+    v0.6.3 only probed the HF hub cache, so every successful smoke-test
+    LoRA appeared as "not downloaded" because mflux writes to its own
+    cache root. Fix: probe both roots, OR together.
+    """
+    from imgen.parser import print_loras
+    hf_root = tmp_path / "hub"
+    hf_root.mkdir()
+    mflux_root = tmp_path / "mflux-loras"
+    mflux_root.mkdir()
+    # LoRA dir present ONLY in the mflux cache, NOT in HF hub.
+    (mflux_root / "models--openfree--flux-chatgpt-ghibli-lora").mkdir()
+    print_loras(hf_cache=hf_root, mflux_loras_cache=mflux_root)
+    out = capsys.readouterr().out
+    ghibli_lines = [
+        line for line in out.splitlines()
+        if "openfree/flux-chatgpt-ghibli-lora" in line
+    ]
+    assert ghibli_lines, "expected ghibli LoRA line"
+    assert "(cached)" in ghibli_lines[0], (
+        f"LoRA present in mflux cache but reported not-cached: {ghibli_lines[0]!r}"
+    )
+
+
+def test_print_loras_marks_not_downloaded_when_both_caches_empty(
+    tmp_path, capsys,
+):
+    """v0.6.4 task #21 regression — symmetric to the cached test.
+    When NEITHER cache root has the LoRA dir, line reads
+    `(not downloaded)`."""
+    from imgen.parser import print_loras
+    print_loras(
+        hf_cache=tmp_path / "empty-hf",
+        mflux_loras_cache=tmp_path / "empty-mflux",
+    )
+    out = capsys.readouterr().out
+    ghibli_lines = [
+        line for line in out.splitlines()
+        if "openfree/flux-chatgpt-ghibli-lora" in line
+    ]
+    assert ghibli_lines, "expected ghibli LoRA line"
+    assert "(not downloaded)" in ghibli_lines[0]
 
 
 def test_print_loras_marks_local_path_correctly(tmp_path, capsys, monkeypatch):
