@@ -109,11 +109,25 @@ class EnhanceResult:
     ``"runner_error"`` / ``"user_opt_out"`` / ``"not_supported_by_
     backend"``). ``fallback_detail`` (v0.6.4) carries the verbose
     diagnostic string when the coarse token doesn't capture the full
-    why — currently populated only for ``invariant_violated`` (the
-    ``check_invariants`` reason naming the dropped clause(s)). None
-    elsewhere. v0.5 python I-4: the coarse token alone was useful for
-    aggregation but lost the actual violation detail, making the
-    history hard to debug after the fact.
+    why — populated for ``invariant_violated`` (the ``check_invariants``
+    reason naming the dropped clause(s)) and, since v0.6.5, also for
+    ``runner_error`` (the ``str(RunnerError)`` message — model-load
+    trace, timeout, etc.). None elsewhere. v0.5 python I-4 / v0.6.5
+    architect IMP-1: the coarse token alone was useful for aggregation
+    but lost the actual violation / crash detail, making the history
+    hard to debug after the fact.
+
+    Pre-v0.6.5 the runner-error message lived in ``raw_llm_output``
+    instead — a contract mismatch (``raw_llm_output`` means "what the
+    LLM emitted"; a runner crash means no LLM output at all). Old v=3
+    history entries written by v0.6.0–v0.6.4 carry the message in
+    ``raw_llm_output`` with ``fallback_detail`` absent or null. No
+    code path reads these fields back today (replay restores nothing
+    from the enhance block); the docstring note is here so future
+    ``imgen history --verbose`` work prefers ``fallback_detail`` first
+    and falls back to ``raw_llm_output`` only when the row's
+    ``fallback_reason == "runner_error"`` and ``fallback_detail`` is
+    null.
 
     Security boundary on ``fallback_detail`` (v0.6.4 security IMP-1):
     the field may transitively carry user-supplied strings — built-
@@ -642,8 +656,10 @@ def enhance_iteration_prompts(
     * the runner subprocess raises :class:`RunnerError` (model load
       failed, timeout, crash) → ALL results get
       ``fallback_reason="runner_error"`` with the error preserved
-      in ``raw_llm_output``. We don't want a partial enhancement
-      across a multi-style run.
+      in ``fallback_detail`` (v0.6.5; v0.6.0–v0.6.4 stuffed it into
+      ``raw_llm_output``, but that field's contract is "what the LLM
+      emitted" — a runner crash means no LLM output at all). We don't
+      want a partial enhancement across a multi-style run.
 
     ``run_llm`` is an injection seam for tests — pass a callable with
     the same signature as :func:`run_with_mlx_lm` to skip the real
@@ -731,6 +747,15 @@ def enhance_iteration_prompts(
         # All-or-nothing fallback: a runner-level failure (model load,
         # crash, timeout) returns ``runner_error`` for every iteration
         # so the user sees consistent behaviour across the batch.
+        #
+        # v0.6.5 (architect IMP-1): the error message lands in
+        # ``fallback_detail``, not ``raw_llm_output``. ``raw_llm_output``
+        # means "what the LLM emitted" by contract; the runner crashing
+        # before producing output means there is no LLM output. The
+        # diagnostic string (model-load trace, timeout, etc.) belongs in
+        # the verbose-detail field alongside the ``invariant_violated``
+        # reason — symmetric handling across the two paths whose coarse
+        # ``fallback_reason`` token loses information without the detail.
         msg = str(e)
         return [
             EnhanceResult(
@@ -739,7 +764,8 @@ def enhance_iteration_prompts(
                 was_enhanced=False,
                 fallback_reason="runner_error",
                 was_truncated=False,
-                raw_llm_output=msg,
+                raw_llm_output=None,
+                fallback_detail=msg,
             )
             for p in iteration_prompts
         ]

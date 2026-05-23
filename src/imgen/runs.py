@@ -40,6 +40,7 @@ __all__ = [
     "BatchContext",
     "BatchLogger",
     "Iteration",
+    "PerInputBatch",
     "auto_run_dirname",
     "ensure_logs_dir",
     "next_available_run_dir",
@@ -124,6 +125,49 @@ class Iteration:
     # hit TypeError at first hash. Equality still works for test
     # assertions on _build_iterations output.
     __hash__ = None  # type: ignore[assignment]
+
+
+@dataclass(frozen=True, slots=True)
+class PerInputBatch:
+    """One discovered input photo's slot in ``imgen batch <dir>``.
+
+    Carries the original input path, its mflux-readable representation
+    (HEIC → ``sips``-converted JPEG; identical to ``input_path`` for
+    native formats), per-input detected dimensions, and the M-style
+    iteration list built for it.
+
+    Pre-v0.6.5 cmd_batch carried this as a bare 5-tuple
+    ``(Path, Path, int, int, list[Iteration])`` — promoted to a frozen
+    dataclass in v0.6.5 (architect IMP-3 from the v0.6.4 review) so the
+    shape has a name + each field is read by attribute, matching how
+    :class:`Iteration` / :class:`BatchContext` / ``LoraResolution`` /
+    ``IterationParams`` carry their fields. Tuple positional reads in
+    cmd_batch and ``apply_enhance_results_to_per_input`` are replaced
+    by attribute access — no more ``for _, _, _, _, group in ...``
+    underscore-soup at flatten sites.
+
+    ``iters`` is a ``tuple`` (not a ``list``) matching the immutability
+    spirit of :class:`Iteration`'s ``loras`` tuple field and
+    ``LoraResolution``'s lora-stack tuples — the dataclass itself is
+    frozen, and the contained sequence being a tuple eliminates the
+    "tuple field, mutable element" gotcha for in-place mutation by
+    callers. ``apply_enhance_results_to_per_input`` constructs new
+    :class:`Iteration` instances via :func:`dataclasses.replace` and
+    casts the rebuilt list to a tuple here.
+
+    ``__hash__ = None`` because :class:`Iteration` is itself unhashable
+    (``cmd: list[str]``); any container holding Iterations inherits
+    that. Equality (``__eq__``) still works for test assertions.
+    """
+    input_path: Path
+    mflux_input: Path
+    width: int
+    height: int
+    iters: tuple  # tuple[Iteration, ...] — annotation stays bare to avoid
+                  # forward-ref string for a same-module class.
+
+    __hash__ = None  # type: ignore[assignment]
+
 
 # Per-batch logs (v0.2.3+) — one .log file per multi-style invocation,
 # named after batch_id. Single-style generations don't write here.

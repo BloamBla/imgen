@@ -136,6 +136,7 @@ def _make_stub_orchestrator(
     *,
     transform=None,
     fallback_reason=None,
+    fallback_detail=None,
     raise_runner_error=False,
 ):
     """Patch the enhance orchestrator (``enhance_iteration_prompts``) at
@@ -143,8 +144,10 @@ def _make_stub_orchestrator(
     receives an original prompt and returns the LLM "enhancement"; if
     omitted, defaults to ``f"ENH: {original}"``. ``fallback_reason`` set
     forces every result to be a fallback (was_enhanced=False) with that
-    reason. ``raise_runner_error`` instead raises RunnerError so we can
-    exercise the all-or-nothing fallback path.
+    reason. ``fallback_detail`` (v0.6.5) optionally supplies the verbose
+    diagnostic string — primarily used to exercise the runner_error +
+    detail wire-up. ``raise_runner_error`` instead raises RunnerError so
+    we can exercise the all-or-nothing fallback path.
 
     Returns the calls list for inspection.
     """
@@ -176,6 +179,7 @@ def _make_stub_orchestrator(
                     fallback_reason=fallback_reason,
                     was_truncated=False,
                     raw_llm_output=None,
+                    fallback_detail=fallback_detail,
                 ))
             else:
                 results.append(EnhanceResult(
@@ -380,6 +384,42 @@ def test_runner_error_falls_back_all_with_diagnostic(
     e = load_history()[0]
     assert e["enhanced"] is False
     assert e["enhance_fallback_reason"] == "runner_error"
+
+
+def test_runner_error_warn_reads_fallback_detail(
+    tmp_state_dir, tmp_path, stub_mflux, stub_backend, stub_dims,
+    stub_open, stub_sips, monkeypatch, capsys,
+):
+    """v0.6.5 (architect IMP-1): the all-runner-error warn line in
+    ``maybe_enhance_for_command`` reads ``fallback_detail`` (the verbose
+    diagnostic) rather than ``raw_llm_output`` (which is now None for
+    this path — the runner crashed before producing any LLM output).
+    Locks the producer/consumer wire-up: the detail string the stub
+    sets here surfaces in the warn line the user sees on real runner
+    crashes."""
+    _make_stub_orchestrator(
+        monkeypatch,
+        fallback_reason="runner_error",
+        fallback_detail="mlx_lm.load: model 'fake/model' not found",
+    )
+
+    photo = tmp_path / "photo.jpg"
+    photo.write_bytes(b"jpeg")
+    args = _gen_args(image=photo, output_dir=str(tmp_path / "out"),
+                     enhance=True)
+
+    rc = cmd_generate(args)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Enhance runner failed" in out
+    # The diagnostic from fallback_detail surfaces in the warn line —
+    # !r-escaped (security IMP-2 pattern: any control bytes coming from
+    # mlx_lm / HF tracebacks become literal \x1b instead of clearing
+    # the user's screen). repr() of a str-with-quotes uses the outer
+    # quote that doesn't collide, so checking the unquoted substring
+    # stays robust to that choice.
+    assert "mlx_lm.load: model" in out
+    assert "not found" in out
 
 
 # ── Dry-run + enhance ──────────────────────────────────────────────────

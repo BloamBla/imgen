@@ -27,6 +27,7 @@ Verifies the WIRING:
 from __future__ import annotations
 
 import subprocess
+from dataclasses import FrozenInstanceError as dataclasses_FrozenInstanceError
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -452,7 +453,12 @@ class TestApplyEnhanceResultsToPerInput:
     """v0.6.4 v0.5 architect IMP #2: the cmd_batch sliding-cursor block
     that re-bucketed a flat enhance_results list back into the per-
     input-tuple shape moved into a dedicated helper. These tests cover
-    the pure function in isolation (no cmd_batch / no subprocess)."""
+    the pure function in isolation (no cmd_batch / no subprocess).
+
+    v0.6.5 (architect IMP-3): the per-input shape was promoted from a
+    bare 5-tuple to :class:`~imgen.runs.PerInputBatch`. Tests construct
+    PerInputBatch instances explicitly and assert via named-field
+    access (``pib.input_path``, ``pib.iters``)."""
 
     def _make_iter(self, prompt: str, style: str = "anime") -> "Iteration":
         from imgen.runs import Iteration
@@ -487,21 +493,36 @@ class TestApplyEnhanceResultsToPerInput:
             raw_llm_output=enhanced,
         )
 
+    def _make_pib(self, input_name, *iters_pairs):
+        """Build a PerInputBatch with the given (prompt, style) iters."""
+        from imgen.runs import PerInputBatch
+        return PerInputBatch(
+            input_path=Path(f"/tmp/{input_name}.jpg"),
+            mflux_input=Path(f"/tmp/conv-{input_name}.jpg"),
+            width=640,
+            height=896,
+            iters=tuple(
+                self._make_iter(prompt, style) for prompt, style in iters_pairs
+            ),
+        )
+
     def test_round_trips_uniform_2x3(self):
         """2 inputs × 3 styles = 6 flat results. Result re-buckets to
         per-input shape with 3 iterations each. Prompts spliced in."""
         from imgen.cmd_helpers import apply_enhance_results_to_per_input
         per_input = [
-            (Path("/tmp/in1.jpg"), Path("/tmp/conv1.jpg"), 640, 896, [
-                self._make_iter("p1-anime", "anime"),
-                self._make_iter("p1-ghibli", "ghibli"),
-                self._make_iter("p1-pixar", "pixar"),
-            ]),
-            (Path("/tmp/in2.jpg"), Path("/tmp/conv2.jpg"), 640, 896, [
-                self._make_iter("p2-anime", "anime"),
-                self._make_iter("p2-ghibli", "ghibli"),
-                self._make_iter("p2-pixar", "pixar"),
-            ]),
+            self._make_pib(
+                "in1",
+                ("p1-anime", "anime"),
+                ("p1-ghibli", "ghibli"),
+                ("p1-pixar", "pixar"),
+            ),
+            self._make_pib(
+                "in2",
+                ("p2-anime", "anime"),
+                ("p2-ghibli", "ghibli"),
+                ("p2-pixar", "pixar"),
+            ),
         ]
         results = [
             self._make_result("p1-anime", "ENH p1-anime"),
@@ -513,18 +534,21 @@ class TestApplyEnhanceResultsToPerInput:
         ]
         out = apply_enhance_results_to_per_input(per_input, results)
         assert len(out) == 2
-        # Each tuple preserved at positions 0-3 (paths + dims).
-        assert out[0][:4] == per_input[0][:4]
-        assert out[1][:4] == per_input[1][:4]
+        # Path + dim metadata preserved on each PerInputBatch.
+        for i in range(2):
+            assert out[i].input_path == per_input[i].input_path
+            assert out[i].mflux_input == per_input[i].mflux_input
+            assert out[i].width == per_input[i].width
+            assert out[i].height == per_input[i].height
         # Iteration groups have the right length.
-        assert [len(t[4]) for t in out] == [3, 3]
+        assert [len(pib.iters) for pib in out] == [3, 3]
         # Enhanced prompts spliced through; fallback iteration unchanged.
-        assert out[0][4][0].prompt == "ENH p1-anime"
-        assert out[0][4][1].prompt == "ENH p1-ghibli"
-        assert out[0][4][2].prompt == "ENH p1-pixar"
-        assert out[1][4][0].prompt == "p2-anime"  # fallback original
-        assert out[1][4][1].prompt == "ENH p2-ghibli"
-        assert out[1][4][2].prompt == "ENH p2-pixar"
+        assert out[0].iters[0].prompt == "ENH p1-anime"
+        assert out[0].iters[1].prompt == "ENH p1-ghibli"
+        assert out[0].iters[2].prompt == "ENH p1-pixar"
+        assert out[1].iters[0].prompt == "p2-anime"  # fallback original
+        assert out[1].iters[1].prompt == "ENH p2-ghibli"
+        assert out[1].iters[2].prompt == "ENH p2-pixar"
 
     def test_ragged_groups_preserved(self):
         """Future per-style skip logic could produce ragged group
@@ -532,13 +556,10 @@ class TestApplyEnhanceResultsToPerInput:
         inside the helper handles this transparently."""
         from imgen.cmd_helpers import apply_enhance_results_to_per_input
         per_input = [
-            (Path("/tmp/in1.jpg"), Path("/tmp/conv1.jpg"), 640, 896, [
-                self._make_iter("p1-a"), self._make_iter("p1-b"),
-                self._make_iter("p1-c"),
-            ]),
-            (Path("/tmp/in2.jpg"), Path("/tmp/conv2.jpg"), 640, 896, [
-                self._make_iter("p2-a"),
-            ]),
+            self._make_pib(
+                "in1", ("p1-a", "anime"), ("p1-b", "anime"), ("p1-c", "anime"),
+            ),
+            self._make_pib("in2", ("p2-a", "anime")),
         ]
         results = [
             self._make_result("p1-a", "ENH p1-a"),
@@ -547,8 +568,8 @@ class TestApplyEnhanceResultsToPerInput:
             self._make_result("p2-a", "ENH p2-a"),
         ]
         out = apply_enhance_results_to_per_input(per_input, results)
-        assert [len(t[4]) for t in out] == [3, 1]
-        assert out[1][4][0].prompt == "ENH p2-a"
+        assert [len(pib.iters) for pib in out] == [3, 1]
+        assert out[1].iters[0].prompt == "ENH p2-a"
 
     def test_empty_input_passes_through(self):
         """v0.6.4 python NIT-2: zero inputs with zero results is a
@@ -566,12 +587,29 @@ class TestApplyEnhanceResultsToPerInput:
         prompts to wrong iterations."""
         from imgen.cmd_helpers import apply_enhance_results_to_per_input
         per_input = [
-            (Path("/tmp/in.jpg"), Path("/tmp/conv.jpg"), 640, 896, [
-                self._make_iter("a"), self._make_iter("b"),
-            ]),
+            self._make_pib("in", ("a", "anime"), ("b", "anime")),
         ]
         # Only 1 result for 2 iterations.
         with pytest.raises(ValueError, match="enhance-result count mismatch"):
             apply_enhance_results_to_per_input(
                 per_input, [self._make_result("a")],
             )
+
+    def test_returns_per_input_batch_instances(self):
+        """v0.6.5 (architect IMP-3) lock-in: the helper's return shape
+        is ``list[PerInputBatch]``, not the legacy ``list[tuple]``.
+        Locks the dataclass-promotion so a future regression to tuple
+        return wouldn't sneak past the per-prompt assertions in the
+        round-trip tests above."""
+        from imgen.cmd_helpers import apply_enhance_results_to_per_input
+        from imgen.runs import PerInputBatch
+        per_input = [self._make_pib("in", ("a", "anime"))]
+        results = [self._make_result("a", "ENH a")]
+        out = apply_enhance_results_to_per_input(per_input, results)
+        assert len(out) == 1
+        assert isinstance(out[0], PerInputBatch)
+        # Frozen — attribute assignment raises.
+        with pytest.raises((AttributeError, dataclasses_FrozenInstanceError)):
+            out[0].width = 999  # type: ignore[misc]
+        # iters is a tuple (immutable container).
+        assert isinstance(out[0].iters, tuple)

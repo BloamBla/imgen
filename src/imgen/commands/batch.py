@@ -58,6 +58,7 @@ from ..runs import (
     BatchContext,
     BatchLogger,
     Iteration,
+    PerInputBatch,
 )
 from ..cmd_helpers import (
     apply_enhance_results_to_iterations,
@@ -227,7 +228,11 @@ def cmd_batch(args) -> int:
         # incompatible CLI --lora (or style-declared LoRA) warns exactly
         # ONCE for the entire N×M batch instead of once per input.
         warned_incompat_loras: set[tuple[str, str]] = set()
-        per_input_iters: list[tuple[Path, Path, int, int, list[Iteration]]] = []
+        # v0.6.5 (architect IMP-3): per-input shape promoted from a bare
+        # 5-tuple to PerInputBatch — named-field access at the unpack +
+        # flatten sites below replaces the ``for _, _, _, _, group``
+        # underscore soup.
+        per_input_iters: list[PerInputBatch] = []
         for input_path in input_paths:
             # sips-failure policy: a CalledProcessError or TimeoutExpired
             # from resolve_to_mflux_input here propagates uncaught, aborting
@@ -261,12 +266,16 @@ def cmd_batch(args) -> int:
                 # for the whole batch instead of once per input.
                 warned_incompat_loras=warned_incompat_loras,
             )
-            per_input_iters.append(
-                (input_path, mflux_input, width, height, iters)
-            )
+            per_input_iters.append(PerInputBatch(
+                input_path=input_path,
+                mflux_input=mflux_input,
+                width=width,
+                height=height,
+                iters=tuple(iters),
+            ))
 
         all_iters: list[Iteration] = [
-            it for _, _, _, _, group in per_input_iters for it in group
+            it for pib in per_input_iters for it in pib.iters
         ]
         total_iters = len(all_iters)
 
@@ -300,7 +309,7 @@ def cmd_batch(args) -> int:
             per_input_iters, enhance_results,
         )
         all_iters = [
-            it for _, _, _, _, group in per_input_iters for it in group
+            it for pib in per_input_iters for it in pib.iters
         ]
 
         # `imgen batch` always treats itself as a batch (even N=M=1) so
@@ -383,8 +392,11 @@ def cmd_batch(args) -> int:
             # only the equal-styles case. Flat counter eliminates the
             # latent breakage. (v0.3.0 python review IMP-2.)
             global_idx = 0
-            for n, (input_path, _mflux_input, width, height, iters) in \
-                    enumerate(per_input_iters, start=1):
+            for n, pib in enumerate(per_input_iters, start=1):
+                input_path = pib.input_path
+                width = pib.width
+                height = pib.height
+                iters = pib.iters
                 logger.input_section_start(n, len(input_paths), input_path.name)
                 ok_before = len(succeeded)
                 fail_before = len(failed)

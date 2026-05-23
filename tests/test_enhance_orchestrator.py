@@ -210,7 +210,11 @@ class TestEnhanceIterationPrompts:
             assert r.was_enhanced is False
             assert r.fallback_reason == "runner_error"
             assert r.final_prompt == p  # original preserved
-            assert "simulated runner failure" in (r.raw_llm_output or "")
+            # v0.6.5: error message lives in fallback_detail (symmetric
+            # with invariant_violated). raw_llm_output is None because
+            # the runner crashed before producing LLM output.
+            assert r.raw_llm_output is None
+            assert "simulated runner failure" in (r.fallback_detail or "")
 
     def test_invariant_violation_falls_back_per_prompt(self):
         prompts = ["Restyle preserving identity, anime"]

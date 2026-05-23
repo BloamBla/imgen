@@ -907,6 +907,34 @@ def test_build_iterations_scope_none_explicit_keeps_preset_verbatim(
     )
 
 
+def test_build_iterations_args_without_scope_attr_falls_through(
+    fake_styles, tmp_path,
+):
+    """v0.6.5 (architect FL-3): ``_resolve_iteration_prompt`` reads
+    ``args.scope`` via ``getattr(..., None)`` so the future
+    ``imgen draw`` subparser (which omits ``--scope``) can pass its own
+    Namespace through this helper untouched. Locks the no-AttributeError
+    contract on a Namespace that has no ``scope`` field at all."""
+    fake_styles["anime"] = {
+        "prompt": "Restyle this person as anime",
+        "scene_suffix": ", and restyle the background as anime",
+    }
+
+    # SimpleNamespace built without a scope key — mirrors the future
+    # draw parser whose argparse Namespace will not carry scope.
+    args = SimpleNamespace(
+        steps=None, quantize=None, guidance=None, strength=None,
+        preview=False,
+    )
+    assert not hasattr(args, "scope")
+
+    its = _build(fake_styles=fake_styles, tmp_path=tmp_path, args=args)
+
+    # Falls through cleanly — preset prompt verbatim, no scope-derived
+    # suffix appended.
+    assert its[0].prompt == "Restyle this person as anime"
+
+
 # ── v0.3.5: --custom-prompt augmentation ───────────────────────────────
 
 

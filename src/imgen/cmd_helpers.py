@@ -80,6 +80,7 @@ from .runs import (
     BatchContext,
     BatchLogger,
     Iteration,
+    PerInputBatch,
     auto_run_dirname,
     next_available_run_dir,
 )
@@ -472,15 +473,20 @@ def maybe_enhance_for_command(
         # the "your enhancer is broken, fix it" kind of feedback.
         reasons = {r.fallback_reason for r in results}
         if reasons == {"runner_error"}:
-            # !r-format the runner-error message: raw_llm_output here is
+            # !r-format the runner-error message: fallback_detail here is
             # the str(RunnerError) which may contain ANSI escape bytes
             # bubbled up from mlx_lm / huggingface_hub error tracebacks.
             # Mirrors v0.4 security-reviewer IMP-2 pattern for any
             # user-supplied / library-supplied string reaching the
             # terminal — escapes become literal \x1b instead of clearing
             # the user's screen or setting their terminal title.
+            #
+            # v0.6.5 moved the message from raw_llm_output to
+            # fallback_detail (see EnhanceResult docstring). Producer
+            # and this consumer change together; no in-flight
+            # EnhanceResult shape carries the old field for this path.
             warn("Enhance runner failed; running with original prompts. "
-                 f"Reason: {results[0].raw_llm_output!r}")
+                 f"Reason: {results[0].fallback_detail!r}")
         else:
             warn(f"No prompts enhanced. Reasons: {sorted(reasons)}")
     else:
@@ -527,43 +533,54 @@ def apply_enhance_results_to_iterations(
 
 
 def apply_enhance_results_to_per_input(
-    per_input_iters: list[tuple[Path, Path, int, int, list[Iteration]]],
+    per_input_iters: list[PerInputBatch],
     enhance_results: list[EnhanceResult],
-) -> list[tuple[Path, Path, int, int, list[Iteration]]]:
+) -> list[PerInputBatch]:
     """v0.6.4 wrapper around :func:`apply_enhance_results_to_iterations`
-    for ``cmd_batch``'s per-input-tuple shape — eliminates the sliding-
-    cursor block that used to live inline in batch.py (v0.5 architect
-    IMP #2).
+    for ``cmd_batch``'s per-input shape — eliminates the sliding-cursor
+    block that used to live inline in batch.py (v0.5 architect IMP #2).
 
-    ``per_input_iters`` is the cmd_batch shape:
-    ``[(input_path, mflux_input, width, height, [iter1, iter2, ...]),
-       ...]`` — one tuple per input photo, each carrying its M-style
-    iteration list. ``enhance_results`` is the FLAT list returned by
-    :func:`enhance_iteration_prompts` aligned to ``[it for _, _, _, _,
-    iters in per_input_iters for it in iters]``.
+    ``per_input_iters`` is the cmd_batch shape: one
+    :class:`~imgen.runs.PerInputBatch` per discovered input photo,
+    each carrying its M-style iteration tuple. ``enhance_results`` is
+    the FLAT list returned by :func:`enhance_iteration_prompts`
+    aligned to ``[it for pib in per_input_iters for it in pib.iters]``.
 
-    Returns the same shape with enhanced prompts spliced in. Per-input
-    group lengths preserved (the helper doesn't assume uniform M; any
-    future per-style skip logic that produces ragged groups stays
-    intact).
+    Returns a new list of :class:`PerInputBatch` instances with
+    enhanced prompts spliced in. Per-input group lengths preserved
+    (the helper doesn't assume uniform M; any future per-style skip
+    logic that produces ragged groups stays intact).
+
+    v0.6.5 (architect IMP-3): the per-input shape was a bare
+    ``tuple[Path, Path, int, int, list[Iteration]]`` through v0.6.4,
+    promoted here to :class:`PerInputBatch` for named-field access at
+    callers.
 
     Pure: no I/O. Asserts the flat-shape count matches sum of group
     lengths — misalignment would silently miswire prompts.
     """
-    expected_flat = sum(len(iters) for _, _, _, _, iters in per_input_iters)
+    expected_flat = sum(len(pib.iters) for pib in per_input_iters)
     if expected_flat != len(enhance_results):
         raise ValueError(
             f"enhance-result count mismatch: per-input groups sum to "
             f"{expected_flat} iterations vs {len(enhance_results)} results"
         )
-    out: list[tuple[Path, Path, int, int, list[Iteration]]] = []
+    out: list[PerInputBatch] = []
     cursor = 0
-    for input_path, mflux_input, width, height, iters in per_input_iters:
-        group_len = len(iters)
+    for pib in per_input_iters:
+        group_len = len(pib.iters)
         group_results = enhance_results[cursor:cursor + group_len]
         cursor += group_len
-        new_iters = apply_enhance_results_to_iterations(iters, group_results)
-        out.append((input_path, mflux_input, width, height, new_iters))
+        new_iters = apply_enhance_results_to_iterations(
+            list(pib.iters), group_results,
+        )
+        out.append(PerInputBatch(
+            input_path=pib.input_path,
+            mflux_input=pib.mflux_input,
+            width=pib.width,
+            height=pib.height,
+            iters=tuple(new_iters),
+        ))
     return out
 
 
@@ -998,7 +1015,15 @@ def _resolve_iteration_prompt(
     param-only-style-without-custom-prompt case (caller passes through
     to mflux; mflux requires a prompt so an empty value will fail
     cleanly there).
+
+    v0.6.5 (architect FL-3): ``args.scope`` is read via ``getattr`` —
+    ``--scope`` is photo-input-specific (i2i-only) and the future
+    ``imgen draw`` subparser will omit it. Pre-emptive defence so this
+    helper drops cleanly into the t2i path without a ``--scope=None``
+    workaround on the draw parser.
     """
+    scope = getattr(args, "scope", None)
+    scene_suffix = preset.get("scene_suffix")
     preset_prompt = preset.get("prompt")
     if effective_custom_prompt and preset_prompt and style_was_explicit:
         # v0.3.5 augmentation: explicit full-style + custom-prompt → the
@@ -1013,10 +1038,8 @@ def _resolve_iteration_prompt(
         # accidentally touch user wording (e.g. their literal "this
         # person" stays "this person", not rewritten).
         base = preset_prompt
-        if args.scope:
-            base = apply_scope(
-                base, args.scope, scene_suffix=preset.get("scene_suffix"),
-            )
+        if scope:
+            base = apply_scope(base, scope, scene_suffix=scene_suffix)
         return base + ", " + effective_custom_prompt
     if effective_custom_prompt:
         # Custom-only path: either a param-only style (no `prompt`
@@ -1026,10 +1049,8 @@ def _resolve_iteration_prompt(
         return effective_custom_prompt
     # No custom-prompt → preset prompt is the prompt.
     prompt = preset_prompt
-    if args.scope:
-        prompt = apply_scope(
-            prompt, args.scope, scene_suffix=preset.get("scene_suffix"),
-        )
+    if scope:
+        prompt = apply_scope(prompt, scope, scene_suffix=scene_suffix)
     return prompt
 
 
