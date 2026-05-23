@@ -22,7 +22,14 @@ def test_load_user_style_file_minimal_prompt_only(tmp_path):
     p = tmp_path / "noir.toml"
     p.write_text('prompt = "film noir style, black and white"')
     preset = load_user_style_file(p)
-    assert preset == {"prompt": "film noir style, black and white"}
+    # v0.6.2: load_user_style_file now returns Style; field-by-field
+    # checks instead of dict equality.
+    assert preset.prompt == "film noir style, black and white"
+    assert preset.negative == ""
+    assert preset.guidance is None
+    assert preset.strength is None
+    assert preset.scene_suffix is None
+    assert preset.loras == ()
 
 
 def test_load_user_style_file_all_fields(tmp_path):
@@ -34,12 +41,11 @@ def test_load_user_style_file_all_fields(tmp_path):
         "strength = 0.7\n"
     )
     preset = load_user_style_file(p)
-    assert preset == {
-        "prompt": "cyberpunk neon city",
-        "negative": "rural, daylight",
-        "guidance": 4.5,
-        "strength": 0.7,
-    }
+    assert preset.prompt == "cyberpunk neon city"
+    assert preset.negative == "rural, daylight"
+    assert preset.guidance == 4.5
+    assert preset.strength == 0.7
+    assert preset.loras == ()
 
 
 def test_load_user_style_file_no_required_fields(tmp_path):
@@ -50,7 +56,9 @@ def test_load_user_style_file_no_required_fields(tmp_path):
     p = tmp_path / "loose.toml"
     p.write_text("guidance = 4.0\n")
     preset = load_user_style_file(p)
-    assert preset == {"guidance": 4.0}
+    assert preset.guidance == 4.0
+    assert preset.prompt is None
+    assert preset.negative == ""
 
 
 def test_load_user_style_file_rejects_invalid_toml(tmp_path):

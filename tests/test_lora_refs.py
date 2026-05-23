@@ -213,16 +213,22 @@ class TestLoraInUserStyleTOML:
         assert preset["loras"][0].weight == 0.8
         assert preset["loras"][1].weight == 0.4
 
-    def test_toml_without_loras_yields_no_field(self, tmp_path):
+    def test_toml_without_loras_yields_empty_field(self, tmp_path):
         """Backward compat: a style TOML that doesn't mention loras
-        works exactly as before — no ``loras`` key on the preset."""
+        defaults the field to an empty tuple — identical effective
+        behaviour to a v0.5 preset (no LoRAs applied).
+
+        v0.6.2: Style dataclass always exposes a ``loras`` attribute
+        (default ``()``); the prior "absent key" test was an artefact
+        of the dict shape.
+        """
         toml = tmp_path / "noir.toml"
         toml.write_text(
             'prompt = "Film noir style"\n'
             'guidance = 4.5\n'
         )
         preset = load_user_style_file(toml)
-        assert "loras" not in preset
+        assert preset.loras == ()
 
     def test_toml_with_invalid_loras_raises(self, tmp_path):
         toml = tmp_path / "bad.toml"

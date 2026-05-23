@@ -221,6 +221,10 @@ def cmd_batch(args) -> int:
         # so the run loop can wrap each in a log section + assign per-
         # input width/height (mixed-aspect dirs would otherwise inherit
         # the first input's dims).
+        # v0.6.x backlog python IMP-3: shared dedup set so an
+        # incompatible CLI --lora (or style-declared LoRA) warns exactly
+        # ONCE for the entire N×M batch instead of once per input.
+        warned_incompat_loras: set[tuple[str, str]] = set()
         per_input_iters: list[tuple[Path, Path, int, int, list[Iteration]]] = []
         for input_path in input_paths:
             # sips-failure policy: a CalledProcessError or TimeoutExpired
@@ -250,6 +254,10 @@ def cmd_batch(args) -> int:
                 explicit_output=None,
                 run_dir=run_dir,
                 seed=seed,
+                # v0.6.x backlog python IMP-3: share the dedup set across
+                # the N inputs so an incompatible CLI --lora warns ONCE
+                # for the whole batch instead of once per input.
+                warned_incompat_loras=warned_incompat_loras,
             )
             per_input_iters.append(
                 (input_path, mflux_input, width, height, iters)

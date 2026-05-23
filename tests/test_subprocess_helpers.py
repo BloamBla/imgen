@@ -317,6 +317,57 @@ def test_format_cmd_quotes_positional_tokens_with_spaces():
     assert "'/path with spaces/mflux'" in out
 
 
+# ── v0.6.2 security NIT-3: $HOME → ~ in rendered cmd + stderr ───────────
+
+
+def test_format_cmd_rewrites_home_to_tilde(monkeypatch):
+    """A local-path argv token containing $HOME renders as ~ in the
+    pretty-printed cmd. Defence-in-depth so dry-run output + confirm-
+    gate transcripts don't disclose the user's home layout if shared.
+    """
+    monkeypatch.setenv("HOME", "/Users/imgen-test")
+    out = format_cmd([
+        "mflux", "--lora-paths",
+        "/Users/imgen-test/loras/style.safetensors",
+        "--steps", "20",
+    ])
+    assert "~/loras/style.safetensors" in out
+    assert "/Users/imgen-test" not in out
+
+
+def test_format_cmd_does_not_rewrite_when_home_unset(monkeypatch):
+    """An empty $HOME (rare but valid) leaves the cmd unchanged — better
+    no rewrite than rewriting random paths."""
+    monkeypatch.setenv("HOME", "")
+    out = format_cmd([
+        "mflux", "--lora-paths", "/some/abs/path/foo.safetensors",
+    ])
+    assert "/some/abs/path/foo.safetensors" in out
+
+
+def test_format_cmd_does_not_rewrite_when_home_is_root(monkeypatch):
+    """``HOME=/`` would rewrite every absolute path to ``~`` — bypass
+    the rewrite entirely in that edge case."""
+    monkeypatch.setenv("HOME", "/")
+    out = format_cmd(["mflux", "--lora-paths", "/abs/foo.safetensors"])
+    assert "/abs/foo.safetensors" in out
+
+
+def test_stderr_redaction_rewrites_home_to_tilde(monkeypatch, capfdbinary):
+    """When mflux happens to log a local-path lora.ref to stderr,
+    ``$HOME`` is rewritten to ``~`` in both the terminal output and the
+    optional log_file. HF token redaction stays in effect."""
+    monkeypatch.setenv("HOME", "/Users/imgen-test")
+    leak_line = b"loading lora from /Users/imgen-test/loras/style.safetensors\n"
+    run_with_stderr_redaction(
+        ["python3", "-c", f"import sys; sys.stderr.buffer.write({leak_line!r}); sys.stderr.buffer.flush()"],
+        env={"HOME": "/Users/imgen-test"},
+    )
+    err = capfdbinary.readouterr().err
+    assert b"~/loras/style.safetensors" in err
+    assert b"/Users/imgen-test" not in err
+
+
 # ── v0.4: build_mflux_env(backend_secret=...) ───────────────────────────
 
 

@@ -549,30 +549,20 @@ def print_backends() -> int:
     return 0
 
 
-def _lora_hf_cache_dir(repo: str, hf_cache: Path) -> Path:
-    """Return the ``models--<author>--<name>`` directory for an HF repo.
-
-    Mirrors the same convention as ``doctor._hf_cache_dir_for``. Local
-    absolute paths (LoraRef.ref can also be one) bypass the HF cache
-    mapping — the ``ref`` IS the on-disk location.
-
-    Security note (v0.6 security-reviewer IMP-2): the only consumer
-    today is ``print_loras`` which calls ``cache_dir.is_dir()`` — a
-    stat-only probe with no read or write. Even if ``repo`` is
-    user-attacker-controlled and points at ``//host/share`` or
-    ``/Volumes/external``, the worst outcome is "this path is reported
-    as cached/not-cached in --list-loras" — information disclosure
-    bounded to "does that filesystem path exist", which same-uid
-    attackers can already determine via plain ``stat()``. Do NOT add
-    file-read consumers without first anchoring under ``HF_CACHE``.
-
-    The ``not repo`` branch is dead code reachable only by a hand-
-    constructed LoraRef bypassing the user-style + parser schemas
-    (both reject empty refs). Kept for symmetry with doctor's helper.
-    """
-    if not repo or repo.startswith("/"):
-        return Path(repo) if repo else hf_cache
-    return hf_cache / ("models--" + repo.replace("/", "--"))
+# v0.6.2 (architect I-3): canonical helper now lives in
+# ``imgen.hf_cache``. The private alias preserves the test surface that
+# imported ``parser._lora_hf_cache_dir`` directly.
+#
+# Security note (v0.6 security-reviewer IMP-2): the only consumer today
+# is ``print_loras`` which calls ``cache_dir.is_dir()`` — a stat-only
+# probe with no read or write. Even if ``repo`` is user-attacker-
+# controlled and points at ``//host/share`` or ``/Volumes/external``,
+# the worst outcome is "this path is reported as cached/not-cached in
+# --list-loras" — information disclosure bounded to "does that
+# filesystem path exist", which same-uid attackers can already
+# determine via plain ``stat()``. Do NOT add file-read consumers
+# without first anchoring under ``HF_CACHE``.
+from .hf_cache import hf_cache_dir_for as _lora_hf_cache_dir
 
 
 def print_loras(hf_cache: Path | None = None) -> int:
@@ -606,8 +596,16 @@ def print_loras(hf_cache: Path | None = None) -> int:
         print(f"  {C.BOLD}Styles shipping LoRAs:{C.END}")
         for style_name, loras in with_loras:
             for lora in loras:
-                cache_dir = _lora_hf_cache_dir(lora.ref, hf_cache)
-                cached = "cached" if cache_dir.is_dir() else "not downloaded"
+                # Local absolute paths bypass the HF cache layout — the
+                # `ref` IS the on-disk location, and it's a .safetensors
+                # FILE not a directory. Probing `is_dir()` on a file
+                # would falsely report "not downloaded" for an existing
+                # local LoRA. (v0.6.x backlog python NIT-1.)
+                if lora.ref.startswith("/"):
+                    cached = "local" if Path(lora.ref).is_file() else "missing"
+                else:
+                    cache_dir = _lora_hf_cache_dir(lora.ref, hf_cache)
+                    cached = "cached" if cache_dir.is_dir() else "not downloaded"
                 trigger = f' trigger="{lora.trigger}"' if lora.trigger else ""
                 compat = ",".join(lora.compatible_with)
                 print(f"    {C.BOLD}{style_name:14}{C.END} "

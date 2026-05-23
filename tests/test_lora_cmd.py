@@ -196,18 +196,20 @@ class TestBuildMfluxCmdWithLora:
         out = capsys.readouterr().out + capsys.readouterr().err
         # Note: capsys was already consumed; rerun for accuracy.
 
-    def test_incompatible_warn_message_includes_ref_and_groups(self, capsys):
+    def test_incompatible_lora_silently_filtered_from_argv(self):
+        """v0.6.2 (python IMP-3): ``build_mflux_cmd`` itself is now pure
+        on incompatible LoRAs — no warn from here. The warn moved up to
+        :func:`build_iterations` so N×M batches dedup across iterations
+        instead of spamming the same message per-iteration. This test
+        verifies the argv side-effect (compat filtering) without the
+        warn side-effect.
+        """
         loras = (
             LoraRef(ref="qwen-only/x", weight=0.5, compatible_with=("qwen",)),
         )
-        _cmd(loras=loras)
-        captured = capsys.readouterr()
-        message = captured.out + captured.err
-        assert "qwen-only/x" in message
-        # Compat groups listed for the user's diagnostic.
-        assert "qwen" in message
-        # Backend's group named for the mismatch context.
-        assert "flux-1" in message
+        cmd = _cmd(loras=loras)
+        assert "--lora-paths" not in cmd
+        assert "qwen-only/x" not in cmd
 
     def test_mixed_loras_keep_only_compatible(self):
         """Three LoRAs: two flux-1 (compat) + one qwen (incompat).
@@ -225,9 +227,14 @@ class TestBuildMfluxCmdWithLora:
         assert cmd[i_scales + 1:i_scales + 3] == ["0.8", "0.4"]
         assert "b/qwen" not in cmd
 
-    def test_qwen_backend_with_flux_loras_emits_no_lora_argv(self, capsys):
+    def test_qwen_backend_with_flux_loras_emits_no_lora_argv(self):
         """End-to-end Qwen-backend run with a style declaring FLUX
-        LoRAs → all skipped → no --lora-paths in argv."""
+        LoRAs → all skipped → no --lora-paths in argv.
+
+        v0.6.2: warn moved out of build_mflux_cmd to build_iterations
+        (covered by tests in test_lora_integration.py); this test now
+        only asserts the argv side-effect.
+        """
         backend = _flux_backend(
             image_flag="--image-paths",       # qwen-shape
             supports_strength=False,
@@ -240,9 +247,7 @@ class TestBuildMfluxCmdWithLora:
         )
         cmd = _cmd(backend=backend, loras=loras)
         assert "--lora-paths" not in cmd
-        # User sees the diagnostic.
-        captured = capsys.readouterr()
-        assert "a/flux1" in captured.out + captured.err
+        assert "a/flux1" not in cmd
 
     def test_user_backend_without_lora_support_skips_all(self, capsys):
         """A user backend that hasn't declared lora_compat_group →

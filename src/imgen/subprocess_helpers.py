@@ -127,6 +127,39 @@ def build_enhance_env() -> dict[str, str]:
 _TOKEN_LEAK_RE = re.compile(rb"hf_[A-Za-z0-9_\-]{36,}")
 
 
+def _home_path_replacer() -> tuple[bytes, bytes] | None:
+    """Return ``(home_bytes, tilde_bytes)`` for $HOME → ~ rewriting, or
+    None if $HOME is unset / empty / not absolute.
+
+    Captured at module-import time would freeze $HOME — we re-read it
+    per redaction call so tests can monkeypatch ``HOME`` cleanly. Returns
+    bytes pre-encoded so the inner loop can use plain ``bytes.replace``
+    on UTF-8 stderr without per-call utf-8 encoding.
+
+    Skipped when ``$HOME = /`` (would rewrite every absolute path to
+    ``~``) or empty (nothing to rewrite). (v0.6.x backlog security
+    NIT-3 defence-in-depth.)
+    """
+    home = os.environ.get("HOME", "")
+    if not home or home == "/":
+        return None
+    return home.encode("utf-8"), b"~"
+
+
+def _redact_chunk(buf: bytes, home_pair: tuple[bytes, bytes] | None) -> bytes:
+    """Apply HF-token + optional $HOME → ~ redaction to one stderr chunk.
+
+    Order matters: token redaction first (so a token whose surrounding
+    bytes happen to include $HOME doesn't accidentally lose its prefix).
+    Both passes are byte-level — no decode/encode roundtrip.
+    """
+    out = _TOKEN_LEAK_RE.sub(b"hf_***REDACTED***", buf)
+    if home_pair is not None:
+        home_bytes, tilde_bytes = home_pair
+        out = out.replace(home_bytes, tilde_bytes)
+    return out
+
+
 def run_with_stderr_redaction(
     cmd: list[str],
     env: dict,
@@ -151,6 +184,13 @@ def run_with_stderr_redaction(
         cmd, env=env, stderr=subprocess.PIPE, bufsize=0,
     )
     buffer = b""
+    # v0.6.x backlog security NIT-3 defence-in-depth: also rewrite
+    # ``$HOME`` → ``~`` in the streamed stderr so any local-path lora.ref
+    # (or ``--prompt-file PATH``, or any other path mflux happens to log)
+    # doesn't disclose ``$HOME`` to anyone the user later shares the
+    # batch log with. Token redaction stays the primary defence; this is
+    # a cheap secondary scrub on the same byte path.
+    home_pair = _home_path_replacer()
     try:
         # Explicit guard rather than `assert`: asserts are stripped under
         # `python -O` / PYTHONOPTIMIZE=1, and a None.read(...) call eight
@@ -166,7 +206,7 @@ def run_with_stderr_redaction(
             chunk = proc.stderr.read(256)
             if not chunk:
                 if buffer:
-                    redacted = _TOKEN_LEAK_RE.sub(b"hf_***REDACTED***", buffer)
+                    redacted = _redact_chunk(buffer, home_pair)
                     sys.stderr.buffer.write(redacted)
                     sys.stderr.buffer.flush()
                     if log_file is not None:
@@ -177,7 +217,7 @@ def run_with_stderr_redaction(
             last = max(buffer.rfind(b"\n"), buffer.rfind(b"\r"))
             if last >= 0:
                 to_flush, buffer = buffer[:last + 1], buffer[last + 1:]
-                redacted = _TOKEN_LEAK_RE.sub(b"hf_***REDACTED***", to_flush)
+                redacted = _redact_chunk(to_flush, home_pair)
                 sys.stderr.buffer.write(redacted)
                 sys.stderr.buffer.flush()
                 if log_file is not None:
@@ -208,6 +248,15 @@ def format_cmd(cmd: list[str]) -> str:
     will see, not necessarily what the user originally typed (e.g.
     --custom-prompt - from stdin is shown as the resolved text).
     (python #12 from v0.1.x review.)
+
+    v0.6.2: ``$HOME`` is rewritten to ``~`` in the rendered string —
+    matches the same defence-in-depth scrub applied to mflux stderr.
+    A local-path ``--lora /Users/me/loras/foo.safetensors`` renders as
+    ``~/loras/foo.safetensors`` so dry-run output + confirm-gate
+    transcripts don't disclose the user's home layout when shared.
+    Output remains a valid shell command — most shells expand ``~`` to
+    ``$HOME`` so paste-and-run still works. (v0.6.x backlog security
+    NIT-3.)
     """
     parts = []
     i = 0
@@ -221,4 +270,8 @@ def format_cmd(cmd: list[str]) -> str:
         else:
             parts.append(shlex.quote(token))
             i += 1
-    return " \\\n  ".join(parts)
+    rendered = " \\\n  ".join(parts)
+    home = os.environ.get("HOME", "")
+    if home and home != "/" and home in rendered:
+        rendered = rendered.replace(home, "~")
+    return rendered

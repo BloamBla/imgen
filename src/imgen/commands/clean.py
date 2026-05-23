@@ -77,7 +77,8 @@ def cmd_clean(args) -> int:
                     size = sum(p.lstat().st_size for p in m.rglob("*")
                                if p.is_file() and not p.is_symlink())
                 total += size
-                name = m.name.replace("models--", "").replace("--", "/")
+                from ..hf_cache import repo_from_cache_dir
+                name = repo_from_cache_dir(m.name)
                 print(f"   • {name}: {size / (1024**3):.1f} GB")
             except OSError:
                 pass

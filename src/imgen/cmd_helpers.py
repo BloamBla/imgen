@@ -801,6 +801,7 @@ def build_iterations(
     explicit_output: Path | None,
     run_dir: Path | None,
     seed: int,
+    warned_incompat_loras: set[tuple[str, str]] | None = None,
 ) -> list[Iteration]:
     """Resolve per-style params + build the mflux command for each style.
 
@@ -828,6 +829,16 @@ def build_iterations(
     Returns ``list[Iteration]`` (frozen) — caller may not mutate entries.
     """
     iterations: list[Iteration] = []
+    # v0.6.x backlog python IMP-3: collect incompatible (backend_group,
+    # lora.ref) pairs across the iteration loop, then emit ONE warn per
+    # unique pair at end of function. ``incompat_details`` carries the
+    # full compatible_with tuple for the first occurrence so the warn
+    # message can still surface where the LoRA WOULD have fitted.
+    # Optionally accepts a caller-provided ``warned_incompat_loras`` set
+    # to dedup across multiple build_iterations calls (cmd_batch shares
+    # one across N inputs → 1 warn per unique LoRA total instead of N).
+    incompat_keys: set[tuple[str, str]] = set()
+    incompat_details: dict[tuple[str, str], tuple[str, ...]] = {}
     # `args.style` is None when the parser fell back to merged_defaults
     # for the default style (no explicit --style passed). Used below to
     # gate augmentation: if user didn't explicitly pick a style, their
@@ -919,16 +930,31 @@ def build_iterations(
         # any) + ``--no-lora`` opt-out. Then prepend any missing
         # trigger words for COMPATIBLE LoRAs (compat filter avoids
         # cluttering the prompt with triggers for LoRAs that won't
-        # actually fire on this backend — build_mflux_cmd warns on
-        # those separately).
+        # actually fire on this backend — incompatible LoRAs are
+        # collected for a single deduped warn after the iteration loop).
         cli_lora_list = getattr(args, "lora", None)
         no_lora = bool(getattr(args, "no_lora", False))
         effective_loras = resolve_effective_loras(
             preset, cli_lora_list, no_lora,
         )
-        compatible_loras, _incompat = filter_compatible_loras(
+        compatible_loras, iter_incompat = filter_compatible_loras(
             effective_loras, be,
         )
+        # v0.6.x backlog python IMP-3: collect (backend_group, ref) pairs
+        # so we can warn once per unique pair after the loop. N×M batches
+        # would otherwise emit M warns per input × N inputs = N×M total
+        # for the same incompat LoRA. The caller can also pass a shared
+        # `warned_incompat_loras` set to dedup across build_iterations
+        # calls (cmd_batch uses this for N×M dedup → 1 warn total).
+        if iter_incompat:
+            incompat_keys.update(
+                (be.lora_compat_group, lora.ref) for lora in iter_incompat
+            )
+            for lora in iter_incompat:
+                incompat_details.setdefault(
+                    (be.lora_compat_group, lora.ref),
+                    tuple(sorted(lora.compatible_with)),
+                )
         prompt = prepend_trigger_words(prompt, compatible_loras)
 
         cmd = build_mflux_cmd(
@@ -966,6 +992,27 @@ def build_iterations(
             # records for replay determinism.
             loras=compatible_loras,
         ))
+
+    # v0.6.x backlog python IMP-3: emit one warn per (backend_group, ref)
+    # pair we haven't already warned about. The caller-provided set (if
+    # any) accumulates across multiple build_iterations calls so cmd_batch
+    # doesn't re-warn for every input in an N×M run.
+    if incompat_keys:
+        from .colors import warn
+        already_warned = warned_incompat_loras if warned_incompat_loras is not None else set()
+        new_keys = incompat_keys - already_warned
+        # Stable order: sort by (group, ref) so test assertions and user
+        # output don't depend on set iteration order.
+        for key in sorted(new_keys):
+            group, ref = key
+            compat = incompat_details.get(key, ())
+            warn(
+                f"LoRA {ref!r} (compat: {list(compat)}) is not compatible "
+                f"with backend {group!r} — skipped"
+            )
+        already_warned.update(new_keys)
+        # If the caller didn't provide a set, the `already_warned` we
+        # built locally is discarded — fine, single-call dedup achieved.
 
     return iterations
 

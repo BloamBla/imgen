@@ -31,6 +31,7 @@ __all__ = [
     "BUILTIN_STYLES",
     "LoraRef",
     "STYLES",
+    "Style",
     "USER_STYLE_MAX_BYTES",
     "StyleNotFound",
     "UserStyleError",
@@ -43,6 +44,65 @@ __all__ = [
     "parse_style_list",
     "reset_styles_cache",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class Style:
+    """v0.6.2 (architect I-2): promotion of the v0.1.x ``dict[str, Any]``
+    preset shape into a frozen+slots dataclass. Six fields cover the
+    full surface of every built-in style as of v0.6.1 plus the v0.6
+    LoRA stack:
+
+      * ``prompt`` — the base prompt sent to mflux (with optional scope
+        substitution + LoRA trigger prepend + v0.5 LLM enhancement).
+        Can be ``None`` for param-only user styles that lean on
+        ``--custom-prompt`` to provide the prompt text.
+      * ``negative`` — negative prompt; empty string when unused.
+      * ``guidance`` — Kontext / Qwen-Edit CFG guidance scale.
+        ``None`` falls back to ``merged_defaults["guidance"]``.
+      * ``strength`` — image strength (img2img-style how-much-of-the-
+        source-to-keep dial). ``None`` falls back to merged_defaults.
+      * ``scene_suffix`` — v0.5 per-style background directive used
+        when ``--scope scene``; ``None`` falls back to
+        ``SCOPE_SCENE_SUFFIX_GENERIC`` from ``images.py``.
+      * ``loras`` — v0.6 LoRA stack (frozen tuple). Empty tuple = no
+        LoRA = identical to v0.5 behaviour. ``parse_lora_refs``
+        validates user-supplied entries before they land here.
+
+    Dict-compat API kept for v0.6.2 migration: ``preset.get("prompt")``
+    and ``preset["prompt"]`` keep working alongside attribute access
+    (``preset.prompt``). The hybrid surface lets legacy test code and
+    legacy ``cmd_helpers.build_iterations`` call sites carry on
+    unchanged while new code prefers attribute access. Future cleanup
+    can shed the dict API once all consumers move to attributes.
+
+    Frozen + slots matches the project's other config dataclasses
+    (Iteration, BatchContext, EnhanceResult, LoraRef, Backend) — cheap
+    in memory, hash/equal by value, immutable so callers can store
+    them in caches without fear of mutation.
+    """
+    prompt: str | None = None
+    negative: str = ""
+    guidance: float | None = None
+    strength: float | None = None
+    scene_suffix: str | None = None
+    loras: tuple = ()  # tuple[LoraRef, ...] — forward ref dodges class-body ref
+
+    # Dict-compat read surface. Read-only by virtue of frozen=True; the
+    # underlying fields cannot be set, so __setitem__ would always raise.
+    def __getitem__(self, key: str):
+        try:
+            return getattr(self, key)
+        except AttributeError as e:
+            raise KeyError(key) from e
+
+    def __contains__(self, key: object) -> bool:
+        if not isinstance(key, str):
+            return False
+        return hasattr(self, key) and not key.startswith("_")
+
+    def get(self, key: str, default=None):
+        return getattr(self, key, default)
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,88 +211,80 @@ USER_STYLE_MAX_BYTES = 256 * 1024
 # Negative prompts stay focused on artifact rejection (deformed, blurry,
 # watermark) — they were not the diagnosed issue and don't need surgery.
 
-BUILTIN_STYLES: dict[str, dict] = {
-    "pixar": {
-        # Pixar restructures facial geometry (rounded features, big
-        # eyes are core to the style). "Exact facial features" would
-        # contradict the style descriptors below; "facial identity"
-        # tells the model to keep WHO it is while letting the style
-        # reshape HOW. (v0.3.4 review HIGH-1.)
-        "prompt": (
+BUILTIN_STYLES: dict[str, "Style"] = {
+    # Pixar restructures facial geometry (rounded features, big eyes are
+    # core to the style). "Exact facial features" would contradict the
+    # style descriptors below; "facial identity" tells the model to keep
+    # WHO it is while letting the style reshape HOW. (v0.3.4 review HIGH-1.)
+    # v0.6.0 shipped a Canopus-Pixar-3D-Flux-LoRA built-in; v0.6.1 reverted
+    # to text-only after A/B revealed it's FLUX.1-dev base (filename:
+    # Canopus-Pixar-3D-FluxDev-LoRA) and crashes mflux Kontext at attention
+    # shape mismatch — see [[project-v06x-backlog]].
+    "pixar": Style(
+        prompt=(
             "Restyle this person as a polished Pixar 3D animated "
             "character, while preserving the facial identity, "
             "hairstyle, body proportions, and pose, with soft volumetric "
             "lighting, smooth rounded features, expressive large eyes, "
             "stylized cartoon proportions, and high-quality CGI rendering"
         ),
-        "negative": (
+        negative=(
             "deformed, blurry, photorealistic skin, flat lighting, missing eye, "
             "extra limbs, distorted face, low quality, artifacts, watermark, text"
         ),
-        "guidance": 3.5,
-        "strength": 0.55,
-        # v0.5: scope=scene now PRESERVES identity-anchor (it stays in
-        # the prompt above) and only ADDS a background-restyling
-        # directive tuned for this style's visual school. Pixar
-        # backgrounds are painterly 3D environments with cinematic
-        # depth-of-field and soft volumetric lighting.
-        "scene_suffix": (
+        guidance=3.5,
+        strength=0.55,
+        # v0.5: scope=scene PRESERVES identity-anchor (it stays in the
+        # prompt above) and only ADDS a background-restyling directive
+        # tuned for this style's visual school. Pixar backgrounds are
+        # painterly 3D environments with cinematic depth-of-field.
+        scene_suffix=(
             ", and transform the background and surroundings into a "
             "Pixar-style 3D-animated environment with soft volumetric "
             "lighting, painterly textures, and cinematic depth-of-field"
         ),
-        # v0.6.0 shipped a Canopus-Pixar-3D-Flux-LoRA built-in mapping;
-        # v0.6.1 reverted it to text-only after A/B revealed the LoRA
-        # is FLUX.1-dev base (filename: Canopus-Pixar-3D-FluxDev-LoRA)
-        # and crashes mflux Kontext at attention shape mismatch — see
-        # [[project-v06x-backlog]] for the lesson. Users can still
-        # attach Kontext-compatible LoRAs ad-hoc via --lora REF.
-    },
+    ),
 
-    "anime": {
-        # Anime enlarges eyes + reshapes face geometry — see pixar
-        # comment. Same "facial identity" anchor instead of "exact
-        # facial features". (v0.3.4 review HIGH-1.)
-        "prompt": (
+    # Anime enlarges eyes + reshapes face geometry. Same "facial identity"
+    # anchor instead of "exact facial features" (v0.3.4 review HIGH-1).
+    # v0.6.0 shipped a strangerzonehf/Flux-Animeo-v1-LoRA built-in;
+    # v0.6.1 reverted to text-only after A/B revealed the LoRA is
+    # FLUX.1-dev base and crashes mflux Kontext at attention shape
+    # mismatch (matmul (1,4992,16) vs (64,3072) — Kontext's modified
+    # attention doesn't fit the LoRA's rank-16 tensors). All 912 LoRA
+    # keys "matched" at load time, but inference exploded on first
+    # denoise step.
+    "anime": Style(
+        prompt=(
             "Restyle this person as a Japanese anime character, while "
             "preserving the facial identity, hairstyle, body "
             "proportions, and pose, with cel-shaded illustration, "
             "expressive large eyes, detailed line art, vibrant colors, "
             "clean shading, and manga aesthetic"
         ),
-        "negative": (
+        negative=(
             "realistic photo, 3d render, deformed face, bad anatomy, extra "
             "limbs, blurry, low quality, watermark, text"
         ),
-        "guidance": 4.0,
-        "strength": 0.60,
-        # Anime backgrounds (背景画) are hand-painted detailed scenery
-        # — vivid skies, soft cloud shapes, lush illustrated nature.
+        guidance=4.0,
+        strength=0.60,
+        # Anime backgrounds (背景画) are hand-painted detailed scenery —
+        # vivid skies, soft cloud shapes, lush illustrated nature.
         # Cel-shaded but rich in painterly detail, not flat.
-        "scene_suffix": (
+        scene_suffix=(
             ", and transform the background and surroundings into a "
             "hand-painted anime cel-shaded environment with vibrant "
             "skies, soft cloud shapes, and detailed illustrated scenery"
         ),
-        # v0.6.0 shipped a strangerzonehf/Flux-Animeo-v1-LoRA built-in
-        # mapping; v0.6.1 reverted it to text-only after A/B revealed
-        # the LoRA is FLUX.1-dev base and crashes mflux Kontext at
-        # attention shape mismatch (matmul shape (1,4992,16) vs
-        # (64,3072) — Kontext's modified attention layer doesn't fit
-        # the LoRA's rank-16 tensors). All 912 LoRA keys "matched" at
-        # load time, but inference exploded on first denoise step.
-        # See [[project-v06x-backlog]] for the lesson. Users can still
-        # attach a Kontext-compatible anime LoRA ad-hoc via --lora REF.
-    },
+    ),
 
-    "simpsons": {
-        # Simpsons style fundamentally restructures facial features
-        # (yellow skin + large round white eyes are core to the style),
-        # so "exact facial features" would create contradictory
-        # instructions. Use "recognizable expression" as the identity
-        # anchor instead — that's the most stylistically-flexible token
-        # the model can hold onto while still rebuilding the face.
-        "prompt": (
+    # Simpsons style fundamentally restructures facial features (yellow
+    # skin + large round white eyes), so "exact facial features" would
+    # create contradictory instructions. Use "recognizable expression"
+    # as the identity anchor — most stylistically-flexible token the
+    # model can hold onto while still rebuilding the face.
+    "simpsons": Style(
+        prompt=(
             "Restyle this person as a Matt Groening Simpsons character, "
             "while preserving the recognizable expression, hairstyle, "
             "body proportions, and pose, with bright yellow skin, large "
@@ -240,29 +292,34 @@ BUILTIN_STYLES: dict[str, dict] = {
             "outlines, flat saturated colors, characteristic overbite, "
             "simple cartoon proportions, and 1990s Springfield aesthetic"
         ),
-        "negative": (
+        negative=(
             "realistic, 3d render, photo, soft shading, gradients, complex "
             "details, deformed, blurry, watermark, text"
         ),
-        "guidance": 4.5,
-        "strength": 0.65,
+        guidance=4.5,
+        strength=0.65,
         # Simpsons backgrounds are deliberately flat — bright saturated
         # color planes, bold outlines, simplified geometric props. NOT
         # painterly. Echoes the style's flat-color aesthetic so the
         # background doesn't compete with the foreground subject.
-        "scene_suffix": (
+        scene_suffix=(
             ", and transform the background and surroundings into a "
             "Simpsons-style flat-color cartoon scene with bold black "
             "outlines, simplified geometric shapes, and saturated "
             "1990s Springfield aesthetic"
         ),
-    },
+    ),
 
-    "ghibli": {
-        # Ghibli simplifies features (expressive but simple) — would
-        # conflict with "exact facial features". Same "facial identity"
-        # anchor as pixar/anime. (v0.3.4 review HIGH-1.)
-        "prompt": (
+    # Ghibli simplifies features (expressive but simple) — would conflict
+    # with "exact facial features". Same "facial identity" anchor as
+    # pixar/anime (v0.3.4 review HIGH-1).
+    # v0.6: openfree/flux-chatgpt-ghibli-lora — Kontext-compat verified
+    # by real inference (the only built-in LoRA that survived v0.6.0
+    # → v0.6.1 hotfix). Trigger phrase "Ghibli style" activates the
+    # weight delta; auto-prepended if absent. License:
+    # flux-1-dev-non-commercial-license (non-commercial only).
+    "ghibli": Style(
+        prompt=(
             "Restyle this person as a Studio Ghibli character in Hayao "
             "Miyazaki's style, while preserving the facial identity, "
             "hairstyle, body proportions, and pose, with soft "
@@ -270,28 +327,22 @@ BUILTIN_STYLES: dict[str, dict] = {
             "animation, expressive but simple features, dreamy "
             "atmosphere, and painterly background"
         ),
-        "negative": (
+        negative=(
             "photorealistic, 3d render, harsh lighting, sharp edges, deformed, "
             "blurry, low quality, watermark, text"
         ),
-        "guidance": 3.5,
-        "strength": 0.55,
+        guidance=3.5,
+        strength=0.55,
         # Ghibli's signature is lush watercolor environments with soft
-        # pastels, dramatic skies, lush nature. The atmospheric haze
-        # is part of the brand — Miyazaki's painters layer warm light
-        # diffusion over the whole scene.
-        "scene_suffix": (
+        # pastels, dramatic skies, lush nature. Atmospheric haze is part
+        # of the brand — Miyazaki's painters layer warm light diffusion
+        # over the whole scene.
+        scene_suffix=(
             ", and transform the background and surroundings into a "
             "Studio Ghibli watercolor environment with soft pastel "
             "skies, lush painterly nature, and warm atmospheric haze"
         ),
-        # v0.6: openfree/flux-chatgpt-ghibli-lora — fallback pick per
-        # design memo. The primary candidate alvarobartt/ghibli-
-        # characters-flux-lora carried a "TBD pending license check"
-        # marker, so we ship the well-established openfree LoRA which
-        # has clearer licensing. Trigger phrase "Ghibli style"
-        # activates the weight delta; auto-prepended if absent.
-        "loras": (
+        loras=(
             LoraRef(
                 ref="openfree/flux-chatgpt-ghibli-lora",
                 weight=0.8,
@@ -299,10 +350,10 @@ BUILTIN_STYLES: dict[str, dict] = {
                 trigger="Ghibli style",
             ),
         ),
-    },
+    ),
 
-    "vangogh": {
-        "prompt": (
+    "vangogh": Style(
+        prompt=(
             "Restyle this person as a Vincent Van Gogh oil painting "
             "subject, while preserving the exact facial features, "
             "hairstyle, body proportions, and pose, with thick visible "
@@ -310,25 +361,24 @@ BUILTIN_STYLES: dict[str, dict] = {
             "post-impressionist colors, painterly distortion, and "
             "expressive yellows and blues"
         ),
-        "negative": (
+        negative=(
             "smooth, flat, photo, 3d render, digital art, clean lines, "
             "deformed face, blurry, watermark, text"
         ),
-        "guidance": 4.0,
-        "strength": 0.55,
-        # Van Gogh's backgrounds are the SAME oil paint as the subject
-        # — swirling impasto skies (Starry Night), textured fields,
-        # bold complementary colors. Echoes the main prompt's brush
-        # language so subject and background share the same paint.
-        "scene_suffix": (
+        guidance=4.0,
+        strength=0.55,
+        # Van Gogh's backgrounds are the SAME oil paint as the subject —
+        # swirling impasto skies (Starry Night), textured fields, bold
+        # complementary colors.
+        scene_suffix=(
             ", and transform the background and surroundings as a Van "
             "Gogh oil painting with thick visible impasto brushstrokes, "
             "swirling textured skies, and bold post-impressionist colors"
         ),
-    },
+    ),
 
-    "pencil": {
-        "prompt": (
+    "pencil": Style(
+        prompt=(
             "Restyle this person as a detailed graphite pencil sketch "
             "portrait, while preserving the exact facial features, "
             "hairstyle, body proportions, and pose, with fine "
@@ -336,22 +386,20 @@ BUILTIN_STYLES: dict[str, dict] = {
             "grayscale, realistic drawing on paper texture, and "
             "hand-drawn precision"
         ),
-        "negative": (
+        negative=(
             "colorful, painting, 3d render, photo, smooth gradients, deformed, "
             "blurry, watermark, text"
         ),
-        "guidance": 3.5,
-        "strength": 0.50,
-        # Pencil is "render", not "transform" — it's a drawing
-        # technique. Background gets the same monochrome graphite
-        # treatment with cross-hatching, varied tonal density, and
-        # the implied paper substrate of the foreground subject.
-        "scene_suffix": (
+        guidance=3.5,
+        strength=0.50,
+        # Pencil is "render", not "transform" — it's a drawing technique.
+        # Background gets the same monochrome graphite treatment.
+        scene_suffix=(
             ", and render the background and surroundings as a "
             "detailed graphite pencil sketch with fine cross-hatching, "
             "varied tonal density, and visible paper texture"
         ),
-    },
+    ),
 }
 
 
@@ -360,8 +408,10 @@ BUILTIN_STYLES: dict[str, dict] = {
 # / list_styles() instead, which transparently include user TOMLs from
 # ~/.imgen/styles.d/. Kept so the existing test_styles.py and any
 # downstream code expecting `STYLES` keeps working — those callers only
-# care about the built-in set.
-STYLES: dict[str, dict] = BUILTIN_STYLES
+# care about the built-in set. v0.6.2: values are now :class:`Style`
+# instances; dict-compat read API on Style (``["..."]``/``.get(...)``)
+# preserves the v0.1.x test surface.
+STYLES: dict[str, "Style"] = BUILTIN_STYLES
 
 
 class UserStyleError(Exception):
@@ -500,7 +550,13 @@ def parse_lora_refs(
         )
         # Defaults for omitted optional fields.
         weight = validated.get("weight", 1.0)
-        compat = tuple(validated.get("compatible_with", ("flux-1",)))
+        # Dedupe compatible_with preserving stable order (first
+        # occurrence wins). `dict.fromkeys` is Python 3.7+ insertion-
+        # ordered; matches `parse_style_list` dedupe semantics.
+        # (v0.6.x backlog python NIT-3.)
+        compat = tuple(dict.fromkeys(
+            validated.get("compatible_with", ("flux-1",))
+        ))
         trigger = validated.get("trigger")
         result.append(LoraRef(
             ref=validated["ref"],
@@ -511,7 +567,7 @@ def parse_lora_refs(
     return tuple(result)
 
 
-def load_user_style_file(path: Path) -> dict[str, Any]:
+def load_user_style_file(path: Path) -> "Style":
     """Parse one .toml file into a preset dict.
 
     All fields are OPTIONAL — a TOML with only `guidance = 4.0` is a valid
@@ -546,12 +602,20 @@ def load_user_style_file(path: Path) -> dict[str, Any]:
     # v0.6: post-process the raw ``loras`` list-of-dicts into a tuple of
     # :class:`LoraRef` instances. The schema only validates the outer
     # shape (list of dicts) so per-entry field errors carry a more
-    # specific "loras[N].field" diagnostic location. The result is
-    # stored back on the preset dict so cmd_helpers.build_iterations
-    # can read it directly without re-parsing.
+    # specific "loras[N].field" diagnostic location.
     if "loras" in validated:
         validated["loras"] = parse_lora_refs(validated["loras"], path)
-    return validated
+    # v0.6.2 (architect I-2): assemble the validated mapping into a
+    # :class:`Style` instance with only the keys Style knows about. Any
+    # unknown key was already filtered by ``validate_against_schema`` so
+    # this is just a slot-by-slot construction.
+    style_fields = {
+        f: validated[f]
+        for f in ("prompt", "negative", "guidance", "strength",
+                  "scene_suffix", "loras")
+        if f in validated
+    }
+    return Style(**style_fields)
 
 
 def _is_safe_stem(stem: str) -> bool:
@@ -581,7 +645,7 @@ def _is_safe_stem(stem: str) -> bool:
     )
 
 
-def load_user_styles_dir(dir_path: Path) -> dict[str, dict]:
+def load_user_styles_dir(dir_path: Path) -> dict[str, "Style"]:
     """Scan a directory for `*.toml` files; return {filename_stem: preset}.
 
     Files are processed in alphabetical filename order so the conflict-
@@ -594,7 +658,7 @@ def load_user_styles_dir(dir_path: Path) -> dict[str, dict]:
 
     if not dir_path.exists() or not dir_path.is_dir():
         return {}
-    result: dict[str, dict] = {}
+    result: dict[str, "Style"] = {}
     for path in sorted(dir_path.iterdir()):
         if path.suffix != ".toml" or not path.is_file():
             continue
@@ -632,9 +696,9 @@ def _find_free_suffix(base: str, taken: dict) -> str:
 
 
 def merge_user_styles(
-    builtins: dict[str, dict],
-    user: dict[str, dict],
-) -> dict[str, dict]:
+    builtins: dict[str, "Style"],
+    user: dict[str, "Style"],
+) -> dict[str, "Style"]:
     """Combine built-in styles with user styles. Built-in names always win.
 
     A user-style whose desired name clashes with an existing entry gets
@@ -646,7 +710,7 @@ def merge_user_styles(
     """
     from .colors import warn
 
-    merged: dict[str, dict] = dict(builtins)
+    merged: dict[str, "Style"] = dict(builtins)
     for name, preset in user.items():
         if name not in merged:
             merged[name] = preset
@@ -665,10 +729,10 @@ def merge_user_styles(
 
 # ── Public accessors (cached merge of built-ins + user styles) ───────────
 
-_cached_merged: dict[str, dict] | None = None
+_cached_merged: dict[str, "Style"] | None = None
 
 
-def _load_merged_styles() -> dict[str, dict]:
+def _load_merged_styles() -> dict[str, "Style"]:
     """Lazy-merge built-ins + ~/.imgen/styles.d/. Cached per process."""
     global _cached_merged
     if _cached_merged is None:
@@ -685,13 +749,63 @@ def list_styles() -> list[str]:
     return sorted(_load_merged_styles().keys())
 
 
-def get_style(name: str) -> dict:
-    """Return preset dict by name. Raises StyleNotFound (KeyError) if unknown."""
+def get_style(name: str) -> "Style":
+    """Return :class:`Style` instance by name. Raises StyleNotFound (a
+    KeyError subclass) when ``name`` is not in the merged registry.
+
+    v0.6.2 (architect I-2): return type changed from ``dict`` to
+    :class:`Style`. Dict-compat read API on Style preserves the
+    ``preset.get("prompt")`` / ``preset["prompt"]`` call shape for the
+    duration of the migration.
+    """
     merged = _load_merged_styles()
     if name not in merged:
         available = ", ".join(sorted(merged.keys()))
         raise StyleNotFound(f"Unknown style '{name}'. Available: {available}")
     return merged[name]
+
+
+# ── Import-time invariant: every built-in style's LoRA stack must round-
+# trip through the same validation user styles go through (v0.6.x backlog
+# python NIT-7). Catches future hand-written BUILTIN_STYLES picks that
+# bypass parse_lora_refs (e.g. a typo'd compat group or weight out of
+# range). Runs exactly once per process at import time — cheap.
+
+def _validate_builtin_loras() -> None:
+    """Walk every BUILTIN_STYLES preset's loras tuple back through
+    :func:`parse_lora_refs` to verify the same constraints user TOMLs
+    must satisfy. Raises AssertionError on any violation so the test
+    suite surfaces the regression at collection time, not via an
+    obscure runtime crash inside cmd_helpers.build_iterations.
+    """
+    for name, style in BUILTIN_STYLES.items():
+        loras = style.loras
+        if not loras:
+            continue
+        as_dicts = [
+            {
+                "ref": lora.ref,
+                "weight": lora.weight,
+                "compatible_with": list(lora.compatible_with),
+                **({"trigger": lora.trigger} if lora.trigger is not None else {}),
+            }
+            for lora in loras
+        ]
+        try:
+            roundtrip = parse_lora_refs(as_dicts, f"BUILTIN_STYLES[{name!r}]")
+        except UserStyleError as e:  # pragma: no cover — import-time invariant
+            raise AssertionError(
+                f"BUILTIN_STYLES[{name!r}].loras failed parse_lora_refs "
+                f"validation: {e}"
+            ) from e
+        assert roundtrip == loras, (
+            f"BUILTIN_STYLES[{name!r}].loras did not round-trip through "
+            f"parse_lora_refs (schema drift?): "
+            f"input={loras} roundtrip={roundtrip}"
+        )
+
+
+_validate_builtin_loras()
 
 
 def parse_style_list(value: str) -> list[str]:

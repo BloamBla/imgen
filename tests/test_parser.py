@@ -336,19 +336,75 @@ def test_print_loras_lists_text_only_styles_separately(tmp_path, capsys):
 def test_print_loras_marks_cached_when_hf_dir_present(tmp_path, capsys):
     """When the HF cache contains the LoRA's `models--<author>--<name>`
     directory, the line reads `(cached)`; an absent dir reads
-    `(not downloaded)`. Lets the user see cold-download cost up front."""
+    `(not downloaded)`. Lets the user see cold-download cost up front.
+
+    v0.6.1: only ghibli ships a built-in LoRA. Pre-create its cache
+    layout and assert the line marks it cached.
+    """
     from imgen.parser import print_loras
-    # Pre-create the cache layout for one LoRA only.
-    cached_dir = tmp_path / "models--strangerzonehf--Flux-Animeo-v1-LoRA"
+    cached_dir = tmp_path / "models--openfree--flux-chatgpt-ghibli-lora"
     cached_dir.mkdir()
     print_loras(hf_cache=tmp_path)
     out = capsys.readouterr().out
-    # Line containing the cached LoRA must say `(cached)`.
-    for line in out.splitlines():
-        if "Flux-Animeo-v1-LoRA" in line:
-            assert "(cached)" in line
-        elif "Canopus-Pixar" in line:
-            assert "(not downloaded)" in line
+    ghibli_lines = [
+        line for line in out.splitlines()
+        if "openfree/flux-chatgpt-ghibli-lora" in line
+    ]
+    assert ghibli_lines, "expected ghibli LoRA line in --list-loras output"
+    assert "(cached)" in ghibli_lines[0]
+
+
+def test_print_loras_marks_local_path_correctly(tmp_path, capsys, monkeypatch):
+    """v0.6.x backlog python NIT-1 regression: a LoRA whose `ref` is an
+    absolute local path is not in the HF cache layout — its `ref` IS the
+    on-disk file location. Before this fix, ``Path(ref).is_dir()``
+    returned False (it's a file, not a directory) and the line read
+    ``(not downloaded)`` even for files that obviously existed locally.
+    The branch now probes ``is_file()`` and prints ``(local)`` or
+    ``(missing)``.
+    """
+    from imgen import parser
+    from imgen.styles import LoraRef
+
+    local_safetensors = tmp_path / "my-custom.safetensors"
+    local_safetensors.write_bytes(b"\x00\x00\x00\x00")
+    fake_lora = LoraRef(
+        ref=str(local_safetensors),
+        weight=0.7,
+        compatible_with=("flux-1",),
+        trigger=None,
+    )
+    monkeypatch.setattr(parser, "list_styles", lambda: ["custom"])
+    monkeypatch.setattr(
+        parser,
+        "get_style",
+        lambda _: {"loras": (fake_lora,)},
+    )
+    parser.print_loras(hf_cache=tmp_path)
+    out = capsys.readouterr().out
+    local_lines = [line for line in out.splitlines() if str(local_safetensors) in line]
+    assert local_lines, "expected local-path LoRA line in --list-loras output"
+    assert "(local)" in local_lines[0]
+
+    # Now point ref at a non-existent file and re-run.
+    missing_lora = LoraRef(
+        ref=str(tmp_path / "does-not-exist.safetensors"),
+        weight=0.7,
+        compatible_with=("flux-1",),
+        trigger=None,
+    )
+    monkeypatch.setattr(
+        parser,
+        "get_style",
+        lambda _: {"loras": (missing_lora,)},
+    )
+    parser.print_loras(hf_cache=tmp_path)
+    out = capsys.readouterr().out
+    missing_lines = [
+        line for line in out.splitlines() if "does-not-exist" in line
+    ]
+    assert missing_lines, "expected missing-path LoRA line in --list-loras output"
+    assert "(missing)" in missing_lines[0]
 
 
 def test_print_loras_help_footer_mentions_lora_flag_and_styles_d(tmp_path, capsys):

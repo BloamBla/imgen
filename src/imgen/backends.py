@@ -795,20 +795,12 @@ def build_mflux_cmd(
 
     # v0.6: LoRA argv emission. Compatible entries land as parallel
     # --lora-paths + --lora-scales lists (mflux accepts space-separated
-    # multi-value args for both). Incompatibles trigger a warn so the
-    # user notices when a Qwen run skips their FLUX-1 LoRAs or vice-
-    # versa — silent drops would be confusing on multi-style runs.
+    # multi-value args for both). Pure: this function does NOT warn —
+    # warn emission is hoisted to ``build_iterations`` so N×M batch runs
+    # don't spam 150 identical warns on the same incompatible CLI LoRA.
+    # (v0.6.x backlog python IMP-3.)
     if loras:
-        compatible, incompatible = filter_compatible_loras(loras, backend)
-        if incompatible:
-            from .colors import warn
-            for lora in incompatible:
-                warn(
-                    f"LoRA {lora.ref!r} (compat: {sorted(lora.compatible_with)}) "
-                    f"is not compatible with backend "
-                    f"{backend.lora_compat_group!r} — skipping for this "
-                    f"iteration"
-                )
+        compatible, _incompatible = filter_compatible_loras(loras, backend)
         if compatible:
             cmd += ["--lora-paths", *(lora.ref for lora in compatible)]
             cmd += ["--lora-scales", *(str(lora.weight) for lora in compatible)]

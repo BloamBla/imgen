@@ -16,8 +16,6 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 from imgen.backends import Backend
 from imgen.cmd_helpers import (
     prepend_trigger_words,
@@ -423,6 +421,82 @@ class TestBuildIterationsLoRA:
         captured = capsys.readouterr()
         message = captured.out + captured.err
         assert "flux2-only/x" in message
+
+    def test_incompatible_lora_warn_deduped_within_call(self, tmp_path, capsys):
+        """v0.6.x backlog python IMP-3 regression: an incompatible LoRA
+        warns ONCE per build_iterations call, not once per iteration.
+
+        Three styles each declaring the same incompatible LoRA → ONE
+        warn, not three.
+        """
+        same_incompat = LoraRef(
+            ref="flux2-only/x", weight=0.8, compatible_with=("flux-2",),
+        )
+        styles = {
+            "anime": {"prompt": "anime portrait", "loras": (same_incompat,)},
+            "ghibli": {"prompt": "ghibli portrait", "loras": (same_incompat,)},
+            "pixar": {"prompt": "pixar portrait", "loras": (same_incompat,)},
+        }
+        args = _build_args(style=["anime", "ghibli", "pixar"])
+        _build(
+            fake_styles=styles, tmp_path=tmp_path, args=args,
+            styles_list=["anime", "ghibli", "pixar"],
+        )
+        captured = capsys.readouterr()
+        message = captured.out + captured.err
+        # Exactly one occurrence of the ref in the warn stream.
+        assert message.count("flux2-only/x") == 1
+
+    def test_incompatible_lora_warn_deduped_across_calls(self, tmp_path, capsys):
+        """v0.6.x backlog python IMP-3 regression: when a shared
+        ``warned_incompat_loras`` set is passed across multiple
+        build_iterations calls (as cmd_batch does for N inputs), the
+        warn fires only on the first call.
+        """
+        from imgen.cmd_helpers import build_iterations
+
+        incompat = LoraRef(
+            ref="flux2-only/x", weight=0.8, compatible_with=("flux-2",),
+        )
+        styles = {"anime": {"prompt": "anime portrait", "loras": (incompat,)}}
+        fake_binary = tmp_path / "fake-mflux"
+        fake_binary.write_text("#!/bin/sh\nexit 0\n")
+        fake_binary.chmod(0o755)
+        import imgen.cmd_helpers as ch
+        import imgen.styles as styles_mod
+        original = styles_mod.get_style
+        try:
+            styles_mod.get_style = lambda name: styles[name]  # type: ignore[assignment]
+            ch.get_style = styles_mod.get_style  # type: ignore[assignment]
+
+            shared: set[tuple[str, str]] = set()
+            common = dict(
+                styles_list=["anime"],
+                args=_build_args(),
+                effective_custom_prompt=None,
+                merged_defaults=DEFAULTS,
+                be=_flux_backend(),
+                binary=fake_binary,
+                width=1024, height=1024,
+                explicit_output=None,
+                run_dir=tmp_path / "out",
+                seed=42,
+            )
+            # Simulate cmd_batch's N=3-input loop.
+            for stem in ("a", "b", "c"):
+                build_iterations(
+                    input_path=tmp_path / f"{stem}.jpg",
+                    warned_incompat_loras=shared,
+                    **common,
+                )
+        finally:
+            styles_mod.get_style = original  # type: ignore[assignment]
+            ch.get_style = original  # type: ignore[assignment]
+
+        captured = capsys.readouterr()
+        message = captured.out + captured.err
+        # Single warn across three "inputs".
+        assert message.count("flux2-only/x") == 1
 
     def test_incompatible_lora_trigger_not_prepended(self, tmp_path):
         """Trigger only fires for COMPATIBLE LoRAs. An incompatible

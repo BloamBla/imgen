@@ -207,18 +207,12 @@ class EnhanceHealth:
     recent_runs_succeeded: int  # of those, how many enhanced=True
 
 
-def _hf_cache_dir_for(repo: str, hf_cache: Path) -> Path:
-    """Return the ``models--<author>--<name>`` directory for ``repo``
-    under ``hf_cache``. Mirrors huggingface_hub's caching convention.
-
-    Empty or absolute-path ``repo`` (i.e. user pointed --enhance-model
-    at a local checkpoint) returns the path as-is so ``model_cached``
-    just becomes "is that path a directory".
-    """
-    if not repo or repo.startswith("/"):
-        return Path(repo) if repo else hf_cache
-    safe = "models--" + repo.replace("/", "--")
-    return hf_cache / safe
+# v0.6.2 (architect I-3): canonical helper now lives in
+# ``imgen.hf_cache``. Keep this private alias so callers within doctor.py
+# can stay unchanged and tests importing the private symbol still pass —
+# delete the alias in v0.7 once the rename has propagated through the
+# codebase + any downstream test code.
+from ..hf_cache import hf_cache_dir_for as _hf_cache_dir_for
 
 
 def _dir_size_bytes(p: Path) -> int:
@@ -485,7 +479,8 @@ def cmd_doctor(_args) -> int:
                                if p.is_file() and not p.is_symlink())
                 size_gb = size / (1024 ** 3)
                 if size_gb > 0.1:
-                    name = model_dir.name.replace("models--", "").replace("--", "/")
+                    from ..hf_cache import repo_from_cache_dir
+                    name = repo_from_cache_dir(model_dir.name)
                     ok(f"{name}: {size_gb:.1f} GB")
                     cached_any = True
             except OSError:
