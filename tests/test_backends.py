@@ -13,8 +13,11 @@ import pytest
 from imgen.backends import BACKENDS, Backend
 
 
-def test_BACKENDS_contains_flux_and_qwen():
-    assert set(BACKENDS.keys()) == {"flux", "qwen"}
+def test_BACKENDS_contains_flux_qwen_flux_dev():
+    """v0.7.0: third built-in backend ``flux-dev`` lands for
+    ``imgen draw`` (t2i). Built-in set is exactly these three; user
+    TOMLs extend via backends.d/ but BUILTIN_BACKENDS stays tight."""
+    assert set(BACKENDS.keys()) == {"flux", "qwen", "flux-dev"}
 
 
 def test_BACKENDS_values_are_Backend_instances():

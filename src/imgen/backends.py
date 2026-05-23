@@ -175,6 +175,34 @@ _IDENTITY_ANCHOR_INVARIANTS: tuple[str, ...] = (
 )
 
 
+# v0.7.0: t2i (`imgen draw`) system prompt for FLUX.1-dev. Different
+# shape from the Kontext/Qwen i2i versions: no input photo to anchor
+# identity to, so the "CRITICAL: preserve the 'while preserving …'
+# clause" directive doesn't apply. The expansion axes are FLUX-canonical
+# (subject / composition / lighting / palette / style / mood). Fidelity
+# guardrails ("don't swap subject", "don't relocate scene") replace the
+# identity-anchor invariants — guidance only, no programmatic check
+# (architect §K: t2i prompt-fidelity contract is weaker than i2i's).
+_FLUX_DEV_DRAW_ENHANCE_SYS = (
+    "You are a prompt engineer for FLUX.1, a text-to-image diffusion "
+    "model. Expand the user's brief description into a richer, "
+    "visually-detailed image prompt suitable for generation from "
+    "scratch (no input photo). "
+    "Add concrete detail to: subject (specific appearance, clothing, "
+    "expression, posture), composition (camera angle, framing, "
+    "subject placement), lighting (source, quality, direction, color "
+    "temperature), color palette (dominant tones, accents, mood), "
+    "and art style (medium, technique, era, named artists or schools "
+    "where the user's prompt implies one). "
+    "Stay faithful to the user's intent — do NOT invent a different "
+    "subject, swap genders, change species, or relocate the scene. "
+    "Expand the existing details; don't replace them. "
+    "Target 40-70 tokens. Output ONLY the expanded prompt with no "
+    "preamble, no quotes, no explanation, no 'Here is the expanded "
+    "prompt:' framing."
+)
+
+
 BUILTIN_BACKENDS: dict[str, Backend] = {
     "flux": Backend(
         binary="mflux-generate-kontext",
@@ -203,6 +231,29 @@ BUILTIN_BACKENDS: dict[str, Backend] = {
         # (different transformer architecture, different LoRA shape).
         # FLUX LoRAs do NOT load on Qwen and vice-versa.
         lora_compat_group="qwen",
+    ),
+    # v0.7.0: FLUX.1-dev text-to-image. Same HF gated repo class as
+    # Kontext (single `~/.imgen/hf_token` covers both). The user's
+    # `imgen draw` lands on this backend by default; image_flag stays
+    # populated for dataclass-shape consistency but build_mflux_cmd
+    # gates the actual --image-path emission on input_path being not
+    # None (see v0.7.0 step 4). lora_compat_group="flux-dev" is unique
+    # — Kontext-trained LoRAs may not transfer cleanly back to plain
+    # FLUX.1-dev for t2i (mirror of the v0.6.1 Kontext-compat lesson:
+    # don't assume cross-load works until proven by real inference).
+    # The CLI `_lora_ref_arg` default widens to ("flux-1", "flux-dev")
+    # so a user's `--lora foo/bar` works for both backends; user-style
+    # TOMLs declaring `compatible_with = ["flux-1"]` stay restrictive.
+    "flux-dev": Backend(
+        binary="mflux-generate",
+        needs_token=True,
+        image_flag="--image-path",
+        supports_strength=False,
+        supports_negative=True,
+        extra_args=("--model", "dev"),
+        enhance_system_prompt=_FLUX_DEV_DRAW_ENHANCE_SYS,
+        enhance_invariants=(),  # t2i: no identity anchor, see architect §K
+        lora_compat_group="flux-dev",
     ),
 }
 

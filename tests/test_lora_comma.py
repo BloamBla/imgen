@@ -25,8 +25,13 @@ class TestLoraRefsArg:
     """Direct test of the new comma-splitting validator."""
 
     def test_single_ref_no_weight(self):
+        """CLI default compatible_with widened to ('flux-1', 'flux-dev')
+        in v0.7.0 alongside the FLUX.1-dev t2i backend; see
+        test_flux_dev_backend.py for the dedicated coverage."""
         out = _lora_refs_arg("a/b")
-        assert out == [LoraRef(ref="a/b", weight=1.0, compatible_with=("flux-1",))]
+        assert out == [
+            LoraRef(ref="a/b", weight=1.0, compatible_with=("flux-1", "flux-dev")),
+        ]
 
     def test_single_ref_with_weight(self):
         out = _lora_refs_arg("a/b:0.7")

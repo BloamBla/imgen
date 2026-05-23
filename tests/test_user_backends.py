@@ -649,7 +649,9 @@ def test_merge_adds_new_user_backends():
     from imgen.backends import BUILTIN_BACKENDS, merge_user_backends
     user = {"sdxl": _bare_backend("sdxl-bin")}
     merged = merge_user_backends(BUILTIN_BACKENDS, user)
-    assert set(merged.keys()) == {"flux", "qwen", "sdxl"}
+    # v0.7.0: built-in set is {flux, qwen, flux-dev}; user TOMLs land
+    # on top.
+    assert set(merged.keys()) == {"flux", "qwen", "flux-dev", "sdxl"}
     assert merged["sdxl"].binary == "sdxl-bin"
 
 

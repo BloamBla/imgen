@@ -193,7 +193,19 @@ def _lora_ref_arg(s: str):
             f"--lora weight out of range: {weight} (must be -2.0..2.0)"
         )
 
-    return LoraRef(ref=ref, weight=weight, compatible_with=("flux-1",))
+    # v0.7.0 (architect §A): CLI default widened from `("flux-1",)` to
+    # `("flux-1", "flux-dev")` so a user's `--lora foo/bar` works on
+    # BOTH FLUX-Kontext (i2i, lora_compat_group="flux-1") AND FLUX.1-dev
+    # (t2i, lora_compat_group="flux-dev"). User-style `~/.imgen/
+    # styles.d/*.toml` `[[loras]] compatible_with = ["flux-1"]` entries
+    # remain restrictive (authored with intent). Narrowing happens via
+    # user-style TOML; CLI ships broad-by-default because the CLI user
+    # doesn't know the architectural distinction. Per-LoRA verification
+    # round (mirror of v0.6.3 work, flipped to flux-dev) is a v0.7.1
+    # candidate ([[feedback-kontext-lora-compat]] discipline).
+    return LoraRef(
+        ref=ref, weight=weight, compatible_with=("flux-1", "flux-dev"),
+    )
 
 
 def _lora_refs_arg(s: str):

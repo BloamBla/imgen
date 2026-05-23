@@ -33,11 +33,15 @@ def _parse(*argv: str):
 
 class TestLoraRefArg:
     def test_bare_ref_default_weight_1(self):
+        """v0.7.0 widened the CLI default `compatible_with` from
+        `("flux-1",)` to `("flux-1", "flux-dev")` so a user's
+        `--lora foo/bar` reaches both FLUX backends. See
+        test_flux_dev_backend.py for the dedicated lock-in suite."""
         ref = _lora_ref_arg("alvarobartt/ghibli-characters-flux-lora")
         assert isinstance(ref, LoraRef)
         assert ref.ref == "alvarobartt/ghibli-characters-flux-lora"
         assert ref.weight == 1.0
-        assert ref.compatible_with == ("flux-1",)
+        assert ref.compatible_with == ("flux-1", "flux-dev")
 
     def test_ref_with_explicit_weight(self):
         ref = _lora_ref_arg("strangerzonehf/Flux-Animeo-v1-LoRA:0.8")
