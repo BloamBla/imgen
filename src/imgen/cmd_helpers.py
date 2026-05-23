@@ -94,6 +94,7 @@ __all__ = [
     "apply_enhance_results_to_groups",
     "apply_enhance_results_to_iterations",
     "apply_enhance_results_to_per_input",  # v0.7.0 backward-compat alias
+    "build_draw_iteration",
     "build_iterations",
     "check_prompt_style_compat",
     "estimate_one_seconds",
@@ -101,10 +102,12 @@ __all__ = [
     "format_duration",
     "load_backend_and_token",
     "maybe_enhance_for_command",
+    "next_available_png",
     "open_results",
     "preflight_resources",
     "prepend_trigger_words",
     "print_batch_summary",
+    "prompt_slug",
     "resolve_effective_loras",
     "resolve_enhance_config",
     "resolve_output_layout",
@@ -1038,8 +1041,15 @@ def _resolve_iteration_params(
     else:
         final_guidance = merged_defaults["guidance"]
 
-    if args.strength is not None:
-        final_strength = args.strength
+    # v0.7.0: ``args.strength`` is i2i-only (no source photo to
+    # interpolate against for t2i). The `imgen draw` parser omits the
+    # flag entirely; mflux ignores the recorded value on the t2i
+    # backend (Backend.supports_strength=False gates argv emission in
+    # build_mflux_cmd). Same getattr pattern as v0.6.5's args.scope
+    # FL-3 defence.
+    cli_strength = getattr(args, "strength", None)
+    if cli_strength is not None:
+        final_strength = cli_strength
     elif "strength" in preset:
         final_strength = preset["strength"]
     else:
@@ -1154,6 +1164,165 @@ def _resolve_iteration_loras(
         compatible_loras=compatible_loras,
         incompat_loras=incompat_loras,
         prompt_with_triggers=prompt_with_triggers,
+    )
+
+
+def prompt_slug(
+    prompt: str,
+    *,
+    max_words: int = 6,
+    max_len: int = 60,
+) -> str:
+    """Derive a filesystem-safe slug from a (possibly post-enhance) prompt.
+
+    v0.7.0 (architect §D): output naming for `imgen draw`. No input
+    photo stem to anchor on, so the filename comes from the prompt
+    itself. Six words is enough to be human-readable in a gallery view
+    without overrunning macOS filename limits.
+
+    Pipeline:
+      1. Take first ``max_words`` whitespace-tokens.
+      2. NFKD-normalize + strip non-ASCII (CJK → empty after this step).
+      3. Lowercase + collapse non-alphanumeric runs to '-'.
+      4. Strip leading/trailing '-'.
+      5. Cap at ``max_len`` chars (well under macOS 255-byte limit).
+      6. If empty after all of the above (e.g. emoji-only prompt),
+         fall back to "draw".
+
+    Pure: no I/O, no filesystem touch. Collision-handling
+    (``-2``/``-3`` suffix when ``<slug>.png`` already exists) lives at
+    the output-path resolution site, not here.
+    """
+    import re
+    import unicodedata as _ud
+
+    tokens = prompt.split()[:max_words]
+    text = " ".join(tokens)
+    # Unicode NFKD + strip combining marks; ASCII-only survives.
+    decomposed = _ud.normalize("NFKD", text)
+    ascii_only = decomposed.encode("ascii", "ignore").decode("ascii")
+    lowered = ascii_only.lower()
+    # Collapse anything-not-alphanumeric to a single '-'.
+    slugged = re.sub(r"[^a-z0-9]+", "-", lowered).strip("-")
+    if len(slugged) > max_len:
+        slugged = slugged[:max_len].rstrip("-")
+    return slugged or "draw"
+
+
+def next_available_png(run_dir: Path, slug: str) -> Path:
+    """Pick ``<run_dir>/<slug>.png``, suffixing ``-2``/``-3``/... if it
+    already exists. Mirror of :func:`runs.next_available_run_dir`
+    adapted for files.
+
+    Pure: probes the filesystem read-only (Path.exists) and does NOT
+    create the file. Caller writes / lets mflux write. Tiny race
+    window between probe and actual write — single-user CLI usage
+    means concurrent draws into the same run_dir within the same
+    second don't realistically collide. Same trust model documented
+    on :func:`runs.next_available_run_dir`.
+    """
+    target = run_dir / f"{slug}.png"
+    if not target.exists():
+        return target
+    i = 2
+    while (run_dir / f"{slug}-{i}.png").exists():
+        i += 1
+    return run_dir / f"{slug}-{i}.png"
+
+
+def build_draw_iteration(
+    *,
+    args,
+    prompt: str,
+    merged_defaults: dict,
+    be,
+    binary: Path,
+    width: int,
+    height: int,
+    explicit_output: Path | None,
+    run_dir: Path | None,
+    seed: int,
+) -> Iteration:
+    """Build a single :class:`Iteration` for `imgen draw` (t2i).
+
+    v0.7.0 (architect §F): t2i sibling of :func:`build_iterations`.
+    Differences from the i2i build path:
+
+      * No styles_list loop — draw is single-shot in v0.7.0.
+      * No effective_custom_prompt / scope / augmentation —
+        ``prompt`` is the user's text verbatim (post-enhance if the
+        enhancer ran).
+      * ``input_path=None`` flows through :func:`build_mflux_cmd` —
+        the ``--image-path`` argv pair is omitted (v0.7.0 step 4).
+      * Output naming: ``explicit_output`` (--output PATH) wins;
+        otherwise ``<run_dir>/<prompt-slug>.png`` with collision
+        suffix.
+
+    Reuses :func:`_resolve_iteration_params` (with a stub empty Style
+    so the preset-precedence branches fall through to merged_defaults)
+    and :func:`_resolve_iteration_loras` (same stub; CLI LoRAs apply,
+    no preset LoRAs to layer under). Returns one frozen Iteration.
+
+    Pure: no subprocess, no I/O beyond the next_available_png filesystem
+    probe. Caller (cmd_draw) does the dry-run / preflight / confirm /
+    run_one_iteration dance with the returned Iteration.
+    """
+    preset = Style()  # empty preset — no prompt/negative/guidance/
+    #                   strength/scene_suffix/loras default into the
+    #                   merged_defaults precedence branches.
+    params = _resolve_iteration_params(
+        args=args, preset=preset, merged_defaults=merged_defaults,
+    )
+    negative = ""
+
+    # Output path: explicit --output PATH wins; otherwise prompt-slug
+    # inside the run-dir (folder-per-invocation layout).
+    if explicit_output is not None:
+        output_path = explicit_output
+    else:
+        assert run_dir is not None, (
+            "build_draw_iteration: either explicit_output or run_dir must "
+            "be provided"
+        )
+        output_path = next_available_png(run_dir, prompt_slug(prompt))
+
+    # LoRA stack: no preset LoRAs (Style() default empty tuple); CLI
+    # LoRAs apply per the --lora/--no-lora flags.
+    lora_resolution = _resolve_iteration_loras(
+        preset=preset, args=args, be=be, prompt=prompt,
+    )
+    prompt_with_triggers = lora_resolution.prompt_with_triggers
+
+    cmd = build_mflux_cmd(
+        binary=binary,
+        backend=be,
+        input_path=None,  # t2i: no input photo
+        output_path=output_path,
+        prompt=prompt_with_triggers,
+        negative=negative,
+        quantize=params.final_quantize,
+        steps=params.final_steps,
+        guidance=params.final_guidance,
+        strength=params.final_strength,
+        seed=seed,
+        width=width,
+        height=height,
+        mlx_cache_gb=merged_defaults["mlx_cache_gb"],
+        battery_stop=merged_defaults["battery_stop"],
+        loras=lora_resolution.effective_loras,
+    )
+
+    return Iteration(
+        style_name="draw",
+        prompt=prompt_with_triggers,
+        negative=negative,
+        final_steps=params.final_steps,
+        final_quantize=params.final_quantize,
+        final_guidance=params.final_guidance,
+        final_strength=params.final_strength,
+        output_path=output_path,
+        cmd=cmd,
+        loras=lora_resolution.compatible_loras,
     )
 
 

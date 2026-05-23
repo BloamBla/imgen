@@ -12,6 +12,7 @@ from __future__ import annotations
 from .batch import cmd_batch
 from .clean import cmd_clean
 from .doctor import cmd_doctor
+from .draw import cmd_draw
 from .generate import cmd_generate
 from .history import cmd_history, cmd_last, cmd_replay
 from .setup import cmd_setup
@@ -21,6 +22,7 @@ __all__ = [
     "cmd_batch",
     "cmd_clean",
     "cmd_doctor",
+    "cmd_draw",
     "cmd_generate",
     "cmd_history",
     "cmd_last",

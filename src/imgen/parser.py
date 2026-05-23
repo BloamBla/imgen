@@ -337,6 +337,17 @@ def build_parser(
     )
     _add_batch_args(b, defaults)
 
+    # draw — v0.7.0 text-to-image. New subcommand for the first
+    # non-i2i surface on imgen. Custom-prompt-only (no --style); LoRAs
+    # are the expression vector. Default backend `flux-dev` (FLUX.1-dev
+    # gated, same HF token as Kontext). See memory/project_v070_design.md.
+    d = sub.add_parser(
+        "draw",
+        help="Text-to-image: generate from a prompt with no input photo. "
+             "v0.7.0+ — uses FLUX.1-dev via mflux-generate.",
+    )
+    _add_draw_args(d, defaults)
+
     return p
 
 
@@ -499,6 +510,111 @@ def _add_batch_args(
     p.add_argument("--force", action="store_true",
                    help="Skip resource checks (RAM, parallel mflux, etc.) "
                         "and try anyway. Use at your own risk.")
+    _add_enhance_args(p)
+    _add_lora_args(p)
+
+
+def _add_draw_args(
+    p: argparse.ArgumentParser,
+    defaults: dict[str, Any],
+) -> None:
+    """Argparse stanza for `imgen draw <prompt>` — v0.7.0 t2i.
+
+    Differences from cmd_generate: positional prompt (not --image),
+    no --style (LoRAs are the expression vector), no --scope (i2i-only
+    parser flag), no --strength (no source photo to interpolate
+    against). --width / --height carry defaults since there's no input
+    to detect from.
+    """
+    # Positional prompt is the primary input — mutex with --prompt-file.
+    # The mutex check fires in cmd_draw (argparse mutex groups don't
+    # compose cleanly with optional positionals).
+    p.add_argument(
+        "prompt", nargs="?", default=None,
+        help="Text prompt for image generation. Mutually exclusive "
+             "with --prompt-file. Pass '-' as the positional to read "
+             "from stdin (hides the prompt from `ps auxww`).",
+    )
+    p.add_argument(
+        "--prompt-file", type=Path, default=None,
+        help="Read prompt from PATH instead of the positional. "
+             "Mutually exclusive with the positional prompt.",
+    )
+
+    # Output: --output PATH single-file canonical, --output-dir DIR
+    # uses the existing folder-per-invocation layout.
+    output_group = p.add_mutually_exclusive_group()
+    output_group.add_argument(
+        "-o", "--output", type=_safe_output_path,
+        help=f"Output path with .png/.jpg/.jpeg/.webp suffix "
+             f"(bypasses run-folder layout; default: "
+             f"{DEFAULT_OUTPUT_DIR}/<start-ts>/<prompt-slug>.png)",
+    )
+    output_group.add_argument(
+        "--output-dir", type=str, default=None,
+        help="Parent directory for the auto-named run folder. "
+             "Overrides $IMGEN_OUTPUT_DIR and [defaults] output_dir.",
+    )
+
+    p.add_argument(
+        "--steps", type=_int_range(1, 200), default=None,
+        help=f"Inference steps 1..200 (default {defaults['steps']}, "
+             f"preview {PREVIEW_OVERRIDES['steps']})",
+    )
+    p.add_argument(
+        "-g", "--guidance", type=_float_range(0.5, 15.0), default=None,
+        help=f"Guidance scale 0.5..15 (default {defaults['guidance']}; "
+             f"FLUX.1-dev canonical is 3.5 — pass explicitly if you "
+             f"want the tighter scale)",
+    )
+    p.add_argument(
+        "--seed", type=_int_range(0, 2**32 - 1),
+        help="Seed (default: random)",
+    )
+    # v0.7.0: default `--backend flux-dev`. The shared `defaults["backend"]`
+    # entry is "flux" (Kontext, i2i); draw's default differs.
+    p.add_argument(
+        "--backend", choices=list_backends(),
+        default="flux-dev",
+        help="Backend (default flux-dev). Use --list-backends to see all.",
+    )
+    p.add_argument(
+        "-q", "--quantize", type=int, choices=[3, 4, 5, 6, 8], default=None,
+        help=f"Quantization (default {defaults['quantize']}, "
+             f"preview {PREVIEW_OVERRIDES['quantize']})",
+    )
+    p.add_argument(
+        "-p", "--preview", action="store_true",
+        help="Fast preview mode: smaller resolution, fewer steps, "
+             "lower quantization (~5x faster, lower quality)",
+    )
+    # t2i: --width/--height carry defaults — there's no input to detect
+    # from. 1024x1024 is FLUX.1-dev canonical.
+    p.add_argument(
+        "--width", type=_int_range(64, 4096), default=1024,
+        help="Output width 64..4096 (default 1024)",
+    )
+    p.add_argument(
+        "--height", type=_int_range(64, 4096), default=1024,
+        help="Output height 64..4096 (default 1024)",
+    )
+    p.add_argument(
+        "--no-open", action="store_true",
+        help="Don't open the result in Preview",
+    )
+    p.add_argument(
+        "-y", "--yes", action="store_true",
+        help="Skip the [y/N] confirm gate",
+    )
+    p.add_argument(
+        "--dry-run", action="store_true",
+        help="Show mflux command without running",
+    )
+    p.add_argument(
+        "--force", action="store_true",
+        help="Skip resource checks (RAM, parallel mflux, etc.) and "
+             "try anyway. Use at your own risk.",
+    )
     _add_enhance_args(p)
     _add_lora_args(p)
 
