@@ -59,6 +59,42 @@ class TestRefineParser:
         assert args.width == 1536
         assert args.height == 1536
 
+    def test_prompt_rejects_esc_byte(self, capsys):
+        """v0.7.7 Sec #S3: --prompt validator rejects C0/DEL/C1 bytes
+        so a crafted prompt can't inject ANSI escape sequences into
+        dry-run output / confirm gate / history.jsonl."""
+        with pytest.raises(SystemExit):
+            _parse_refine("photo.png", "--prompt", "evil\x1b[2J prompt")
+
+    def test_prompt_rejects_del_byte(self):
+        with pytest.raises(SystemExit):
+            _parse_refine("photo.png", "--prompt", "x\x7fy")
+
+    def test_prompt_rejects_c1_byte(self):
+        with pytest.raises(SystemExit):
+            _parse_refine("photo.png", "--prompt", "x\x9by")
+
+    def test_prompt_rejects_tab_newline(self):
+        """C0 includes \\t (0x09) and \\n (0x0a) — symmetric with
+        _clean_model_ref. Prompts should fit on one line; multi-line
+        users hit this and choose a different shape."""
+        with pytest.raises(SystemExit):
+            _parse_refine("photo.png", "--prompt", "x\ty")
+        with pytest.raises(SystemExit):
+            _parse_refine("photo.png", "--prompt", "x\ny")
+
+    def test_prompt_accepts_emoji_and_cjk(self):
+        """Legit Unicode above U+009F passes — same allow-rule as
+        the input-filename validator."""
+        args = _parse_refine("photo.png", "--prompt", "Сделай резче 写真 🎨")
+        assert args.prompt == "Сделай резче 写真 🎨"
+
+    def test_prompt_accepts_empty_string(self):
+        """Empty prompt is user choice; cmd_refine falls back to the
+        baked-in default when args.prompt is None (not '')."""
+        args = _parse_refine("photo.png", "--prompt", "")
+        assert args.prompt == ""
+
 
 # ── _round_to_multiple_of_16 ─────────────────────────────────────────
 

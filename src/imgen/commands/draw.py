@@ -409,4 +409,24 @@ def cmd_draw(args) -> int:
 
     if is_batch:
         print_batch_summary(succeeded, failed, total=total)
+
+    # v0.7.7 UX hint: refine chain isn't obvious from `imgen draw`
+    # alone — surface it on success so users discover the
+    # explore→refine workflow without reading the README. Single-shot
+    # (N=1) only — N>=2 (--num-iterations explore) the user picks a
+    # winner via Finder first, so the hint there would be ambiguous
+    # ("which one to refine?"). Skipped when --output sent the result
+    # to an explicit path the user controls (no path under run_dir to
+    # template into the hint). Hint text deliberately omits literal
+    # dimensions — user could have run `imgen draw "..." --width 1280
+    # --height 720`, and a hard-coded "1024² → 1536²/2048²" would
+    # misrepresent both sides of the arrow.
+    if (succeeded and not failed and not is_batch
+            and run_dir is not None):
+        _, single_output, _ = succeeded[0]
+        info(
+            f"Try `imgen refine {single_output}` "
+            f"for sharper detail at 1.5×/2× resolution."
+        )
+
     return exit_code(is_batch=is_batch, succeeded=succeeded, failed=failed)

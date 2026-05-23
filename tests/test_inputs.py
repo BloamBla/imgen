@@ -36,6 +36,7 @@ from imgen.inputs import (
     convert_heic_to_jpeg,
     discover_inputs,
     needs_jpeg_conversion,
+    resolve_single_input_path,
     resolve_to_mflux_input,
 )
 
@@ -497,3 +498,75 @@ def test_resolve_to_mflux_input_heif_also_converts(monkeypatch, tmp_path):
     src.write_bytes(b"")
     out = resolve_to_mflux_input(src, cache_dir)
     assert out == cache_dir / "shot.jpg"
+
+
+# ── resolve_single_input_path (v0.7.7 Sec #S2) ────────────────────────
+
+
+class TestResolveSingleInputPath:
+    """v0.7.7 Sec #S2: shared validator for cmd_generate + cmd_refine
+    single-file input paths. Mirrors batch's discover_inputs filter
+    so the cross-cutting control-byte guard is uniform across the
+    three i2i subcommands."""
+
+    def test_clean_path_returns_resolved(self, tmp_path):
+        p = tmp_path / "photo.png"
+        p.write_bytes(b"x")
+        result = resolve_single_input_path(str(p), subcommand="refine")
+        assert result == p.resolve()
+
+    def test_missing_dies_code_2(self, tmp_path):
+        with pytest.raises(SystemExit) as exc:
+            resolve_single_input_path(
+                str(tmp_path / "missing.png"), subcommand="refine",
+            )
+        assert exc.value.code == 2
+
+    def test_directory_dies_code_2(self, tmp_path):
+        with pytest.raises(SystemExit) as exc:
+            resolve_single_input_path(str(tmp_path), subcommand="generate")
+        assert exc.value.code == 2
+
+    def test_control_byte_in_filename_dies_code_2(self, tmp_path):
+        """ESC C0 byte in the filename → reject, do NOT proceed even
+        if the file exists. Same threat model as discover_inputs's
+        warn-and-skip for batch."""
+        unsafe = tmp_path / "photo\x1b[2J.png"
+        unsafe.write_bytes(b"x")
+        with pytest.raises(SystemExit) as exc:
+            resolve_single_input_path(str(unsafe), subcommand="refine")
+        assert exc.value.code == 2
+
+    def test_del_byte_in_filename_dies(self, tmp_path):
+        """DEL (0x7f) is on the same reject list as C0/C1."""
+        unsafe = tmp_path / "photo\x7f.png"
+        unsafe.write_bytes(b"x")
+        with pytest.raises(SystemExit) as exc:
+            resolve_single_input_path(str(unsafe), subcommand="generate")
+        assert exc.value.code == 2
+
+    def test_c1_byte_in_filename_dies(self, tmp_path):
+        """C1 controls (0x80-0x9f) include CSI (0x9b) — reject."""
+        unsafe = tmp_path / "photo\x9b.png"
+        unsafe.write_bytes(b"x")
+        with pytest.raises(SystemExit) as exc:
+            resolve_single_input_path(str(unsafe), subcommand="refine")
+        assert exc.value.code == 2
+
+    def test_unicode_emoji_passes_through(self, tmp_path):
+        """Emoji / accented Latin / CJK are above U+009F and are
+        legitimate input. Don't reject them."""
+        ok = tmp_path / "Привет 🎨 写真.png"
+        ok.write_bytes(b"x")
+        result = resolve_single_input_path(str(ok), subcommand="refine")
+        assert result == ok.resolve()
+
+    def test_subcommand_label_in_error(self, tmp_path, capsys):
+        """The 'subcommand' kwarg scopes the diagnostic so users see
+        the verb they typed."""
+        with pytest.raises(SystemExit):
+            resolve_single_input_path(
+                str(tmp_path / "x.png"), subcommand="refine",
+            )
+        err = capsys.readouterr()
+        assert "refine:" in (err.out + err.err)

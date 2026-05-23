@@ -658,6 +658,119 @@ class TestCmdDrawDryRun:
         assert "a ninja from stdin" in out
 
 
+class TestCmdDrawRefineHint:
+    """v0.7.7: after a successful single-shot imgen draw, surface a
+    one-liner pointing at `imgen refine <output>` so the user
+    discovers the explore→refine workflow without reading the README.
+    Gated on success-only + N=1 + run-dir layout (not --output FILE)."""
+
+    def _success_path_stubs(self, monkeypatch, tmp_state_dir):
+        """Shared monkeypatch setup so the test exercises the real
+        cmd_draw success path without spawning mflux."""
+        from imgen.backends import BACKENDS
+
+        def fake_load(args):
+            return ("flux-dev", BACKENDS["flux-dev"], "tok",
+                    Path("/fake/mflux-generate"), None)
+        monkeypatch.setattr(
+            "imgen.commands.draw.load_backend_and_token", fake_load,
+        )
+        monkeypatch.setattr(
+            "imgen.cmd_helpers.run_with_stderr_redaction",
+            lambda cmd, **kw: (
+                Path(cmd[cmd.index("--output") + 1]).touch(),
+                0,
+            )[1],
+        )
+        monkeypatch.setattr(
+            "imgen.cmd_helpers.preflight_resources",
+            lambda **kw: None,
+        )
+
+    def test_hint_fires_after_successful_single_shot(
+        self, tmp_state_dir, monkeypatch, tmp_path, capsys,
+    ):
+        self._success_path_stubs(monkeypatch, tmp_state_dir)
+        args = _make_args(
+            prompt="a samurai test",
+            output_dir=str(tmp_path),
+            dry_run=False,
+            yes=True,
+            no_open=True,
+            force=True,
+        )
+        rc = cmd_draw(args)
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "imgen refine" in out
+        # Hint advertises the refine scale shape without hard-coding
+        # absolute pixel dims (architect IMPORTANT #1 from v0.7.7
+        # 3-agent review — a user who ran `imgen draw --width 1280
+        # --height 720` shouldn't see "1024² → 1536²/2048²").
+        assert "1.5×/2×" in out
+        assert "1024²" not in out
+
+    def test_hint_skipped_on_explicit_output_path(
+        self, tmp_state_dir, monkeypatch, tmp_path, capsys,
+    ):
+        """--output FILE bypasses run_dir entirely; hint is gated on
+        run_dir presence so this path stays silent."""
+        self._success_path_stubs(monkeypatch, tmp_state_dir)
+        explicit = tmp_path / "explicit.png"
+        args = _make_args(
+            prompt="a samurai test",
+            output=str(explicit),
+            output_dir=None,
+            dry_run=False,
+            yes=True,
+            no_open=True,
+            force=True,
+        )
+        rc = cmd_draw(args)
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "imgen refine" not in out
+
+    def test_hint_skipped_on_dry_run(
+        self, tmp_state_dir, monkeypatch, tmp_path, capsys,
+    ):
+        """Dry-run produces no actual output file — no point hinting
+        about refine of a file that doesn't exist."""
+        self._success_path_stubs(monkeypatch, tmp_state_dir)
+        args = _make_args(
+            prompt="a samurai test",
+            output_dir=str(tmp_path),
+            dry_run=True,
+        )
+        rc = cmd_draw(args)
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "imgen refine" not in out
+
+    def test_hint_skipped_on_num_iterations_2(
+        self, tmp_state_dir, monkeypatch, tmp_path, capsys,
+    ):
+        """N>=2 (--num-iterations explore mode) suppresses the hint —
+        with multiple outputs the user picks a winner via Finder first,
+        making "refine <output>" ambiguous. Lock-in for the is_batch
+        gate so a refactor of the hint condition doesn't quietly re-
+        enable it for batch runs."""
+        self._success_path_stubs(monkeypatch, tmp_state_dir)
+        args = _make_args(
+            prompt="a samurai test",
+            output_dir=str(tmp_path),
+            dry_run=False,
+            yes=True,
+            no_open=True,
+            force=True,
+            num_iterations=2,
+        )
+        rc = cmd_draw(args)
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "imgen refine" not in out
+
+
 # ── Enhancer wiring for FLUX.1-dev (architect §K) ────────────────────
 
 

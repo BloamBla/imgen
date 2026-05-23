@@ -83,8 +83,12 @@ def test_validate_input_path_missing_file_exits_code_2(tmp_path, capsys):
         _validate_input_path(str(missing))
 
     assert exc_info.value.code == 2
+    # v0.7.7 (Sec #S2): _validate_input_path now delegates to the
+    # shared resolve_single_input_path which prefixes with the
+    # subcommand name ("generate:") for symmetric diagnostics across
+    # the three i2i subcommands. Message updated; semantics unchanged.
     err = capsys.readouterr().err
-    assert "Image not found" in err
+    assert "generate: input not found" in err
     assert str(missing) in err
 
 
@@ -99,7 +103,7 @@ def test_validate_input_path_directory_exits_code_2(tmp_path, capsys):
 
     assert exc_info.value.code == 2
     err = capsys.readouterr().err
-    assert "Not a file" in err
+    assert "generate: input is not a file" in err
 
 
 # ── resolve_styles_list ────────────────────────────────────────────────

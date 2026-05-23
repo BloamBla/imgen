@@ -88,6 +88,33 @@ def _clean_model_ref(s: str) -> str:
     return s
 
 
+def _clean_prompt_arg(s: str) -> str:
+    """argparse validator for ``imgen refine --prompt``: reject any
+    C0/DEL/C1 control bytes (v0.7.7 Sec #S3).
+
+    Prompts flow through three rendering surfaces — ``--dry-run``
+    output, ``imgen refine``'s ``ok()`` display line, and
+    ``~/.imgen/history.jsonl`` ― any of which can render terminal
+    escape sequences if the prompt carries them. ANSI ESC (0x1b),
+    CSI (0x9b), and SOH/STX/etc would let a crafted prompt
+    clear-screen or fake the confirm gate.
+
+    Symmetric with :func:`_clean_model_ref` and the styles.d
+    schema's ``no control bytes`` predicate. Empty is allowed
+    here — refine's cmd-level resolution still falls back to the
+    baked-in default when ``args.prompt is None`` (an empty string
+    is a user choice "use empty prompt" and mflux accepts that;
+    we just reject *unsafe* bytes, not lack of content).
+    """
+    if any(c < ' ' or c == '\x7f' or '\x80' <= c <= '\x9f' for c in s):
+        raise argparse.ArgumentTypeError(
+            "--prompt contains control bytes (C0/DEL/C1) — reject so "
+            "they don't inject terminal escape sequences into logs / "
+            "confirm gate / dry-run output"
+        )
+    return s
+
+
 def _lora_ref_arg(s: str):
     """argparse validator for ``--lora REF[:WEIGHT]``. Returns a
     :class:`imgen.styles.LoraRef` instance (repeatable; argparse's
@@ -684,7 +711,7 @@ def _add_refine_args(
         help="Explicit output height. Mutex with --scale.",
     )
     p.add_argument(
-        "--prompt", default=None,
+        "--prompt", type=_clean_prompt_arg, default=None,
         help="Refine prompt override. Default focuses on detail/sharpness "
              "while preserving composition; print it with --dry-run.",
     )

@@ -200,7 +200,15 @@ Outputs in `~/Desktop/imgen/lora-ab-2026-05-23/`.
 | 04 | `prithivMLmods/Flux.1-Dev-LoRA-HDR-Realism` | `HDR` | ❌ **CRASH** | Same signature. Experimental repo (195 DL/mo) — author probably didn't test against latest mflux. |
 | 05 | `Shakker-Labs/FLUX.1-dev-LoRA-blended-realistic-illustration` | none | ❌ **CRASH** | Same signature. Important data point: even same-author (Shakker) LoRAs have different rank/projection — `add-details` works, `blended-illustration` crashes. The compat fault isn't the publisher, it's the per-LoRA training shape. |
 
-**Phase 2 verdict**: pending user A/B between 00 / 01 / 02. Two real winners survived shape-mismatch; pick is between "pure detail boost" (01) and "realism shift" (02). Outcome will be documented here + the README "recommended `--lora` for `imgen draw`" line will land in v0.7.5+ once user decides.
+**Phase 2 verdict** (resolved 2026-05-23):
+
+| # | LoRA | Verdict | Why |
+|---|---|---|---|
+| 00 | (baseline, no LoRA) | LOSE | Anchor — flatter, less crisp detail than the LoRA-stacked variants |
+| 01 | `Shakker-Labs/FLUX.1-dev-LoRA-add-details` | **WIN** ✅ | User pick. Adds detail/crispness without shifting the aesthetic toward photo-realism — keeps the prompt's intended mood. Recommended in README's `imgen draw` Quick Start v0.7.7+ |
+| 02 | `XLabs-AI/flux-RealismLora` | RUNNER-UP | Strong but pushes toward photo-realism harder than the prompt asked for; better suited when the user explicitly wants a photo aesthetic. Kept as a "try this alternative" mention |
+
+**1024² blurry follow-up**: Phase 2 winner `add-details` adds visible crispness vs baseline at 1024², but the underlying 1024² ceiling itself still bottlenecks "looks sharp on a 4K screen". The natural fix is the v0.7.5+ `imgen refine` chain: `imgen draw "..." --lora Shakker-Labs/FLUX.1-dev-LoRA-add-details && imgen refine <output>`. v0.7.7 surfaces this chain via a post-success UX hint in `cmd_draw` so the next user doesn't hit the same friction.
 
 **Lesson cross-link**: [[feedback-kontext-lora-compat]] originally said "HF Kontext-tag ≠ Kontext compat". Now generalised: **HF FLUX.1-dev-base label ≠ flux-dev t2i compat either.** The shape-mismatch class of bug spans the entire FLUX family; rank/projection compat is per-LoRA, not per-base-model.
 

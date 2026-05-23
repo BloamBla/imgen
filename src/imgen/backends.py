@@ -302,6 +302,12 @@ BUILTIN_BACKENDS: dict[str, Backend] = {
         image_flag="--image-paths",
         supports_strength=False,
         supports_negative=True,
+        # `-m` (short form of `--model`) is the canonical selector
+        # for bundled models per `mflux-generate-flux2-edit --help`
+        # (v0.7.7 Sec #S4 verification). `--base-model {enum}` is
+        # ONLY for third-party HF repos where mflux needs the
+        # architecture hint on top of an explicit `-m org/model`
+        # — not our case here.
         extra_args=("-m", "flux2-klein-9b"),
         enhance_system_prompt=None,
         enhance_invariants=(),

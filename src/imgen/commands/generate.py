@@ -49,7 +49,7 @@ from ..colors import C, die, info, step, warn
 from ..defaults import DEFAULTS
 from ..history import load_history
 from ..images import detect_resolution
-from ..inputs import resolve_to_mflux_input
+from ..inputs import resolve_single_input_path, resolve_to_mflux_input
 from ..prompt_input import PromptInputError, resolve_prompt
 from ..runs import BatchContext, BatchLogger, Iteration
 from ..subprocess_helpers import build_mflux_env, format_cmd
@@ -120,19 +120,14 @@ def _check_output_style_mutex(args, styles_list: list[str]) -> None:
 def _validate_input_path(image_arg: str) -> Path:
     """Resolve, expand ~, and verify the user-supplied input image.
 
-    Returns the absolute resolved Path. Exits with code 2 on missing
-    file or non-file (directory, special device). Resolution happens
-    here once per invocation so downstream mflux subprocess and history
-    entries record absolute paths regardless of cwd at call time.
+    v0.7.7 (Sec #S2): delegates to the shared
+    :func:`imgen.inputs.resolve_single_input_path` which also enforces
+    control-byte hygiene on the filename (previously only the batch
+    path filtered via :func:`discover_inputs`; single-file paths
+    through generate / refine did not). Subcommand label "generate"
+    so the error message names the actual verb the user typed.
     """
-    input_path = Path(image_arg).expanduser().resolve()
-    if not input_path.exists():
-        die(f"Image not found: {input_path}",
-            code=2,
-            hint="Check the path. Use absolute path if unsure.")
-    if not input_path.is_file():
-        die(f"Not a file: {input_path}", code=2)
-    return input_path
+    return resolve_single_input_path(image_arg, subcommand="generate")
 
 
 def cmd_generate(args) -> int:

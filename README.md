@@ -9,6 +9,9 @@ imgen draw "samurai" --enhance-prompt                         # LLM expands the 
 imgen draw "samurai" --lora some/style-lora,other/detail:0.6  # stack LoRAs
 imgen draw "samurai" --width 1280 --height 720                # custom aspect
 
+# Recommended LoRA for crisper detail (v0.7.7 A/B verdict, see tests/lora_ab_results.md):
+imgen draw "samurai" --lora Shakker-Labs/FLUX.1-dev-LoRA-add-details
+
 # Hires-Fix refine (v0.7.5+) — upsample an existing image at 1.5x/2x
 imgen draw "samurai" --num-iterations 5 --preview             # explore: 5 variants at 1024²
 imgen refine ~/Desktop/imgen/<run>/samurai-3.png              # winner → polished 1536² (~10-20 min)
@@ -44,7 +47,7 @@ Photos without people work fine too — the identity-preserving language doesn't
 
 - **macOS on Apple Silicon** (M1/M2/M3/M4) — MLX does not support Intel
 - **Python 3.12** (install: `brew install python@3.12`)
-- **32 GB unified memory recommended** (16 GB works with `--quantize 4`)
+- **32 GB unified memory recommended** for full feature set; 16 GB works for `imgen generate` / `imgen draw` with `--quantize 4`. **`imgen refine` requires 32 GB** (real measurement Q4/1536² peaks at ~23 GB resident + compression — 16 GB Macs would OOM mid-inference)
 - **~60 GB free disk** (FLUX + Qwen models combined ~80 GB cached)
 - **HuggingFace account** (for FLUX Kontext — gated model, needs license acceptance)
 
@@ -464,7 +467,7 @@ Built-in:
   - License acceptance at https://huggingface.co/black-forest-labs/FLUX.1-Kontext-dev
 - `qwen` — **Qwen-Image-Edit-2509** — open model, no token required. Lower quality at low quants.
 - `flux-dev` — **FLUX.1-dev** — t2i base for `imgen draw`. Gated, same HF token + license as `flux`.
-- `flux2-klein-edit-9b` — **FLUX.2-klein-9B** distilled edit — default for `imgen refine` (v0.7.5+). Native ~4 MP support (up to 2048²) past FLUX.1's 1.5K clean ceiling. Gated, accept license at https://huggingface.co/black-forest-labs/FLUX.2-klein-9B. Q4 default (~12-14 GB on M2 Pro 32 GB at 2K²); Q8 ~16-18 GB.
+- `flux2-klein-edit-9b` — **FLUX.2-klein-9B** distilled edit — default for `imgen refine` (v0.7.5+). Native ~4 MP support (up to 2048²) past FLUX.1's 1.5K clean ceiling. Gated, accept license at https://huggingface.co/black-forest-labs/FLUX.2-klein-9B. Q4 default needs **~24 GB peak RAM** (real measurement at 1.5K-2K²; 32 GB Mac required, 16 GB will OOM). Internal `--guidance` pinned to 1.0 by mflux — `imgen refine` handles this automatically (the `--guidance` flag still works for `--backend flux` Kontext fallback).
 
 `imgen --list-backends` shows the full set including any user-defined backends below.
 
@@ -567,8 +570,8 @@ For `output_dir` specifically the resolution is **`--output-dir` CLI flag > `$IM
 | FLUX Kontext Q8, 20 steps, 1024px (default) | ~15 min |
 | FLUX Kontext Q4, 8 steps, 768px (`--preview`) | ~3–3.5 min |
 | Qwen Edit Q4, 20 steps, 1024px | ~18 min |
-| FLUX.2-klein-edit Q4, 20 steps, 1536² (`imgen refine` default) | ~10-15 min (+ ~15 GB first-run download) |
-| FLUX.2-klein-edit Q4, 20 steps, 2048² (`imgen refine --scale 2`) | ~15-25 min |
+| FLUX.2-klein-edit Q4, 20 steps, 1536² (`imgen refine` default) | **~49 min** (real measurement; + ~15 GB first-run download) |
+| FLUX.2-klein-edit Q4, 20 steps, 2048² (`imgen refine --scale 2`) | **~110 min** (real measurement at 330 s/iteration; memory-pressure bound) |
 | `--enhance-prompt` overhead | ~3-5 s per image after warm-up |
 
 Wall-clock figures measured on a quiet machine. First image after launch pays a one-time weight-load cost (~30–60 s of mmap); subsequent images in the same `imgen batch` reuse the loaded weights, so an N-image batch is roughly `30 s + N × 15 min`, not `N × 15.5 min`. With `--enhance-prompt`, the enhancer model loads once per `imgen` invocation and amortises across all prompts in a batch.

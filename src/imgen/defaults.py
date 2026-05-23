@@ -31,6 +31,11 @@ PREVIEW_OVERRIDES = {
 
 # Peak RAM (GB) required during inference: UNet weights + text encoders
 # + activations + MLX cache headroom. Conservative estimates.
+# TODO v0.8: replace fixed-table with dimension-aware
+# (backend, quant, megapixels) → GB function. Current shape gates
+# refine by worst-case 2K², which over-blocks 24 GB Macs that could
+# fit Q4/1.5K refine. See defaults.py block comment + checks.py
+# for the swap-in point.
 RAM_REQUIRED_GB = {
     ("flux", 3): 8,
     ("flux", 4): 9,
@@ -55,19 +60,25 @@ RAM_REQUIRED_GB = {
     # v0.7.5: FLUX.2-klein-edit-9B (i2i refine backend). 9B params
     # (smaller than FLUX.1's 12B family), but native ≤4 MP support
     # means LARGER activation budget than flux-dev's 1.5K ceiling.
-    # Per backends.py comment math on M2 Pro 32GB at 2K²: Q4 weights
-    # ~4.5 GB + text encoders ~2-3 GB + activations ~4-6 GB ≈
-    # 12-14 GB. Q8 ≈ 9 GB weights + same overhead ≈ 16-18 GB.
-    # Conservative upper-bound picks (rounded up) so the gate
-    # protects 16 GB machines on Q8 instead of green-lighting and
-    # OOM-killing late-pass. Without these rows preflight uses the
-    # default 16 GB which would: (a) gate-fail Q4 on tight 16 GB
-    # setups it can actually run, AND (b) green-light Q8 which OOMs.
-    ("flux2-klein-edit-9b", 3): 12,
-    ("flux2-klein-edit-9b", 4): 14,
-    ("flux2-klein-edit-9b", 5): 15,
-    ("flux2-klein-edit-9b", 6): 16,
-    ("flux2-klein-edit-9b", 8): 18,
+    #
+    # v0.7.7 CALIBRATION (real measurement, M2 Pro 32GB, Q4 @ 2048²):
+    # resident peak 23.10 GB + compressed 3.88 GB + swap 2.86 GB =
+    # ~30 GB total memory pressure. Initial v0.7.5 estimates were
+    # speculative (based on backends.py "12-14 GB" comment math that
+    # under-counted activations for native 4 MP); bumped to reflect
+    # ground truth. Rows now reflect WORST-CASE (2K²) so refine at
+    # 1.5K is over-conservative but 16 GB Macs get correctly gate-
+    # blocked at Q4+ (cannot fit even Q4/1.5K reliably under memory
+    # compression pressure; would OOM after ~20-30 min of refine).
+    # Future v0.8: dimension-aware preflight that lets 1.5K Macs
+    # pass while gating 2K. Only Q4/2048² is real-measured; Q3 /
+    # Q5 / Q6 / Q8 rows are extrapolated linearly from Q4 weights
+    # (~4.5 GB) + same activation / TE / cache overhead envelope.
+    ("flux2-klein-edit-9b", 3): 22,
+    ("flux2-klein-edit-9b", 4): 24,
+    ("flux2-klein-edit-9b", 5): 26,
+    ("flux2-klein-edit-9b", 6): 28,
+    ("flux2-klein-edit-9b", 8): 30,
 }
 
 MIN_DISK_GB = 5             # minimum free disk to attempt

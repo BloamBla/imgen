@@ -38,6 +38,7 @@ __all__ = [
     "convert_heic_to_jpeg",
     "discover_inputs",
     "needs_jpeg_conversion",
+    "resolve_single_input_path",
     "resolve_to_mflux_input",
 ]
 
@@ -94,6 +95,48 @@ def _has_unsafe_controls(name: str) -> bool:
         c < ' ' or c == '\x7f' or '\x80' <= c <= '\x9f'
         for c in name
     )
+
+
+def resolve_single_input_path(image_arg: str, *, subcommand: str) -> Path:
+    """Resolve, expand ~, and verify a single-file input path supplied
+    via CLI. Shared by cmd_generate and cmd_refine (v0.7.7).
+
+    v0.7.7 security #S2: the resolved stem ends up in the output
+    filename, the `ok()` terminal display line, AND the
+    `history.jsonl` record. Filenames with C0/DEL/C1 control bytes
+    can inject ANSI escapes into the terminal (clear-screen, fake
+    confirm-gate) or break tools that parse history. Cross-cutting
+    hardening — batch path already filters via :func:`discover_inputs`,
+    single-file paths through generate/refine did not until now.
+
+    Exits with code 2 on any failure (missing, not-a-file, unsafe
+    name). The ``subcommand`` parameter scopes the diagnostic message
+    so users see the right verb in the error.
+    """
+    input_path = Path(image_arg).expanduser().resolve()
+    if not input_path.exists():
+        die(
+            f"{subcommand}: input not found: {input_path}",
+            code=2,
+            hint="Check the path. Use absolute path if unsure.",
+        )
+    if not input_path.is_file():
+        die(
+            f"{subcommand}: input is not a file: {input_path}", code=2,
+        )
+    if _has_unsafe_controls(input_path.name):
+        # repr() escapes the unsafe bytes for the error message so the
+        # message itself doesn't re-emit them (otherwise rejecting an
+        # ANSI-injection payload would itself perform the injection
+        # in the warn output).
+        die(
+            f"{subcommand}: input filename contains unsafe control bytes: "
+            f"{input_path.name!r}",
+            code=2,
+            hint="Rename the file — C0/DEL/C1 bytes can inject "
+                 "terminal escape sequences into logs and prompts.",
+        )
+    return input_path
 
 
 def discover_inputs(directory: Path) -> list[Path]:

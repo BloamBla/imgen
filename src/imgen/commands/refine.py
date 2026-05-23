@@ -29,6 +29,7 @@ from pathlib import Path
 from ..colors import C, die, info, warn
 from ..defaults import DEFAULTS
 from ..history import load_history
+from ..inputs import resolve_single_input_path
 from ..runs import BatchContext
 from ..cmd_helpers import (
     build_refine_iteration,
@@ -203,12 +204,10 @@ def cmd_refine(args) -> int:
     merged_defaults = getattr(args, "imgen_merged_defaults", DEFAULTS)
     config_output_dir = getattr(args, "imgen_config_output_dir", None)
 
-    # 1) Validate input
-    input_path = Path(args.input).expanduser().resolve()
-    if not input_path.exists():
-        die(f"refine: input not found: {input_path}", code=2)
-    if not input_path.is_file():
-        die(f"refine: input is not a file: {input_path}", code=2)
+    # 1) Validate input (v0.7.7 Sec #S2: shared helper now also
+    # enforces control-byte hygiene on the filename, parity with
+    # the batch path's discover_inputs filter).
+    input_path = resolve_single_input_path(args.input, subcommand="refine")
 
     # 2) Read input dims ONCE — threaded into both
     # _resolve_target_dimensions (scale path) and _confirm_refine
@@ -220,7 +219,11 @@ def cmd_refine(args) -> int:
     # 3) Prompt resolution (refine has a baked-in default; no
     # --prompt-file / stdin path — refine prompts are short and
     # deterministic, no need for the secret-from-ps machinery).
-    prompt = args.prompt or _DEFAULT_REFINE_PROMPT
+    # v0.7.7 fix: use `is not None` so an explicit `--prompt ""`
+    # passes through as the empty string (deliberate user choice
+    # per _clean_prompt_arg's docstring) rather than silently
+    # substituting the default via `or` truthy-check.
+    prompt = args.prompt if args.prompt is not None else _DEFAULT_REFINE_PROMPT
 
     # 4) Backend + token
     backend, be, token, binary, backend_secret = load_backend_and_token(args)
@@ -261,6 +264,11 @@ def cmd_refine(args) -> int:
     # 8) Dry-run
     if args.dry_run:
         print(f"Refine target: {target_w}×{target_h}")
+        # v0.7.7 Arch #D: mark baked-in default vs user override so
+        # the dry-run viewer knows whether they're seeing the value
+        # they typed or the implicit fallback.
+        if args.prompt is None:
+            info("Using default refine prompt (override with --prompt).")
         print(f"   {C.DIM}prompt:{C.END} {prompt[:80]}"
               f"{'...' if len(prompt) > 80 else ''}")
         print()
