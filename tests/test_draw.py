@@ -19,9 +19,9 @@ import pytest
 
 from imgen.cmd_helpers import (
     build_draw_iteration,
-    next_available_png,
     prompt_slug,
 )
+from imgen.runs import next_available_path
 from imgen.commands.draw import cmd_draw
 from imgen.defaults import DEFAULTS
 
@@ -66,25 +66,38 @@ class TestPromptSlug:
         assert prompt_slug("---hello---") == "hello"
 
 
-# ── next_available_png — collision suffix ─────────────────────────────
+# ── next_available_path — collision suffix (v0.7.1 generalised) ───────
 
 
-class TestNextAvailablePng:
+class TestNextAvailablePath:
+    """v0.7.1: helper moved to runs.next_available_path with a
+    parametrised `suffix` arg. Default `.png` preserves the v0.7.0
+    cmd_draw use case; future video/jsonl callers can pass `.mp4` /
+    `.jsonl` without duplicating the collision-suffix loop."""
+
     def test_first_run_no_suffix(self, tmp_path):
-        out = next_available_png(tmp_path, "samurai")
+        out = next_available_path(tmp_path, "samurai")
         assert out == tmp_path / "samurai.png"
 
     def test_collision_appends_2(self, tmp_path):
         (tmp_path / "samurai.png").write_bytes(b"existing")
-        out = next_available_png(tmp_path, "samurai")
+        out = next_available_path(tmp_path, "samurai")
         assert out == tmp_path / "samurai-2.png"
 
     def test_multiple_collisions_increment(self, tmp_path):
         (tmp_path / "samurai.png").write_bytes(b"a")
         (tmp_path / "samurai-2.png").write_bytes(b"b")
         (tmp_path / "samurai-3.png").write_bytes(b"c")
-        out = next_available_png(tmp_path, "samurai")
+        out = next_available_path(tmp_path, "samurai")
         assert out == tmp_path / "samurai-4.png"
+
+    def test_custom_suffix(self, tmp_path):
+        """Future v0.7.x callers (video output, history rotation)
+        pass a different suffix. Suffix lands before the collision
+        index, NOT after — `samurai-2.mp4`, not `samurai.mp4-2`."""
+        (tmp_path / "samurai.mp4").write_bytes(b"a")
+        out = next_available_path(tmp_path, "samurai", suffix=".mp4")
+        assert out == tmp_path / "samurai-2.mp4"
 
 
 # ── Parser stanza ────────────────────────────────────────────────────

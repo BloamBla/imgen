@@ -43,6 +43,7 @@ from ..runs import BatchContext, DrawIterationGroup
 from ..cmd_helpers import (
     apply_enhance_results_to_groups,
     build_draw_iteration,
+    emit_gated_repo_hint_if_failed,
     estimate_one_seconds,
     exit_code,
     format_duration,
@@ -304,24 +305,12 @@ def cmd_draw(args) -> int:
     if not cont:
         return 130  # KeyboardInterrupt mid-iteration.
 
-    # v0.7.0 (post-tag review UX-gap): if mflux exited non-zero AND the
-    # backend declares a gated HF repo, surface a friendly hint pointing
-    # at the per-model license page. Common failure for cold-install
-    # colleagues: their HF token IS valid (it works for Kontext) but
-    # they haven't accepted FLUX.1-dev's separate license on the model
-    # page → 401 GatedRepoError from huggingface_hub. The mflux trace
-    # already says "Cannot access gated repo for url ..." but it's
-    # buried 30 lines into a stack trace; this surfaces the URL at the
-    # bottom where the user is looking after the failure summary.
-    if failed and be.hf_gated_repo:
-        print()
-        info(
-            f"If mflux failed with HTTP 401 / GatedRepoError above, "
-            f"accept the license for this model on HuggingFace:"
-        )
-        print(f"   {C.DIM}https://huggingface.co/{be.hf_gated_repo}{C.END}")
-        print(f"   {C.DIM}(per-repo grant — your token's access to one "
-              f"BFL model doesn't auto-share to siblings){C.END}")
+    # v0.7.0 (post-tag review UX-gap): if mflux exited non-zero AND
+    # the backend declares a gated HF repo, surface a friendly hint
+    # pointing at the per-model license page. v0.7.1 extracted to
+    # cmd_helpers.emit_gated_repo_hint_if_failed so cmd_generate +
+    # cmd_batch get the same hint for FLUX-Kontext cold installs.
+    emit_gated_repo_hint_if_failed(failed=failed, backend_obj=be)
 
     # 13) Open result + summary + exit code. open_results' is_batch=False
     # branch opens succeeded[-1][1] regardless of whether the path lives

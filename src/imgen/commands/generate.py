@@ -31,6 +31,7 @@ from ..cmd_helpers import (
     apply_enhance_results_to_iterations,
     build_iterations,
     check_prompt_style_compat,
+    emit_gated_repo_hint_if_failed,
     estimate_one_seconds,
     exit_code,
     format_duration,
@@ -401,6 +402,12 @@ def cmd_generate(args) -> int:
                 is_batch=is_batch,
                 no_open=args.no_open,
             )
+
+            # v0.7.1: friendly HF license-grant hint when mflux failed
+            # AND backend declares a gated repo. Mirror of cmd_draw's
+            # v0.7.0 post-failure hint, applied to i2i for FLUX-Kontext
+            # cold-install colleagues.
+            emit_gated_repo_hint_if_failed(failed=failed, backend_obj=be)
 
             # 17) End-of-batch summary (only for multi-style — single-style
             # keeps the v0.2.x lean output).

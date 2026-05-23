@@ -5,9 +5,10 @@ apply_enhance_results_to_groups helper against a mixed list of i2i +
 t2i groups (mirroring what an `imgen draw` + `imgen batch` script
 sequence would produce).
 
-apply_enhance_results_to_per_input is kept as a backward-compat alias
-in v0.7.0; locked here so a future rename removal in v0.7.1 doesn't
-silently break in-flight imports.
+v0.7.1: the temporary `apply_enhance_results_to_per_input` alias from
+v0.7.0 has been removed. Only `apply_enhance_results_to_groups`
+survives. Any external programmatic caller still importing the old
+name will get a clean ImportError instead of a silent type mismatch.
 """
 from __future__ import annotations
 
@@ -16,10 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from imgen.cmd_helpers import (
-    apply_enhance_results_to_groups,
-    apply_enhance_results_to_per_input,
-)
+from imgen.cmd_helpers import apply_enhance_results_to_groups
 from imgen.enhance import EnhanceResult
 from imgen.runs import (
     DrawIterationGroup,
@@ -126,13 +124,18 @@ class TestDrawIterationGroup:
             hash(g)
 
 
-class TestApplyEnhanceResultsToGroupsRename:
-    """v0.7.0: apply_enhance_results_to_per_input renamed to
-    apply_enhance_results_to_groups (architect FL-2). The old name
-    stays as a backward-compat alias through v0.7.0."""
+class TestApplyEnhanceResultsToGroups:
+    """v0.7.0 (architect FL-2): the helper sheds its i2i-flavoured
+    name. v0.7.1 dropped the temporary backward-compat alias —
+    `apply_enhance_results_to_per_input` no longer exists at any
+    import path."""
 
-    def test_alias_points_to_same_function(self):
-        assert apply_enhance_results_to_per_input is apply_enhance_results_to_groups
+    def test_old_alias_removed(self):
+        """v0.7.1 lock-in: importing the v0.6.4–v0.7.0 name raises
+        ImportError. Loud-fail beats silent type mismatch on a future
+        contributor who copy-pasted from a pre-v0.7.1 doc."""
+        import imgen.cmd_helpers as cmd_helpers
+        assert not hasattr(cmd_helpers, "apply_enhance_results_to_per_input")
 
     def test_per_input_batch_round_trip(self):
         """The i2i path through the new helper name. Same behaviour as

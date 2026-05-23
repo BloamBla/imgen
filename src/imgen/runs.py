@@ -51,6 +51,7 @@ __all__ = [
     "PerInputBatch",
     "auto_run_dirname",
     "ensure_logs_dir",
+    "next_available_path",
     "next_available_run_dir",
     "open_log_file_append",
     "prune_old_batch_logs",
@@ -163,7 +164,7 @@ class PerInputBatch:
     shape has a name + each field is read by attribute, matching how
     :class:`Iteration` / :class:`BatchContext` / ``LoraResolution`` /
     ``IterationParams`` carry their fields. Tuple positional reads in
-    cmd_batch and ``apply_enhance_results_to_per_input`` are replaced
+    cmd_batch and ``apply_enhance_results_to_groups`` are replaced
     by attribute access — no more ``for _, _, _, _, group in ...``
     underscore-soup at flatten sites.
 
@@ -173,7 +174,7 @@ class PerInputBatch:
     frozen, and the contained sequence being a tuple eliminates the
     "tuple field, mutable element" gotcha for in-place mutation by
     callers. Producers (``cmd_batch`` at the discovery loop and
-    ``apply_enhance_results_to_per_input`` at the post-enhance rebuild)
+    ``apply_enhance_results_to_groups`` at the post-enhance rebuild)
     cast the built list to a tuple at construction.
 
     ``__hash__ = None`` because :class:`Iteration` is itself unhashable
@@ -262,6 +263,36 @@ def auto_run_dirname(now: _dt.datetime | None = None) -> str:
     if now is None:
         now = _dt.datetime.now()
     return now.strftime("%Y-%m-%d-%H-%M-%S")
+
+
+def next_available_path(
+    parent: Path,
+    stem: str,
+    suffix: str = ".png",
+) -> Path:
+    """Return ``parent/<stem><suffix>``, inserting ``-2``/``-3``/...
+    before the suffix if the target already exists.
+
+    Pure: probes the filesystem read-only (Path.exists) and does NOT
+    create the file. Caller writes / lets mflux write. Tiny race
+    window between probe and actual write — single-user CLI usage
+    means concurrent writes into the same parent within the same
+    second don't realistically collide. Same trust model documented
+    on :func:`next_available_run_dir`.
+
+    v0.7.1 (architect §D follow-up): generalised from the v0.7.0
+    png-suffix-hardcoded `next_available_png` so video / other-format
+    outputs reuse the same collision-suffix logic. The default
+    ``suffix=".png"`` keeps every existing draw call-site working
+    with a one-arg drop-in update.
+    """
+    target = parent / f"{stem}{suffix}"
+    if not target.exists():
+        return target
+    i = 2
+    while (parent / f"{stem}-{i}{suffix}").exists():
+        i += 1
+    return parent / f"{stem}-{i}{suffix}"
 
 
 def next_available_run_dir(parent: Path, dirname: str) -> Path:

@@ -487,7 +487,7 @@ def test_dry_run_with_enhance_shows_enhanced_prompts(
     assert load_history() == []
 
 
-# ── apply_enhance_results_to_per_input — pure (v0.6.4 IMP #2) ──────────
+# ── apply_enhance_results_to_groups — pure (v0.6.4 IMP #2) ──────────
 
 
 class TestApplyEnhanceResultsToPerInput:
@@ -550,7 +550,7 @@ class TestApplyEnhanceResultsToPerInput:
     def test_round_trips_uniform_2x3(self):
         """2 inputs × 3 styles = 6 flat results. Result re-buckets to
         per-input shape with 3 iterations each. Prompts spliced in."""
-        from imgen.cmd_helpers import apply_enhance_results_to_per_input
+        from imgen.cmd_helpers import apply_enhance_results_to_groups
         per_input = [
             self._make_pib(
                 "in1",
@@ -573,7 +573,7 @@ class TestApplyEnhanceResultsToPerInput:
             self._make_result("p2-ghibli", "ENH p2-ghibli"),
             self._make_result("p2-pixar", "ENH p2-pixar"),
         ]
-        out = apply_enhance_results_to_per_input(per_input, results)
+        out = apply_enhance_results_to_groups(per_input, results)
         assert len(out) == 2
         # Path + dim metadata preserved on each PerInputBatch.
         for i in range(2):
@@ -595,7 +595,7 @@ class TestApplyEnhanceResultsToPerInput:
         """Future per-style skip logic could produce ragged group
         lengths (input #1 has 3 iters, input #2 only 1). The cursor
         inside the helper handles this transparently."""
-        from imgen.cmd_helpers import apply_enhance_results_to_per_input
+        from imgen.cmd_helpers import apply_enhance_results_to_groups
         per_input = [
             self._make_pib(
                 "in1", ("p1-a", "anime"), ("p1-b", "anime"), ("p1-c", "anime"),
@@ -608,7 +608,7 @@ class TestApplyEnhanceResultsToPerInput:
             self._make_result("p1-c", "ENH p1-c"),
             self._make_result("p2-a", "ENH p2-a"),
         ]
-        out = apply_enhance_results_to_per_input(per_input, results)
+        out = apply_enhance_results_to_groups(per_input, results)
         assert [len(pib.iters) for pib in out] == [3, 1]
         assert out[1].iters[0].prompt == "ENH p2-a"
 
@@ -618,21 +618,21 @@ class TestApplyEnhanceResultsToPerInput:
         ``sum([])==0==len([])`` so the guard passes; result is ``[]``.
         Lock-in so a future contract narrowing doesn't silently
         reject the empty case."""
-        from imgen.cmd_helpers import apply_enhance_results_to_per_input
-        out = apply_enhance_results_to_per_input([], [])
+        from imgen.cmd_helpers import apply_enhance_results_to_groups
+        out = apply_enhance_results_to_groups([], [])
         assert out == []
 
     def test_count_mismatch_raises(self):
         """Misalignment between sum-of-group-lengths and flat results
         is loud, not silent — silent miswire would assign wrong
         prompts to wrong iterations."""
-        from imgen.cmd_helpers import apply_enhance_results_to_per_input
+        from imgen.cmd_helpers import apply_enhance_results_to_groups
         per_input = [
             self._make_pib("in", ("a", "anime"), ("b", "anime")),
         ]
         # Only 1 result for 2 iterations.
         with pytest.raises(ValueError, match="enhance-result count mismatch"):
-            apply_enhance_results_to_per_input(
+            apply_enhance_results_to_groups(
                 per_input, [self._make_result("a")],
             )
 
@@ -642,11 +642,11 @@ class TestApplyEnhanceResultsToPerInput:
         Locks the dataclass-promotion so a future regression to tuple
         return wouldn't sneak past the per-prompt assertions in the
         round-trip tests above."""
-        from imgen.cmd_helpers import apply_enhance_results_to_per_input
+        from imgen.cmd_helpers import apply_enhance_results_to_groups
         from imgen.runs import PerInputBatch
         per_input = [self._make_pib("in", ("a", "anime"))]
         results = [self._make_result("a", "ENH a")]
-        out = apply_enhance_results_to_per_input(per_input, results)
+        out = apply_enhance_results_to_groups(per_input, results)
         assert len(out) == 1
         assert isinstance(out[0], PerInputBatch)
         # Frozen — attribute assignment raises.

@@ -67,7 +67,7 @@ from .backends import (
     get_backend,
 )
 from .checks import check_mflux, check_resources, check_venv
-from .colors import C, die, err, ok, step, warn
+from .colors import C, die, err, info, ok, step, warn
 from .config import effective_enhance, effective_output_dir
 from .defaults import PREVIEW_OVERRIDES
 from .enhance import (
@@ -86,6 +86,7 @@ from .runs import (
     IterationGroup,
     PerInputBatch,
     auto_run_dirname,
+    next_available_path,
     next_available_run_dir,
 )
 from .styles import LoraRef, Style, StyleNotFound, get_style
@@ -95,16 +96,15 @@ from .tokens import load_token
 __all__ = [
     "apply_enhance_results_to_groups",
     "apply_enhance_results_to_iterations",
-    "apply_enhance_results_to_per_input",  # v0.7.0 backward-compat alias
     "build_draw_iteration",
     "build_iterations",
+    "emit_gated_repo_hint_if_failed",
     "check_prompt_style_compat",
     "estimate_one_seconds",
     "exit_code",
     "format_duration",
     "load_backend_and_token",
     "maybe_enhance_for_command",
-    "next_available_png",
     "open_results",
     "preflight_resources",
     "prepend_trigger_words",
@@ -623,14 +623,6 @@ def apply_enhance_results_to_groups(
     return out
 
 
-# v0.7.0 backward-compat alias for the v0.6.4–v0.6.5 i2i-flavoured name.
-# Removed in v0.7.1 alongside the apply-rename architect FL-2 closure.
-# Existing callers (commands/batch.py) keep their import working; the
-# Protocol-typed signature accepts list[PerInputBatch] cleanly because
-# PerInputBatch implements IterationGroup.
-apply_enhance_results_to_per_input = apply_enhance_results_to_groups
-
-
 # ── One iteration: the subprocess workhorse ─────────────────────────────
 
 
@@ -817,6 +809,42 @@ def run_one_iteration(
 
 
 # ── Results opening / preflight / summary / exit code ──────────────────
+
+
+def emit_gated_repo_hint_if_failed(
+    *,
+    failed: list,
+    backend_obj,
+) -> None:
+    """Surface a friendly HF license-grant hint when mflux failed AND
+    the backend declares a gated repo.
+
+    Common failure for cold-install colleagues: their HF token IS
+    valid (it authenticates fine) but they haven't accepted the
+    specific model's license on HuggingFace — FLUX.1-dev and
+    FLUX.1-Kontext-dev are SEPARATE gated repos with SEPARATE
+    per-model license-grants. The mflux trace already says
+    "Cannot access gated repo for url ..." but it's buried 30 lines
+    into a stack trace; this helper surfaces the URL at the bottom
+    where the user is looking after the failure summary.
+
+    Pure side-effect (prints to stdout) on the failure path; no-op
+    on success or when the backend doesn't declare ``hf_gated_repo``
+    (qwen — open repo; user TOMLs that don't set the field).
+
+    v0.7.0 originally inlined this in cmd_draw; v0.7.1 extracts so
+    cmd_generate + cmd_batch get the same hint on Kontext UX gaps.
+    """
+    if not failed or not getattr(backend_obj, "hf_gated_repo", None):
+        return
+    print()
+    info(
+        "If mflux failed with HTTP 401 / GatedRepoError above, "
+        "accept the license for this model on HuggingFace:"
+    )
+    print(f"   {C.DIM}https://huggingface.co/{backend_obj.hf_gated_repo}{C.END}")
+    print(f"   {C.DIM}(per-repo grant — your token's access to one "
+          f"gated model doesn't auto-share to siblings){C.END}")
 
 
 def open_results(
@@ -1208,27 +1236,6 @@ def prompt_slug(
     return slugged or "draw"
 
 
-def next_available_png(run_dir: Path, slug: str) -> Path:
-    """Pick ``<run_dir>/<slug>.png``, suffixing ``-2``/``-3``/... if it
-    already exists. Mirror of :func:`runs.next_available_run_dir`
-    adapted for files.
-
-    Pure: probes the filesystem read-only (Path.exists) and does NOT
-    create the file. Caller writes / lets mflux write. Tiny race
-    window between probe and actual write — single-user CLI usage
-    means concurrent draws into the same run_dir within the same
-    second don't realistically collide. Same trust model documented
-    on :func:`runs.next_available_run_dir`.
-    """
-    target = run_dir / f"{slug}.png"
-    if not target.exists():
-        return target
-    i = 2
-    while (run_dir / f"{slug}-{i}.png").exists():
-        i += 1
-    return run_dir / f"{slug}-{i}.png"
-
-
 def build_draw_iteration(
     *,
     args,
@@ -1262,9 +1269,9 @@ def build_draw_iteration(
     and :func:`_resolve_iteration_loras` (same stub; CLI LoRAs apply,
     no preset LoRAs to layer under). Returns one frozen Iteration.
 
-    Pure: no subprocess, no I/O beyond the next_available_png filesystem
-    probe. Caller (cmd_draw) does the dry-run / preflight / confirm /
-    run_one_iteration dance with the returned Iteration.
+    Pure: no subprocess, no I/O beyond the next_available_path
+    filesystem probe. Caller (cmd_draw) does the dry-run / preflight /
+    confirm / run_one_iteration dance with the returned Iteration.
     """
     preset = Style()  # empty preset — no prompt/negative/guidance/
     #                   strength/scene_suffix/loras default into the
@@ -1283,7 +1290,9 @@ def build_draw_iteration(
             "build_draw_iteration: either explicit_output or run_dir must "
             "be provided"
         )
-        output_path = next_available_png(run_dir, prompt_slug(prompt))
+        output_path = next_available_path(
+            run_dir, prompt_slug(prompt), suffix=".png",
+        )
 
     # LoRA stack: no preset LoRAs (Style() default empty tuple); CLI
     # LoRAs apply per the --lora/--no-lora flags.

@@ -335,6 +335,51 @@ def detect_install_collision(
     return None
 
 
+def _ping_hf_whoami_and_report(token: str) -> int:
+    """v0.7.1: validate an HF token via the whoami endpoint and emit
+    a one-line status to stdout. Returns the doctor-issue delta —
+    1 if the token is invalid (revoked/expired/wrong-scope, 401 from
+    HF), 0 otherwise.
+
+    Network unreachable / DNS down / HF outage all warn but return 0
+    — the user's token may be fine, we just can't verify it. Refusing
+    to ship them on an air-gapped Mac would be worse than missing a
+    stale-token diagnosis.
+
+    Extracted from inline cmd_doctor for testability — the inline
+    chain wraps ``HfApi().whoami`` + ``HfHubHTTPError`` handling +
+    print() + issue counter, all of which need separate mocks. A
+    thin helper makes the test surface a single function-call away.
+    """
+    try:
+        from huggingface_hub import HfApi
+        from huggingface_hub.errors import HfHubHTTPError
+    except ImportError:
+        # huggingface_hub not importable — broken venv, but the
+        # mflux check above would have already failed loudly.
+        return 0
+    try:
+        user_info = HfApi().whoami(token=token)
+        username = user_info.get("name") or user_info.get("fullname") or "?"
+        ok(f"   HF whoami: logged in as {username}")
+        return 0
+    except HfHubHTTPError as e:
+        status = getattr(getattr(e, "response", None), "status_code", None)
+        if status == 401:
+            warn("   HF whoami: token is INVALID "
+                 "(revoked / expired / wrong scope)")
+            print(f"   {C.DIM}Generate a new Read token at "
+                  f"https://huggingface.co/settings/tokens{C.END}")
+            print(f"   {C.DIM}Then: imgen setup  to update.{C.END}")
+            return 1
+        warn(f"   HF whoami: unexpected HTTP {status} from HF")
+        return 1
+    except Exception as e:
+        # Network unreachable / DNS failure / etc.
+        warn(f"   HF whoami: could not reach HuggingFace ({type(e).__name__})")
+        return 0
+
+
 def cmd_doctor(_args) -> int:
     issues = 0  # count blocking problems; return non-zero if any
     step("Checking environment")
@@ -452,6 +497,15 @@ def cmd_doctor(_args) -> int:
                 # remediation hint with full context.
                 if not check_token_perms():
                     warn(f"{active} permissions not 600 — run: chmod 600 {active}")
+
+        # v0.7.1: ping HF whoami so a stale / revoked / wrong-scope token
+        # surfaces HERE (before the user wastes 13s on a first
+        # snapshot_download attempt that 401s buried inside a stack
+        # trace). Burned live during the v0.7.0 smoke pre-tag — user's
+        # token went stale + the first failure mode was a mflux+
+        # huggingface_hub traceback rather than a clean "token invalid"
+        # message at the right surface.
+        issues += _ping_hf_whoami_and_report(tok)
     else:
         warn("No HF token found")
         print(f"   {C.DIM}FLUX backend won't work without token.{C.END}")
