@@ -155,7 +155,7 @@ def _flatten_cli_lora(
 
 
 def resolve_effective_loras(
-    preset,  # Style | dict — Style in prod since v0.6.2; replay shim may pass dict
+    preset: Style,
     cli_lora: list | None,
     no_lora: bool,
 ) -> tuple[LoraRef, ...]:

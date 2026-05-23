@@ -527,9 +527,13 @@ class TestAddRunControlArgs:
     def test_default_help_text_used_when_no_override(self):
         p = self._build()
         flags = self._flags_on_parser(p)
-        # Default phrasing mentions the core concept
+        # Default phrasing mentions the core concept.
+        # NIT v0.7.9 review: verify the concept word, not an
+        # accidental coupling to "Preview" the macOS app name —
+        # a future help rewording to "Finder" / "Pixelmator" /
+        # neither shouldn't fail this test.
         assert "preview" in flags["--preview"].help.lower()
-        assert "preview" in flags["--no-open"].help.lower()
+        assert "open" in flags["--no-open"].help.lower()
         assert "confirm" in flags["--yes"].help.lower()
         assert "dry" not in flags["--no-open"].help.lower()  # cross-bleed check
 

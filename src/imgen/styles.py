@@ -535,9 +535,9 @@ BUILTIN_STYLES: dict[str, "Style"] = {
 # / list_styles() instead, which transparently include user TOMLs from
 # ~/.imgen/styles.d/. Kept so the existing test_styles.py and any
 # downstream code expecting `STYLES` keeps working — those callers only
-# care about the built-in set. v0.6.2: values are now :class:`Style`
-# instances; dict-compat read API on Style (``["..."]``/``.get(...)``)
-# preserves the v0.1.x test surface.
+# care about the built-in set. Values are :class:`Style` instances;
+# attribute access (`style.prompt`, `style.loras`) is the canonical
+# read surface (dict-compat read API removed in v0.7.9).
 STYLES: dict[str, "Style"] = BUILTIN_STYLES
 
 

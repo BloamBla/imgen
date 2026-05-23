@@ -18,7 +18,7 @@ ALL_STYLES = list(STYLES.keys())
 def test_preset_has_required_keys(name):
     preset = STYLES[name]
     assert preset.prompt is not None, f"{name}: missing 'prompt'"
-    assert bool(preset.negative), f"{name}: missing 'negative'"
+    assert bool(preset.negative), f"{name}: empty or missing 'negative'"
     assert isinstance(preset.prompt, str)
     assert isinstance(preset.negative, str)
     assert preset.prompt.strip(), f"{name}: empty prompt"
