@@ -813,8 +813,8 @@ def run_one_iteration(
 
 def emit_gated_repo_hint_if_failed(
     *,
-    failed: list,
-    backend_obj,
+    failed: list[tuple[str, Path, int]],
+    backend_obj: Backend,
 ) -> None:
     """Surface a friendly HF license-grant hint when mflux failed AND
     the backend declares a gated repo.

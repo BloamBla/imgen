@@ -16,8 +16,6 @@ import io
 from contextlib import redirect_stdout, redirect_stderr
 from types import SimpleNamespace
 
-import pytest
-
 from huggingface_hub.errors import HfHubHTTPError
 
 
@@ -71,17 +69,29 @@ class TestHfWhoamiPing:
         assert "token is INVALID" in output
         assert "huggingface.co/settings/tokens" in output
 
-    def test_non_401_http_returns_1(self, monkeypatch):
-        """Other HTTP errors (500, 503, etc) also bump issues — they
-        indicate the token couldn't be validated even though the
-        request reached HF."""
+    def test_non_401_http_returns_0_transient(self, monkeypatch):
+        """v0.7.1 python NIT-3: non-401 HTTP (5xx, 429, etc) is
+        transient — HF outage, rate limit, intermediate failure. The
+        token may be valid; we couldn't verify right now. Symmetric
+        with the ConnectionError path: warn, no issue bump."""
         class FakeHfApi:
             def whoami(self, token):
                 raise _FakeHfHubHTTPError(503)
         monkeypatch.setattr("huggingface_hub.HfApi", FakeHfApi)
         delta, output = _capture(monkeypatch, "hf_anytoken")
-        assert delta == 1
-        assert "unexpected HTTP 503" in output
+        assert delta == 0
+        assert "HTTP 503" in output
+        assert "transient" in output
+
+    def test_rate_limit_returns_0(self, monkeypatch):
+        """429 Too Many Requests is also transient — same path as 5xx."""
+        class FakeHfApi:
+            def whoami(self, token):
+                raise _FakeHfHubHTTPError(429)
+        monkeypatch.setattr("huggingface_hub.HfApi", FakeHfApi)
+        delta, output = _capture(monkeypatch, "hf_token")
+        assert delta == 0
+        assert "HTTP 429" in output
 
     def test_network_failure_returns_0(self, monkeypatch):
         """Air-gapped Mac / DNS down / HF outage: warn but DON'T mark

@@ -372,8 +372,15 @@ def _ping_hf_whoami_and_report(token: str) -> int:
                   f"https://huggingface.co/settings/tokens{C.END}")
             print(f"   {C.DIM}Then: imgen setup  to update.{C.END}")
             return 1
-        warn(f"   HF whoami: unexpected HTTP {status} from HF")
-        return 1
+        # v0.7.1 (python NIT-3): non-401 HTTP (5xx, 429, etc) is
+        # transient — HF outage, rate limit, intermediate failure.
+        # The token may be perfectly valid; we just couldn't verify
+        # right now. Symmetric with the ConnectionError/Timeout path
+        # below (warn but don't bump issues — air-gapped Macs +
+        # HF-down windows shouldn't fail doctor).
+        warn(f"   HF whoami: HuggingFace returned HTTP {status} "
+             f"(transient — try again later)")
+        return 0
     except Exception as e:
         # Network unreachable / DNS failure / etc.
         warn(f"   HF whoami: could not reach HuggingFace ({type(e).__name__})")

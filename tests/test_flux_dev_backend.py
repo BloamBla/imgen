@@ -95,6 +95,41 @@ class TestFluxDevBackendEntry:
         assert BACKENDS["flux"].lora_compat_group == "flux-1"
         assert BACKENDS["qwen"].lora_compat_group == "qwen"
 
+    def test_emit_gated_repo_hint_no_op_on_success(self, capsys):
+        """v0.7.1 architect NIT: direct unit tests for the extracted
+        helper. Coverage today is incidental via test_draw.py; pure
+        functions warrant strict TDD-matrix coverage. Case 1:
+        ``failed=[]`` → no-op, no output."""
+        from imgen.cmd_helpers import emit_gated_repo_hint_if_failed
+        emit_gated_repo_hint_if_failed(
+            failed=[], backend_obj=BACKENDS["flux-dev"],
+        )
+        assert capsys.readouterr().out == ""
+
+    def test_emit_gated_repo_hint_no_op_on_non_gated_backend(self, capsys):
+        """Case 2: backend has ``hf_gated_repo=None`` (qwen). Even with
+        a non-empty failed list, no hint surfaces — the hint is
+        gated-repo-specific."""
+        from imgen.cmd_helpers import emit_gated_repo_hint_if_failed
+        from pathlib import Path
+        emit_gated_repo_hint_if_failed(
+            failed=[("draw", Path("/tmp/out.png"), 1)],
+            backend_obj=BACKENDS["qwen"],
+        )
+        assert capsys.readouterr().out == ""
+
+    def test_emit_gated_repo_hint_prints_url_when_both_truthy(self, capsys):
+        """Case 3: failed AND hf_gated_repo set → URL surfaces."""
+        from imgen.cmd_helpers import emit_gated_repo_hint_if_failed
+        from pathlib import Path
+        emit_gated_repo_hint_if_failed(
+            failed=[("draw", Path("/tmp/out.png"), 1)],
+            backend_obj=BACKENDS["flux-dev"],
+        )
+        out = capsys.readouterr().out
+        assert "https://huggingface.co/black-forest-labs/FLUX.1-dev" in out
+        assert "GatedRepoError" in out or "401" in out
+
     def test_hf_gated_repo_populated(self):
         """v0.7.0 post-tag UX-gap: flux-dev declares the HF model URL
         path so cmd_draw can surface the per-repo license hint on
