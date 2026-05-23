@@ -8,7 +8,7 @@ imgen photo.jpg --style anime
 imgen photo.jpg --style simpsons --preview   # ~3 min fast test
 imgen photo.jpg --custom-prompt "Mona Lisa painting style"
 imgen photo.jpg --style anime --enhance-prompt   # smarter prompts → better results
-imgen photo.jpg --style ghibli --no-lora         # A/B vs the built-in LoRA (only ghibli ships one in v0.6.1)
+imgen photo.jpg --style ghibli --no-lora         # A/B vs the built-in LoRA (6 of 7 styles ship LoRAs in v0.6.3)
 imgen batch ~/Desktop/holiday --style anime,ghibli   # every photo in folder × every style
 ```
 
@@ -299,17 +299,25 @@ Smaller models (3B) are faster but produce flatter expansions. Larger (14B) won'
 
 A LoRA is a small weight delta — typically 50-300 MB — trained on top of a base diffusion model to nudge it toward a specific style. Used at generation time, a LoRA *layers* on top of the base model, no full re-training, no need to swap models between styles.
 
-One built-in style ships with a curated LoRA:
+Six built-in styles ship with curated LoRAs after v0.6.3 (research round 2 on Kontext-trained candidates):
 
-| Style    | LoRA                                | Weight | Trigger        | License                            |
-|----------|-------------------------------------|--------|----------------|------------------------------------|
-| `ghibli` | `openfree/flux-chatgpt-ghibli-lora` | 0.8    | `Ghibli style` | `flux-1-dev-non-commercial-license` |
+| Style       | LoRA                                                         | Weight | Trigger             | License                                |
+|-------------|--------------------------------------------------------------|--------|---------------------|----------------------------------------|
+| `anime`     | `Shakker-Labs/FLUX.1-Kontext-dev-LoRA-Flat-Cartoon-Style`    | 0.8    | `flat cartoon style`| `flux-1-dev-non-commercial-license`    |
+| `anime_alt` | `Kontext-Style/Irasutoya_lora`                               | 0.8    | `Irasutoya style`   | unspecified — see commercial-use note  |
+| `pixar`     | `Kontext-Style/Poly_lora`                                    | 0.8    | `Poly style`        | unspecified — see commercial-use note  |
+| `pixar_alt` | `Kontext-Style/3D_Chibi_lora`                                | 0.8    | `3D Chibi`          | unspecified — see commercial-use note  |
+| `ghibli`    | `openfree/flux-chatgpt-ghibli-lora`                          | 0.8    | `Ghibli style`      | `flux-1-dev-non-commercial-license`    |
+| `vangogh`   | `Kontext-Style/Oil_Painting_lora`                            | 0.8    | `Oil Painting`      | unspecified — see commercial-use note  |
+| `pencil`    | `Shakker-Labs/FLUX.1-Kontext-dev-LoRA-Sketch-Style`          | 0.8    | `sketch`            | `flux-1-dev-non-commercial-license`    |
 
-`anime`, `pixar`, `simpsons`, `vangogh`, and `pencil` stay text-only on the default `flux` (Kontext) backend.
+`simpsons` stays text-only — no Kontext-trained Simpsons LoRA on HF survived the visual A/B for that specific aesthetic.
 
-> **Note on commercial use.** All built-in LoRAs above ride on top of FLUX.1-Kontext-dev, whose own license (FLUX-NC) gates commercial use. So even when an upstream LoRA's own license is permissive (e.g. Apache-2.0), running it through `imgen` inherits FLUX-NC restrictions. The ghibli LoRA's `flux-1-dev-non-commercial-license` is identical in spirit to FLUX-NC — non-commercial only. The same FLUX-NC constraint applies to any LoRA you supply via `--lora` or `styles.d/*.toml`.
+`anime_alt` and `pixar_alt` exist because the same input photo lands differently under different LoRAs of the same family. Try the primary first; switch to `_alt` if you want the other aesthetic (Irasutoya = flatter Japanese illustration; 3D_Chibi = exaggerated chibi proportions).
 
-**Why so few built-in LoRAs?** Most HuggingFace "Flux LoRA" weights were trained on **FLUX.1-dev** (the base text-to-image model). `imgen`'s default backend is **FLUX.1-Kontext-dev** — a different model in the same family, with a modified attention layer to accept image conditioning. Many FLUX.1-dev LoRAs *load* on Kontext (all tensor keys match) but **crash at the first denoise step** with an attention shape mismatch, because the rank-16 weight deltas don't fit Kontext's attention shape. v0.6.0 originally shipped LoRA mappings for `anime` (Flux-Animeo) and `pixar` (Canopus-Pixar-3D-FluxDev); v0.6.1 reverted both to text-only after they crashed in real runs. `openfree/flux-chatgpt-ghibli-lora` happens to use a rank that maps onto Kontext attention correctly, so it survives. **Per-LoRA Kontext compatibility must be verified by actual inference** — name + key-match are not enough.
+> **Note on commercial use.** All built-in LoRAs above ride on top of FLUX.1-Kontext-dev, whose own license (FLUX-NC) gates commercial use. So even when an upstream LoRA's own license is permissive, running it through `imgen` inherits FLUX-NC restrictions. The `flux-1-dev-non-commercial-license` LoRAs (Shakker-Labs + openfree) are identical in spirit to FLUX-NC — non-commercial only. **Kontext-Style org LoRAs don't publish a license on their model cards** — `imgen` treats them as "unspecified, review before commercial use" but their FLUX-NC base inheritance means commercial use is gated regardless. The same FLUX-NC constraint applies to any LoRA you supply via `--lora` or `styles.d/*.toml`.
+
+**Why is the table this short?** Most HuggingFace "Flux LoRA" weights were trained on **FLUX.1-dev** (the base text-to-image model). `imgen`'s default backend is **FLUX.1-Kontext-dev** — a different model in the same family, with a modified attention layer to accept image conditioning. Many FLUX.1-dev LoRAs *load* on Kontext (all tensor keys match) but **crash at the first denoise step** with an attention shape mismatch, because the rank-16 weight deltas don't fit Kontext's attention shape. v0.6.0 originally shipped LoRA mappings for `anime` (Flux-Animeo) and `pixar` (Canopus-Pixar-3D-FluxDev); v0.6.1 reverted both to text-only after they crashed in real runs. v0.6.3 went hunting for actual Kontext-trained replacements; the ones above are what survived a Phase-1 crash-screen against a real photo. **Even HF "Kontext"-tagged repos are not always Kontext-compat** — `prithivMLmods/Monochrome-Pencil` (328 dl, prominent) crashed with the same shape signature as the v0.6.0 controls. Per-LoRA Kontext compatibility must be verified by actual inference — name, tag, and key-match are not enough.
 
 `imgen --list-loras` shows the active mapping plus which LoRAs are already cached locally vs. about to download:
 
@@ -317,8 +325,14 @@ One built-in style ships with a curated LoRA:
 $ imgen --list-loras
 Available LoRAs
   Styles shipping LoRAs:
-    ghibli         openfree/flux-chatgpt-ghibli-lora        @0.80  [flux-1] trigger="Ghibli style"  (cached)
-  Text-only styles (no LoRA): anime, pencil, pixar, simpsons, vangogh
+    anime          Shakker-Labs/FLUX.1-Kontext-dev-LoRA-Flat-Cartoon-Style @0.80  [flux-1] trigger="flat cartoon style"  (cached)
+    anime_alt      Kontext-Style/Irasutoya_lora                            @0.80  [flux-1] trigger="Irasutoya style"     (cached)
+    ghibli         openfree/flux-chatgpt-ghibli-lora                       @0.80  [flux-1] trigger="Ghibli style"        (cached)
+    pencil         Shakker-Labs/FLUX.1-Kontext-dev-LoRA-Sketch-Style       @0.80  [flux-1] trigger="sketch"               (cached)
+    pixar          Kontext-Style/Poly_lora                                 @0.80  [flux-1] trigger="Poly style"           (cached)
+    pixar_alt      Kontext-Style/3D_Chibi_lora                             @0.80  [flux-1] trigger="3D Chibi"             (cached)
+    vangogh        Kontext-Style/Oil_Painting_lora                         @0.80  [flux-1] trigger="Oil Painting"         (cached)
+  Text-only styles (no LoRA): simpsons
 ```
 
 ### A/B against the base model
@@ -368,7 +382,7 @@ Many style LoRAs only activate when a specific phrase appears in the prompt — 
 
 ```bash
 imgen photo.jpg --style anime
-# Effective prompt: "Animeo, Restyle this person as a Japanese anime character, ..."
+# Effective prompt: "flat cartoon style, Restyle this person as a Japanese anime character, ..."
 ```
 
 Triggers shown in `imgen --list-loras` (the `trigger=` column). If you set `--custom-prompt` and your custom text already includes the trigger phrase, `imgen` leaves it alone — no duplication. If you stack multiple LoRAs with different triggers, all triggers are prepended in stack order.
@@ -378,39 +392,42 @@ Triggers shown in `imgen --list-loras` (the `trigger=` column). If you set `--cu
 If you want a LoRA stack always-on for one style without typing `--lora` every time, declare it in a user style TOML at `~/.imgen/styles.d/`. The shape mirrors the built-in dict — see [User-defined styles](#user-defined-styles) above. Example:
 
 ```toml
-# ~/.imgen/styles.d/anime_strong.toml — anime with two LoRAs stacked
+# ~/.imgen/styles.d/anime_strong.toml — anime with two Kontext-trained LoRAs stacked
 prompt = "Restyle this person as a Japanese anime character, while preserving the facial identity, hairstyle, body proportions, and pose, with cel-shaded illustration, vibrant colors, clean shading, and manga aesthetic"
 negative = "realistic photo, 3d render, deformed face, bad anatomy, blurry, watermark, text"
 guidance = 4.0
 strength = 0.60
 
 [[loras]]
-ref = "strangerzonehf/Flux-Animeo-v1-LoRA"
-weight = 0.9
+ref = "Shakker-Labs/FLUX.1-Kontext-dev-LoRA-Flat-Cartoon-Style"
+weight = 0.7
 compatible_with = ["flux-1"]
-trigger = "Animeo"
+trigger = "flat cartoon style"
 
 [[loras]]
-ref = "Shakker-Labs/FLUX.1-Kontext-dev-LoRA-Flat-Cartoon-Style"
+ref = "Kontext-Style/Irasutoya_lora"
 weight = 0.4
 compatible_with = ["flux-1"]
+trigger = "Irasutoya style"
 ```
 
-Use it via `imgen photo.jpg --style anime_strong`. The `compatible_with` list controls which backends the LoRA can attach to (see below); `trigger` is optional but lets `imgen` auto-prepend the activation phrase.
+Use it via `imgen photo.jpg --style anime_strong`. The `compatible_with` list controls which backends the LoRA can attach to (see below); `trigger` is optional but lets `imgen` auto-prepend the activation phrase. (Pick Kontext-trained refs — `*-FluxDev-*` or unverified FLUX.1-dev base LoRAs will crash mflux Kontext at the first denoise step.)
 
 ### Compatibility groups
 
 LoRAs are architecture-bound. A LoRA trained for FLUX.1 will NOT load on Qwen-Image-Edit, and vice versa. `imgen` declares a `lora_compat_group` on each backend (`"flux-1"` for the default `flux` backend; `"qwen"` for `qwen`); when a LoRA's `compatible_with` list doesn't include the active backend's group, `imgen` warns once and skips the LoRA, then continues with the rest of the stack (or fully text-only if all LoRAs are incompatible). It doesn't crash and doesn't silently apply a mismatched LoRA.
 
-In practice all three built-in LoRAs are flux-1 only. Switching `--backend qwen` produces a warn-and-skip plus a text-only generation for those styles. Qwen-side LoRAs do exist; you'd attach them ad-hoc via `--lora REF` with `compatible_with = ["qwen"]` in a user style TOML.
+In practice all built-in LoRAs are flux-1 only. Switching `--backend qwen` produces a warn-and-skip plus a text-only generation for those styles. Qwen-side LoRAs do exist; you'd attach them ad-hoc via `--lora REF` with `compatible_with = ["qwen"]` in a user style TOML.
 
 ### License model
 
 **`imgen` ships no LoRA weights of its own.** The built-in style mappings reference HuggingFace repos by id, and `mflux` (via `huggingface_hub`) downloads them on first use into `~/.cache/huggingface/hub/` — the same cache that holds FLUX itself. `imgen clean --all` clears the whole HF cache including LoRAs.
 
-Per-LoRA license:
+Per-LoRA license (as published on the upstream HF model card):
 
-- **`openfree/flux-chatgpt-ghibli-lora`** — `flux-1-dev-non-commercial-license` (non-commercial only). Aligns with the FLUX-NC base model — both restrict commercial use.
+- **Shakker-Labs Kontext LoRAs** (`Flat-Cartoon-Style`, `Sketch-Style`) — `flux-1-dev-non-commercial-license`. Non-commercial only; same NC tier as FLUX-Kontext-dev base.
+- **`openfree/flux-chatgpt-ghibli-lora`** — `flux-1-dev-non-commercial-license`. Non-commercial only.
+- **Kontext-Style org LoRAs** (`Poly_lora`, `3D_Chibi_lora`, `Oil_Painting_lora`, `Irasutoya_lora`) — **license unspecified** on the upstream model cards. `imgen` ships these for non-commercial use only (the FLUX-NC base license gates commercial use regardless). Review upstream licenses directly before any commercial use.
 
 The blanket caveat in the LoRA section above (FLUX-NC base gates commercial use) applies to every LoRA invoked through `imgen` regardless of the LoRA's own upstream license, because the base model is what actually runs.
 

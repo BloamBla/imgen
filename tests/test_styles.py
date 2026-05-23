@@ -243,21 +243,12 @@ def test_parse_style_list_single_whitespace_item_raises():
 
 
 def test_ghibli_ships_openfree_ghibli_lora_at_0p8():
-    """openfree/flux-chatgpt-ghibli-lora is the design-memo FALLBACK
-    pick — the primary alvarobartt/ghibli-characters-flux-lora carried
-    a "TBD pending license check" marker so we ship the well-
-    established openfree LoRA with clearer licensing for v0.6 cut.
-
-    v0.6.1 lesson: this is the ONLY built-in LoRA that survived the
-    post-ship A/B on FLUX.1-Kontext-dev. anime (Flux-Animeo-v1-LoRA)
-    and pixar (Canopus-Pixar-3D-FluxDev-LoRA) crashed mflux Kontext
-    at the first denoise step with a (1,4992,16)×(64,3072) attention
-    shape mismatch — they were trained on FLUX.1-dev base T2I whose
-    attention layer is shaped differently than Kontext's. All 912
-    LoRA keys "matched" at load time, but the runtime attention math
-    exploded. openfree-ghibli happens to use a LoRA rank that maps
-    onto Kontext's attention shapes correctly. Per-LoRA Kontext-
-    compat must be verified by ACTUAL inference, not by name."""
+    """openfree/flux-chatgpt-ghibli-lora — the only v0.6.0 built-in
+    LoRA pick that survived the v0.6.1 Kontext post-ship A/B (anime
+    + pixar reverted, ghibli kept). v0.6.3 LoRA round-2 re-confirmed
+    it remains the right ghibli pick; new picks landed for anime /
+    pixar / vangogh / pencil. See lock-in tests below for those.
+    """
     from imgen.styles import LoraRef
     loras = STYLES["ghibli"].get("loras", ())
     assert len(loras) == 1
@@ -269,35 +260,91 @@ def test_ghibli_ships_openfree_ghibli_lora_at_0p8():
     )
 
 
-@pytest.mark.parametrize(
-    "name", ["anime", "pixar", "simpsons", "vangogh", "pencil"],
-)
-def test_text_only_built_ins_have_no_loras(name):
-    """Five of six built-in styles ship text-only in v0.6.1:
+def test_v063_lora_picks_per_style():
+    """v0.6.3 BUILTIN_STYLES LoRA assignments after Phase 1 + Phase 2.
 
-    * anime / pixar — REGRESSION-LOCK from v0.6.0. The two FLUX.1-dev
-      LoRAs (Flux-Animeo-v1-LoRA + Canopus-Pixar-3D-FluxDev-LoRA)
-      crashed mflux Kontext at runtime; reverted to text-only in
-      v0.6.1. If a future commit re-adds a LoRA to either style,
-      the regression resurfaces silently — this test catches it.
-      Per-LoRA Kontext-compat MUST be verified by real inference
-      before adding back. (See ``test_ghibli_ships_openfree_ghibli_
-      lora_at_0p8`` for the full lesson.)
-    * simpsons — IP-blocked on HF, no quality LoRA exists.
-    * vangogh — available impressionism LoRAs didn't beat text-only.
-    * pencil — already strong in FLUX base training, no quality boost
-      from available LoRAs.
+    Six of seven built-in styles ship a LoRA after v0.6.3:
+
+    * anime → Shakker-Labs/...-Flat-Cartoon-Style @ 0.8 (primary user pick)
+    * anime_alt → Kontext-Style/Irasutoya_lora @ 0.8 (alternative aesthetic)
+    * pixar → Kontext-Style/Poly_lora @ 0.8 (primary user pick)
+    * pixar_alt → Kontext-Style/3D_Chibi_lora @ 0.8 (alternative aesthetic)
+    * vangogh → Kontext-Style/Oil_Painting_lora @ 0.8
+    * pencil → Shakker-Labs/...-Sketch-Style @ 0.8 (replaces the v0.6.x
+      pencil text-only fallback; Monochrome-Pencil crashed Phase 1)
+    * ghibli → unchanged from v0.6.0 (see dedicated test above)
+
+    simpsons stays text-only — Phase 1 found no Kontext-trained Simpsons
+    LoRA that the user wanted to ship.
+
+    Lock-in via this parametrised test so any future repo-id / weight /
+    trigger drift surfaces immediately.
     """
-    assert STYLES[name].get("loras", ()) == ()
+    from imgen.styles import LoraRef
+    expected = {
+        "anime": LoraRef(
+            ref="Shakker-Labs/FLUX.1-Kontext-dev-LoRA-Flat-Cartoon-Style",
+            weight=0.8, compatible_with=("flux-1",),
+            trigger="flat cartoon style",
+        ),
+        "anime_alt": LoraRef(
+            ref="Kontext-Style/Irasutoya_lora",
+            weight=0.8, compatible_with=("flux-1",),
+            trigger="Irasutoya style",
+        ),
+        "pixar": LoraRef(
+            ref="Kontext-Style/Poly_lora",
+            weight=0.8, compatible_with=("flux-1",),
+            trigger="Poly style",
+        ),
+        "pixar_alt": LoraRef(
+            ref="Kontext-Style/3D_Chibi_lora",
+            weight=0.8, compatible_with=("flux-1",),
+            trigger="3D Chibi",
+        ),
+        "vangogh": LoraRef(
+            ref="Kontext-Style/Oil_Painting_lora",
+            weight=0.8, compatible_with=("flux-1",),
+            trigger="Oil Painting",
+        ),
+        "pencil": LoraRef(
+            ref="Shakker-Labs/FLUX.1-Kontext-dev-LoRA-Sketch-Style",
+            weight=0.8, compatible_with=("flux-1",),
+            trigger="sketch",
+        ),
+    }
+    for name, expected_lora in expected.items():
+        loras = STYLES[name].get("loras", ())
+        assert len(loras) == 1, f"{name} should ship exactly 1 LoRA"
+        assert loras[0] == expected_lora, (
+            f"{name}: BUILTIN_STYLES drift — expected {expected_lora}, "
+            f"got {loras[0]}"
+        )
+
+
+def test_simpsons_stays_text_only():
+    """simpsons remains text-only after v0.6.3 — Phase 1 found no
+    Kontext-trained Simpsons LoRA worth shipping. Shakker-Labs/
+    FLUX.1-Kontext-dev-LoRA-Flat-Cartoon-Style was the closest
+    proxy and works on the `anime` slot, but user Phase 2 verdict
+    was that Flat-Cartoon does NOT fit Simpsons' specific yellow-
+    skin / round-eyes / bold-outlines aesthetic. Lock-in so a
+    future drive-by add doesn't silently regress."""
+    assert STYLES["simpsons"].get("loras", ()) == ()
 
 
 def test_built_in_loras_target_flux_1_only():
-    """Built-in LoRAs in v0.6.1 (only ghibli now) target the flux-1
-    compat group. Qwen backend gets text-only for all built-ins per
-    design memo (HF ecosystem for Qwen style LoRAs is sparse; user
-    can attach Qwen LoRAs ad-hoc via CLI --lora)."""
-    for lora in STYLES["ghibli"].get("loras", ()):
-        assert "flux-1" in lora.compatible_with
+    """All v0.6.3 built-in LoRAs target the flux-1 compat group.
+    Qwen backend gets text-only for all built-ins per design memo
+    (HF ecosystem for Qwen style LoRAs is sparse; user can attach
+    Qwen LoRAs ad-hoc via CLI --lora)."""
+    from imgen.styles import BUILTIN_STYLES
+    for name, style in BUILTIN_STYLES.items():
+        for lora in style.loras:
+            assert "flux-1" in lora.compatible_with, (
+                f"{name}: LoRA {lora.ref!r} compat={lora.compatible_with} "
+                f"missing flux-1"
+            )
 
 
 def test_style_contains_returns_false_for_none_fields():

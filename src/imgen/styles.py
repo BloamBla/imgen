@@ -248,9 +248,13 @@ BUILTIN_STYLES: dict[str, "Style"] = {
     # style descriptors below; "facial identity" tells the model to keep
     # WHO it is while letting the style reshape HOW. (v0.3.4 review HIGH-1.)
     # v0.6.0 shipped a Canopus-Pixar-3D-Flux-LoRA built-in; v0.6.1 reverted
-    # to text-only after A/B revealed it's FLUX.1-dev base (filename:
-    # Canopus-Pixar-3D-FluxDev-LoRA) and crashes mflux Kontext at attention
-    # shape mismatch — see [[project-v06x-backlog]].
+    # to text-only after the FLUX.1-dev-vs-Kontext crash. v0.6.3 Phase 1
+    # smoke-tested two Kontext-trained candidates: Kontext-Style/Poly_lora
+    # (low-poly 3D, picked as PRIMARY) and Kontext-Style/3D_Chibi_lora
+    # (3D chibi proportions, exposed under the `pixar_alt` style as an
+    # alternative aesthetic). Both PASSED Phase 1 crash-screen + user A/B.
+    # License: Kontext-Style org doesn't publish licenses; see README LoRA
+    # section's "unspecified — review before commercial use" caveat.
     "pixar": Style(
         prompt=(
             "Restyle this person as a polished Pixar 3D animated "
@@ -274,17 +278,61 @@ BUILTIN_STYLES: dict[str, "Style"] = {
             "Pixar-style 3D-animated environment with soft volumetric "
             "lighting, painterly textures, and cinematic depth-of-field"
         ),
+        loras=(
+            LoraRef(
+                ref="Kontext-Style/Poly_lora",
+                weight=0.8,
+                compatible_with=("flux-1",),
+                trigger="Poly style",
+            ),
+        ),
+    ),
+
+    # v0.6.3: alternative pixar aesthetic with Kontext-Style/3D_Chibi_lora.
+    # 3D Chibi pushes harder toward exaggerated chibi proportions than the
+    # primary Pixar pick (Poly); user smoke A/B preferred Poly for the
+    # default `pixar` slot and asked to keep 3D_Chibi accessible. Shares
+    # the pixar prompt + scene_suffix so the trigger word is what drives
+    # the visual difference.
+    "pixar_alt": Style(
+        prompt=(
+            "Restyle this person as a polished Pixar 3D animated "
+            "character, while preserving the facial identity, "
+            "hairstyle, body proportions, and pose, with soft volumetric "
+            "lighting, smooth rounded features, expressive large eyes, "
+            "stylized cartoon proportions, and high-quality CGI rendering"
+        ),
+        negative=(
+            "deformed, blurry, photorealistic skin, flat lighting, missing eye, "
+            "extra limbs, distorted face, low quality, artifacts, watermark, text"
+        ),
+        guidance=3.5,
+        strength=0.55,
+        scene_suffix=(
+            ", and transform the background and surroundings into a "
+            "Pixar-style 3D-animated environment with soft volumetric "
+            "lighting, painterly textures, and cinematic depth-of-field"
+        ),
+        loras=(
+            LoraRef(
+                ref="Kontext-Style/3D_Chibi_lora",
+                weight=0.8,
+                compatible_with=("flux-1",),
+                trigger="3D Chibi",
+            ),
+        ),
     ),
 
     # Anime enlarges eyes + reshapes face geometry. Same "facial identity"
     # anchor instead of "exact facial features" (v0.3.4 review HIGH-1).
     # v0.6.0 shipped a strangerzonehf/Flux-Animeo-v1-LoRA built-in;
-    # v0.6.1 reverted to text-only after A/B revealed the LoRA is
-    # FLUX.1-dev base and crashes mflux Kontext at attention shape
-    # mismatch (matmul (1,4992,16) vs (64,3072) — Kontext's modified
-    # attention doesn't fit the LoRA's rank-16 tensors). All 912 LoRA
-    # keys "matched" at load time, but inference exploded on first
-    # denoise step.
+    # v0.6.1 reverted to text-only after the FLUX.1-dev-vs-Kontext crash.
+    # v0.6.3 Phase 1 smoke-tested two Kontext-trained candidates: Shakker-
+    # Labs/FLUX.1-Kontext-dev-LoRA-Flat-Cartoon-Style (broader cartoon
+    # aesthetic, picked as PRIMARY for anime) and Kontext-Style/Irasutoya_lora
+    # (Japanese flat-illustration aesthetic, exposed under `anime_alt`).
+    # License: Flat-Cartoon = flux-1-dev-non-commercial-license; Irasutoya
+    # unspecified — see README LoRA section.
     "anime": Style(
         prompt=(
             "Restyle this person as a Japanese anime character, while "
@@ -306,6 +354,48 @@ BUILTIN_STYLES: dict[str, "Style"] = {
             ", and transform the background and surroundings into a "
             "hand-painted anime cel-shaded environment with vibrant "
             "skies, soft cloud shapes, and detailed illustrated scenery"
+        ),
+        loras=(
+            LoraRef(
+                ref="Shakker-Labs/FLUX.1-Kontext-dev-LoRA-Flat-Cartoon-Style",
+                weight=0.8,
+                compatible_with=("flux-1",),
+                trigger="flat cartoon style",
+            ),
+        ),
+    ),
+
+    # v0.6.3: alternative anime aesthetic with Kontext-Style/Irasutoya_lora.
+    # Irasutoya is a Japanese free-art illustration collection; the LoRA
+    # produces a flatter, more "free illustration" feel vs Flat-Cartoon's
+    # generic cartoon. User smoke A/B kept Flat-Cartoon as default `anime`
+    # and asked to keep Irasutoya as accessible alt.
+    "anime_alt": Style(
+        prompt=(
+            "Restyle this person as a Japanese anime character, while "
+            "preserving the facial identity, hairstyle, body "
+            "proportions, and pose, with cel-shaded illustration, "
+            "expressive large eyes, detailed line art, vibrant colors, "
+            "clean shading, and manga aesthetic"
+        ),
+        negative=(
+            "realistic photo, 3d render, deformed face, bad anatomy, extra "
+            "limbs, blurry, low quality, watermark, text"
+        ),
+        guidance=4.0,
+        strength=0.60,
+        scene_suffix=(
+            ", and transform the background and surroundings into a "
+            "hand-painted anime cel-shaded environment with vibrant "
+            "skies, soft cloud shapes, and detailed illustrated scenery"
+        ),
+        loras=(
+            LoraRef(
+                ref="Kontext-Style/Irasutoya_lora",
+                weight=0.8,
+                compatible_with=("flux-1",),
+                trigger="Irasutoya style",
+            ),
         ),
     ),
 
@@ -383,6 +473,8 @@ BUILTIN_STYLES: dict[str, "Style"] = {
         ),
     ),
 
+    # v0.6.3: Kontext-Style/Oil_Painting_lora picked from Phase 1 smoke
+    # + user A/B. License unspecified — see README LoRA section.
     "vangogh": Style(
         prompt=(
             "Restyle this person as a Vincent Van Gogh oil painting "
@@ -406,8 +498,25 @@ BUILTIN_STYLES: dict[str, "Style"] = {
             "Gogh oil painting with thick visible impasto brushstrokes, "
             "swirling textured skies, and bold post-impressionist colors"
         ),
+        loras=(
+            LoraRef(
+                ref="Kontext-Style/Oil_Painting_lora",
+                weight=0.8,
+                compatible_with=("flux-1",),
+                trigger="Oil Painting",
+            ),
+        ),
     ),
 
+    # v0.6.3: Shakker-Labs/FLUX.1-Kontext-dev-LoRA-Sketch-Style replaces
+    # the v0.6.x pencil text-only fallback. prithivMLmods/Monochrome-
+    # Pencil was the obvious candidate (328 dl, Kontext-tagged) but
+    # crashed Phase 1 with the v0.6.0 shape-mismatch signature — HF
+    # tagging without actual Kontext attention training. Sketch-Style
+    # uses the upstream short-form trigger "sketch"; the pencil prompt
+    # already contains "sketch" as a whole word so auto-prepend is a
+    # no-op — the LoRA still loads + activates via fused weight delta
+    # alone. License: flux-1-dev-non-commercial-license.
     "pencil": Style(
         prompt=(
             "Restyle this person as a detailed graphite pencil sketch "
@@ -429,6 +538,14 @@ BUILTIN_STYLES: dict[str, "Style"] = {
             ", and render the background and surroundings as a "
             "detailed graphite pencil sketch with fine cross-hatching, "
             "varied tonal density, and visible paper texture"
+        ),
+        loras=(
+            LoraRef(
+                ref="Shakker-Labs/FLUX.1-Kontext-dev-LoRA-Sketch-Style",
+                weight=0.8,
+                compatible_with=("flux-1",),
+                trigger="sketch",
+            ),
         ),
     ),
 }
