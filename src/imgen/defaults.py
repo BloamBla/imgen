@@ -13,7 +13,8 @@ __all__ = [
 
 DEFAULTS = {
     "style": "pixar",
-    "backend": "flux",   # flux | qwen
+    "backend": "flux",   # flux | qwen — default for `imgen generate` (i2i)
+    "backend_draw": "flux-dev",  # v0.7.0: default for `imgen draw` (t2i)
     "quantize": 8,       # 3 4 5 6 8
     "steps": 20,
     "guidance": 3.5,
@@ -41,6 +42,16 @@ RAM_REQUIRED_GB = {
     ("qwen", 5): 16,
     ("qwen", 6): 18,
     ("qwen", 8): 25,
+    # v0.7.0: FLUX.1-dev (t2i) shares the FLUX.1 transformer family
+    # weight footprint with FLUX.1-Kontext-dev. Same RAM envelope.
+    # Without these rows preflight falls back to the conservative 16GB
+    # default — accurate enough for go/no-go but under-reports the
+    # actual headroom.
+    ("flux-dev", 3): 8,
+    ("flux-dev", 4): 9,
+    ("flux-dev", 5): 12,
+    ("flux-dev", 6): 14,
+    ("flux-dev", 8): 18,
 }
 
 MIN_DISK_GB = 5             # minimum free disk to attempt
@@ -122,4 +133,25 @@ MFLUX_PIN = "mflux==0.17.5"
 #                          unknown, replay falls back to current
 #                          style's LoRA mapping. Read-compatible
 #                          additive migration; no rewrite pass.
+#
+# v=3 (v0.7.0): two additive fields lock-in t2i (`imgen draw`) shape:
+#
+#   command (str):         which subcommand produced the entry —
+#                          "generate" | "batch" | "draw". Drives
+#                          replay routing in commands/history.py
+#                          (cmd_replay dispatches by this field).
+#                          Absent on v0.6.x and earlier entries; the
+#                          reader uses ``entry.get("command", "generate")``
+#                          so old rows replay through cmd_generate.
+#                          Read-compatible additive; NO v=4 bump
+#                          (additive fields don't bump version per
+#                          the v0.6.5 IMP-1 precedent).
+#
+#   input (str|null):      WIDENED from str-only to nullable.
+#                          ``command="draw"`` entries have ``input=null``
+#                          (t2i has no source photo). i2i entries
+#                          (generate/batch) still carry the photo path
+#                          unchanged. Readers using ``.get`` already
+#                          tolerate absence; the None case is the
+#                          v0.7.0 net change.
 HISTORY_SCHEMA_VERSION = 3

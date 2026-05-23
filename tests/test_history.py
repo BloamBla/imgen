@@ -6,6 +6,7 @@ Uses the tmp_state_dir fixture so HISTORY_FILE is per-test, no real
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -522,3 +523,172 @@ def test_v_current_entry_without_enhance_fields_is_legal(tmp_state_dir):
     assert "enhanced" not in entries[0]
     assert "enhance_model" not in entries[0]
     assert "prompt_original" not in entries[0]
+
+
+# ── v0.7.0: draw command discriminator + replay routing ──────────────
+
+
+def test_replay_entry_routes_draw_to_cmd_draw(tmp_state_dir, monkeypatch):
+    """v0.7.0 (architect §J + pre-tag CRITICAL #1): replay_entry must
+    inspect entry.get("command") and route accordingly. A draw entry
+    has input=null and goes to cmd_draw — not cmd_generate, which would
+    die at _validate_input_path."""
+    import imgen.commands.history as history_cmd
+    captured = {}
+
+    def fake_cmd_draw(args):
+        captured["args"] = args
+        return 0
+
+    def fake_cmd_generate(args):
+        captured["generate_called"] = True
+        return 0
+
+    monkeypatch.setattr(history_cmd, "cmd_draw", fake_cmd_draw)
+    monkeypatch.setattr(history_cmd, "cmd_generate", fake_cmd_generate)
+
+    entry = {
+        "id": 42,
+        "v": HISTORY_SCHEMA_VERSION,
+        "input": None,                # v0.7.0 nullable for draw
+        "command": "draw",
+        "prompt": "a samurai on a misty mountain",
+        "backend": "flux-dev",
+        "quantize": 8,
+        "steps": 20,
+        "guidance": 3.5,
+        "width": 1024,
+        "height": 1024,
+    }
+    rc = history_cmd.replay_entry(entry)
+    assert rc == 0
+    # cmd_draw was called, cmd_generate was NOT.
+    assert "generate_called" not in captured
+    args = captured["args"]
+    assert args.prompt == "a samurai on a misty mountain"
+    assert args.backend == "flux-dev"
+    assert args.width == 1024
+    assert args.height == 1024
+
+
+def test_replay_entry_generate_command_uses_cmd_generate(
+    tmp_state_dir, monkeypatch,
+):
+    """v0.7.0: existing i2i entries (no command field, or
+    command="generate") route to cmd_generate unchanged. Backward-
+    compat lock-in."""
+    import imgen.commands.history as history_cmd
+    captured = {}
+
+    monkeypatch.setattr(
+        history_cmd, "cmd_generate",
+        lambda args: captured.setdefault("ran", "generate") or 0,
+    )
+    monkeypatch.setattr(
+        history_cmd, "cmd_draw",
+        lambda args: captured.setdefault("ran", "draw") or 0,
+    )
+
+    entry = {
+        "id": 1,
+        "v": HISTORY_SCHEMA_VERSION,
+        "input": "/some.jpg",
+        "style": "anime",
+        "backend": "flux",
+        "quantize": 8,
+        "steps": 20,
+        "guidance": 3.5,
+        "strength": 0.55,
+    }
+    history_cmd.replay_entry(entry)
+    # No command field present → routes through cmd_generate
+    # (the backward-compat default).
+    assert captured["ran"] == "generate"
+
+
+def test_replay_entry_draw_missing_prompt_fails_cleanly(tmp_state_dir):
+    """A malformed draw entry with command="draw" but no prompt dies
+    with exit 1 and a clear message — same loud-fail discipline as
+    the i2i "no input path" guard."""
+    from imgen.commands.history import replay_entry
+    entry = {
+        "id": 99, "v": HISTORY_SCHEMA_VERSION,
+        "command": "draw",
+        "input": None,
+        # NO prompt field.
+    }
+    with pytest.raises(SystemExit) as exc_info:
+        replay_entry(entry)
+    assert exc_info.value.code == 1
+
+
+def test_history_entry_carries_command_field_for_draw(
+    tmp_state_dir, monkeypatch, tmp_path,
+):
+    """End-to-end: a draw run writes "command": "draw" + "input": null
+    to history.jsonl. Locks the v0.7.0 schema additive fields at the
+    producer side (run_one_iteration via cmd_draw)."""
+    from imgen.backends import BACKENDS
+    from imgen.commands.draw import cmd_draw
+    from types import SimpleNamespace
+    from imgen.defaults import DEFAULTS
+
+    def fake_load(args):
+        return ("flux-dev", BACKENDS["flux-dev"], "tok",
+                Path("/fake/mflux-generate"), None)
+    monkeypatch.setattr(
+        "imgen.commands.draw.load_backend_and_token", fake_load,
+    )
+    # Stub the actual mflux subprocess + battery/disk preflight.
+    def fake_run_subprocess(*args, **kwargs):
+        # Touch the output file so success path passes.
+        for arg in args[0]:
+            pass
+        return 0
+    monkeypatch.setattr(
+        "imgen.cmd_helpers.run_with_stderr_redaction",
+        lambda cmd, **kw: (
+            Path(cmd[cmd.index("--output") + 1]).touch(),
+            0,
+        )[1],
+    )
+    monkeypatch.setattr(
+        "imgen.cmd_helpers.preflight_resources",
+        lambda **kw: None,
+    )
+    args = SimpleNamespace(
+        prompt="a draw test prompt",
+        prompt_file=None,
+        steps=None,
+        quantize=None,
+        guidance=None,
+        seed=42,
+        backend="flux-dev",
+        preview=False,
+        width=1024,
+        height=1024,
+        no_open=True,
+        yes=True,
+        dry_run=False,
+        force=True,
+        enhance=False,
+        enhance_model=None,
+        enhance_temperature=None,
+        imgen_config_enhance={},
+        output=None,
+        output_dir=str(tmp_path),
+        lora=None,
+        no_lora=False,
+        imgen_merged_defaults=DEFAULTS,
+        imgen_config_output_dir=None,
+    )
+    rc = cmd_draw(args)
+    assert rc == 0
+    entries = load_history()
+    assert len(entries) >= 1
+    e = entries[-1]
+    assert e["command"] == "draw"
+    assert e["input"] is None
+    assert e["prompt"] == "a draw test prompt"
+    # Generate entries would have "input" as a path string; locking
+    # the new nullable shape.

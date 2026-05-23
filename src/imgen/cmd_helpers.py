@@ -54,7 +54,9 @@ from __future__ import annotations
 
 import datetime
 import os
+import re
 import subprocess
+import unicodedata
 from dataclasses import dataclass, replace as _dataclass_replace
 from pathlib import Path
 
@@ -1193,13 +1195,10 @@ def prompt_slug(
     (``-2``/``-3`` suffix when ``<slug>.png`` already exists) lives at
     the output-path resolution site, not here.
     """
-    import re
-    import unicodedata as _ud
-
     tokens = prompt.split()[:max_words]
     text = " ".join(tokens)
     # Unicode NFKD + strip combining marks; ASCII-only survives.
-    decomposed = _ud.normalize("NFKD", text)
+    decomposed = unicodedata.normalize("NFKD", text)
     ascii_only = decomposed.encode("ascii", "ignore").decode("ascii")
     lowered = ascii_only.lower()
     # Collapse anything-not-alphanumeric to a single '-'.

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 import sys
+from typing import NoReturn
 
 __all__ = [
     "C",
@@ -145,7 +146,16 @@ def dim(msg: str) -> None:
     print(f"{C.DIM}{msg}{C.END}")
 
 
-def die(msg: str, code: int = 1, hint: str | None = None) -> None:
+def die(msg: str, code: int = 1, hint: str | None = None) -> NoReturn:
+    """Print ``msg`` (red), optional hint (dim), then ``sys.exit(code)``.
+
+    v0.7.0 (python pre-tag review IMPORTANT): return annotation
+    ``NoReturn`` makes mypy / pyright understand that callers don't
+    need to handle the fall-through path. ``_resolve_draw_prompt`` and
+    similar helpers can have a trailing ``die(...)`` instead of an
+    ``if/else`` ladder without the type-checker complaining about a
+    missing return.
+    """
     err(msg)
     if hint:
         print(f"   {C.DIM}{hint}{C.END}", file=sys.stderr)

@@ -568,15 +568,20 @@ def _add_draw_args(
              f"want the tighter scale)",
     )
     p.add_argument(
-        "--seed", type=_int_range(0, 2**32 - 1),
+        "--seed", type=_int_range(0, 2**32 - 1), default=None,
         help="Seed (default: random)",
     )
     # v0.7.0: default `--backend flux-dev`. The shared `defaults["backend"]`
-    # entry is "flux" (Kontext, i2i); draw's default differs.
+    # entry is "flux" (Kontext, i2i); draw's default lives at the
+    # separate ``defaults["backend_draw"]`` key so config.toml
+    # ``[defaults] backend_draw = "..."`` can override per-subcommand
+    # without crossing i2i's default. Architect IMP-3 from pre-tag
+    # review.
     p.add_argument(
         "--backend", choices=list_backends(),
-        default="flux-dev",
-        help="Backend (default flux-dev). Use --list-backends to see all.",
+        default=defaults.get("backend_draw", "flux-dev"),
+        help=f"Backend (default {defaults.get('backend_draw', 'flux-dev')}). "
+             f"Use --list-backends to see all.",
     )
     p.add_argument(
         "-q", "--quantize", type=int, choices=[3, 4, 5, 6, 8], default=None,

@@ -12,6 +12,7 @@ from ..colors import C, dim, die, info
 from ..defaults import DEFAULTS, HISTORY_SCHEMA_VERSION
 from ..history import load_history
 from ..styles import LoraRef
+from .draw import cmd_draw
 from .generate import cmd_generate
 
 # Fields the replay Namespace must carry so cmd_generate doesn't have to
@@ -140,12 +141,68 @@ def cmd_replay(args) -> int:
     return replay_entry(target)
 
 
+def _replay_draw_entry(entry: dict) -> int:
+    """v0.7.0 (architect §J): replay a ``command="draw"`` history entry
+    through :func:`cmd_draw`.
+
+    Draw entries have ``input=null`` (no source photo) and carry the
+    prompt directly via the ``prompt`` field. cmd_draw reads
+    ``args.prompt`` (positional) so the rehydrated Namespace puts the
+    stored prompt back there. LoRA rehydration reuses
+    :func:`_rehydrate_loras_from_entry` — same v=3 contract as i2i
+    entries (whatever mflux saw on the original run is what replay
+    reproduces).
+    """
+    prompt = entry.get("prompt")
+    if not prompt:
+        die(f"History entry #{entry.get('id', '?')} has no prompt — "
+            f"cannot replay.", code=1)
+    info(f"Replaying #{entry.get('id')}: draw \"{prompt[:60]}"
+         f"{'...' if len(prompt) > 60 else ''}\"")
+    cli_lora, no_lora = _rehydrate_loras_from_entry(entry)
+    # v0.7.0 t2i Namespace — mirror of cmd_draw's parser shape. NO
+    # --scope, --strength, --style, --image; --width/--height carry
+    # the entry's recorded dimensions (or DEFAULTS if missing).
+    # _REPLAY_DEFAULTS already includes ``prompt_file=None`` + ``output_dir=None``
+    # + enhance/yes/imgen_* fields; supply only the t2i-specific values
+    # here to avoid duplicate-keyword-arg TypeError.
+    args = argparse.Namespace(
+        prompt=prompt,
+        output=None,
+        steps=entry.get("steps", DEFAULTS["steps"]),
+        guidance=entry.get("guidance", DEFAULTS["guidance"]),
+        seed=None,  # new random seed each replay
+        backend=entry.get("backend", "flux-dev"),
+        quantize=entry.get("quantize", DEFAULTS["quantize"]),
+        preview=entry.get("preview", False),
+        width=entry.get("width", 1024),
+        height=entry.get("height", 1024),
+        no_open=False,
+        dry_run=False,
+        force=False,
+        lora=cli_lora,
+        no_lora=no_lora,
+        **_REPLAY_DEFAULTS,
+    )
+    return cmd_draw(args)
+
+
 def replay_entry(entry: dict) -> int:
     entry_v = entry.get("v", 0)
     if entry_v > HISTORY_SCHEMA_VERSION:
         die(f"History entry #{entry.get('id', '?')} is from a newer schema "
             f"(v{entry_v} > v{HISTORY_SCHEMA_VERSION}). "
             f"Run `imgen upgrade` to pick up the new fields.", code=2)
+
+    # v0.7.0 (architect §J + CRITICAL #1 from pre-tag review): route by
+    # the ``command`` discriminator field. Pre-v0.7 entries were always
+    # ``generate``/``batch`` (no field present); ``.get`` default keeps
+    # backward compat. ``draw`` entries take the t2i path and skip the
+    # "no input path" guard (input=None is legitimate for t2i).
+    command = entry.get("command", "generate")
+    if command == "draw":
+        return _replay_draw_entry(entry)
+
     image = entry.get("input")
     if not image:
         die(f"History entry #{entry.get('id', '?')} has no input path — "

@@ -39,9 +39,9 @@ from ..colors import C, die, info, warn
 from ..defaults import DEFAULTS
 from ..history import load_history
 from ..prompt_input import PromptInputError, resolve_prompt
-from ..runs import BatchContext
+from ..runs import BatchContext, DrawIterationGroup
 from ..cmd_helpers import (
-    apply_enhance_results_to_iterations,
+    apply_enhance_results_to_groups,
     build_draw_iteration,
     estimate_one_seconds,
     exit_code,
@@ -65,9 +65,17 @@ def _resolve_draw_prompt(args) -> str:
     positional '-' (stdin).
 
     Parser declares the positional as optional + adds a separate
-    --prompt-file flag. The mutex check happens here because argparse's
-    mutually_exclusive_group doesn't compose cleanly with an optional
-    positional.
+    --prompt-file flag. Mutex check + size-cap + empty-check happen
+    here.
+
+    v0.7.0 (security pre-tag review IMPORTANT): the stdin and
+    --prompt-file paths both delegate to
+    :func:`~imgen.prompt_input.resolve_prompt` which carries the
+    64 KB cap (``cat /dev/zero | imgen draw -`` would OOM without
+    it). The positional non-empty case stays inline since
+    argparse-level argv lengths are already POSIX ARG_MAX-bounded
+    (~256 KB-1 MB depending on platform) and the prompt would have
+    been rejected long before reaching here.
     """
     positional = args.prompt
     prompt_file = getattr(args, "prompt_file", None)
@@ -80,13 +88,22 @@ def _resolve_draw_prompt(args) -> str:
         )
 
     # Stdin via positional '-' — mirror of cmd_generate's --custom-prompt -
-    # contract. Hides prompt from `ps auxww`.
+    # contract. Hides prompt from `ps auxww`. Routes through
+    # resolve_prompt to inherit the 64 KB cap + UTF-8 validation +
+    # empty-check (security IMPORTANT, v0.7.0 pre-tag review).
     if positional == "-":
+        # Pass `sys.stdin` explicitly so call-time mutations (test
+        # monkeypatches; future programmatic redirections) take effect.
+        # resolve_prompt's default-arg `stdin=sys.stdin` is bound at
+        # def-time; monkeypatch.setattr("sys.stdin", ...) after import
+        # wouldn't reach it otherwise.
         try:
-            text = sys.stdin.read()
-        except Exception as e:
-            die(f"draw: failed to read prompt from stdin: {e}", code=2)
-        if not text.strip():
+            text = resolve_prompt(
+                custom_prompt="-", prompt_file=None, stdin=sys.stdin,
+            )
+        except PromptInputError as e:
+            die(f"draw: {e}", code=2)
+        if text is None or not text.strip():
             die("draw: stdin prompt was empty", code=2)
         return text.strip()
 
@@ -96,8 +113,8 @@ def _resolve_draw_prompt(args) -> str:
         return positional.strip()
 
     if prompt_file:
-        # Reuse the prompt_input.resolve_prompt size-cap + readability
-        # checks by calling it with custom_prompt=None + prompt_file=path.
+        # resolve_prompt carries the size-cap + permission-warn +
+        # UTF-8 validation contract.
         try:
             text = resolve_prompt(
                 custom_prompt=None, prompt_file=prompt_file,
@@ -170,8 +187,11 @@ def cmd_draw(args) -> int:
         else int.from_bytes(os.urandom(4), "big")
     )
 
-    # 5) Build the single Iteration. Output path resolution lives inside
-    # build_draw_iteration (it knows the prompt-slug naming convention).
+    # 5) Build the single Iteration + wrap into a DrawIterationGroup so
+    # the enhancer step can route through the Protocol-typed helper
+    # `apply_enhance_results_to_groups`. Single-shot in v0.7.0
+    # (iters length 1); future --num-iterations N (v0.7.1+) extends
+    # the group's iters tuple without orchestrator-shape changes.
     iteration = build_draw_iteration(
         args=args,
         prompt=prompt,
@@ -184,11 +204,20 @@ def cmd_draw(args) -> int:
         run_dir=run_dir,
         seed=seed,
     )
-    iterations = [iteration]
+    group = DrawIterationGroup(
+        width=args.width,
+        height=args.height,
+        iters=(iteration,),
+    )
+    iterations = list(group.iters)
 
     # 6) Optional LLM enhancer. flux-dev declares enhance_invariants=()
     # so the substring-anchor checks short-circuit cleanly — runner_error
     # / empty_llm_output / input_too_long content paths still apply.
+    # apply_enhance_results_to_groups uses dataclasses.replace so the
+    # post-enhance Iteration carries the updated prompt+cmd inside the
+    # DrawIterationGroup; we then unpack back to a flat list for the
+    # downstream run_one_iteration loop.
     eff_enhance = resolve_enhance_config(
         cli_enable=getattr(args, "enhance", None),
         cli_model=getattr(args, "enhance_model", None),
@@ -200,9 +229,8 @@ def cmd_draw(args) -> int:
         backend_obj=be,
         iterations=iterations,
     )
-    iterations = apply_enhance_results_to_iterations(
-        iterations, enhance_results,
-    )
+    groups = apply_enhance_results_to_groups([group], enhance_results)
+    iterations = list(groups[0].iters)
 
     # 7) Dry-run: print the cmd that would execute, exit clean.
     if args.dry_run:
@@ -276,23 +304,20 @@ def cmd_draw(args) -> int:
     if not cont:
         return 130  # KeyboardInterrupt mid-iteration.
 
-    # 13) Open result + summary + exit code.
-    if run_dir is not None:
-        open_results(
-            succeeded=succeeded,
-            run_dir=run_dir,
-            is_batch=False,
-            no_open=args.no_open,
-        )
-    elif explicit_output is not None and not args.no_open:
-        # --output PATH path: open the file directly. open_results
-        # doesn't know about the explicit-output shape; use the same
-        # `open -R` pattern as the single-file branch.
-        try:
-            import subprocess
-            subprocess.Popen(["open", str(explicit_output)])
-        except Exception:
-            pass
+    # 13) Open result + summary + exit code. open_results' is_batch=False
+    # branch opens succeeded[-1][1] regardless of whether the path lives
+    # inside a run_dir (auto-named layout) or is an explicit --output PATH
+    # — both are honoured uniformly. Architect §F step 12 + pre-tag
+    # IMPORTANT #4: avoid the v0.7.0-step-5 bespoke Popen branch that
+    # bypassed SAFE_OUTPUT_EXTS + swallowed all exceptions.
+    open_results(
+        succeeded=succeeded,
+        run_dir=run_dir if run_dir is not None else (
+            explicit_output.parent if explicit_output is not None else Path()
+        ),
+        is_batch=False,
+        no_open=args.no_open,
+    )
 
     print_batch_summary(succeeded, failed, total=1)
     return exit_code(is_batch=False, succeeded=succeeded, failed=failed)
