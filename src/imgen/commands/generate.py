@@ -141,6 +141,18 @@ def cmd_generate(args) -> int:
     merged_defaults = getattr(args, "imgen_merged_defaults", DEFAULTS)
     config_output_dir = getattr(args, "imgen_config_output_dir", None)
 
+    # v0.7.0: t2i-only backends (`flux-dev`) need a redirect to
+    # `imgen draw`. cmd_generate is i2i; flux-dev's mflux-generate
+    # binary has no input-image flow. Give a one-line actionable hint
+    # instead of letting load_backend_and_token build a doomed cmd.
+    if args.backend == "flux-dev":
+        die(
+            "--backend flux-dev is text-to-image; cmd_generate requires "
+            "a source photo. Use `imgen draw \"<prompt>\"` instead "
+            "(same backend, no --image input).",
+            code=2,
+        )
+
     # 1) Validate input ONCE for all iterations.
     input_path = _validate_input_path(args.image)
 

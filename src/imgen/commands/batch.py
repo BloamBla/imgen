@@ -154,6 +154,16 @@ def cmd_batch(args) -> int:
     merged_defaults = getattr(args, "imgen_merged_defaults", DEFAULTS)
     config_output_dir = getattr(args, "imgen_config_output_dir", None)
 
+    # v0.7.0: same flux-dev redirect as cmd_generate. Batch is i2i by
+    # construction; t2i prompts don't have a discovery directory.
+    if args.backend == "flux-dev":
+        die(
+            "--backend flux-dev is text-to-image; cmd_batch requires "
+            "input photos. Use `imgen draw \"<prompt>\"` for single-shot "
+            "t2i (batch t2i over a prompt file is v0.7.x).",
+            code=2,
+        )
+
     # 1) Discover inputs (non-recursive). discover_inputs handles
     # non-existent / not-a-dir via die(2) itself; we only need to die on
     # "0 supported images" — keeping the helper reusable for callers
@@ -425,6 +435,7 @@ def cmd_batch(args) -> int:
                     args=args,
                     batch_id=batch_id,
                     env=env,
+                    command="batch",
                 )
                 for it in iters:
                     global_idx += 1

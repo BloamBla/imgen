@@ -36,7 +36,7 @@ import os
 import stat as _stat
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, BinaryIO, Protocol, runtime_checkable
+from typing import Any, BinaryIO, Literal, Protocol, runtime_checkable
 
 from .paths import STATE_DIR, ensure_state_dir
 
@@ -78,16 +78,29 @@ class BatchContext:
     `env` is a dict snapshot — frozen=True prevents reassignment of
     the field, not mutation of the dict itself, but callers treat it
     as read-only by convention.
+
+    `input_path` (v0.7.0): `Path | None` — None for t2i (`imgen draw`)
+    where there is no source photo. The history-entry serialiser in
+    `run_one_iteration` converts None → null for the JSONL `"input"`
+    field; the step() display swaps in `"(text-to-image)"`.
+
+    `command` (v0.7.0): which subcommand produced this context. Used
+    by `imgen replay` to route a stored history entry back through
+    the right orchestrator (`cmd_generate` / `cmd_batch` / `cmd_draw`).
+    Defaults to `"generate"` for backward compat with any caller that
+    constructs BatchContext without passing the field (zero today —
+    every site updates in lockstep with v0.7.0).
     """
     backend: str
     seed: int
     width: int
     height: int
-    input_path: Path
+    input_path: Path | None
     effective_custom_prompt: str | None
     args: Any
     batch_id: str | None
     env: dict[str, str]
+    command: Literal["generate", "batch", "draw"] = "generate"
 
     # Opt out of hashing — dict/Namespace fields make the auto-generated
     # __hash__ blow up on any caller that tries to use BatchContext as

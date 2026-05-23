@@ -86,6 +86,49 @@ def test_metadata_flag_absent(params):
     assert "--metadata" not in cmd
 
 
+# ── v0.7.0: Optional[Path] input_path for t2i ─────────────────────────
+
+def test_input_path_none_omits_image_flag(params):
+    """v0.7.0: t2i path. `input_path=None` (the `imgen draw` shape)
+    skips the `backend.image_flag <path>` argv pair entirely. The
+    rest of the cmd is unchanged."""
+    params["input_path"] = None
+    params["backend"] = BACKENDS["flux-dev"]
+    cmd = build_mflux_cmd(**params)
+    # Neither --image-path nor its value lands in argv.
+    assert "--image-path" not in cmd
+    # Sanity: prompt + output still present.
+    assert "--prompt" in cmd
+    assert "--output" in cmd
+
+
+def test_input_path_set_emits_image_flag(params):
+    """Symmetric lock-in for the i2i path — the None gate doesn't
+    accidentally break the populated case."""
+    params["input_path"] = Path("/in/photo.jpg")
+    params["backend"] = BACKENDS["flux"]
+    cmd = build_mflux_cmd(**params)
+    assert "--image-path" in cmd
+    idx = cmd.index("--image-path")
+    assert cmd[idx + 1] == "/in/photo.jpg"
+
+
+def test_flux_dev_t2i_no_strength_no_image(params):
+    """Combined t2i case: flux-dev backend + input_path=None →
+    no --image-path, no --image-strength (supports_strength=False on
+    flux-dev), prompt + output + quantize + steps still land."""
+    params["input_path"] = None
+    params["backend"] = BACKENDS["flux-dev"]
+    cmd = build_mflux_cmd(**params)
+    assert "--image-path" not in cmd
+    assert "--image-strength" not in cmd
+    # Core t2i flags still present.
+    assert "--prompt" in cmd
+    assert "--output" in cmd
+    assert "--quantize" in cmd
+    assert "--steps" in cmd
+
+
 # ── FLUX-specific ───────────────────────────────────────────────────
 
 def test_flux_uses_image_path_singular(params):

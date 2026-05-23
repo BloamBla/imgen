@@ -45,6 +45,28 @@ def test_batch_context_constructs_with_all_fields():
     assert ctx.effective_custom_prompt is None
     assert ctx.batch_id is None
     assert ctx.env == {"PATH": "/usr/bin"}
+    # v0.7.0: command defaults to "generate" for backward compat with
+    # any caller that doesn't pass it. cmd_batch / cmd_draw pass the
+    # field explicitly.
+    assert ctx.command == "generate"
+
+
+def test_batch_context_input_path_none_for_t2i():
+    """v0.7.0: t2i (`imgen draw`) has no source photo. input_path None
+    is a valid construction; the history-entry serialiser + step()
+    display path handle it via gates."""
+    ctx = _make_ctx(input_path=None, command="draw")
+    assert ctx.input_path is None
+    assert ctx.command == "draw"
+
+
+def test_batch_context_command_field_accepts_three_values():
+    """generate / batch / draw — Literal-typed but Python runtime
+    doesn't enforce; lock the supported values here so a typo
+    surfaces."""
+    assert _make_ctx(command="generate").command == "generate"
+    assert _make_ctx(command="batch").command == "batch"
+    assert _make_ctx(input_path=None, command="draw").command == "draw"
 
 
 def test_batch_context_is_frozen():
@@ -72,8 +94,8 @@ def test_batch_context_field_order_matches_spec():
     """Architect's v0.2.5 backlog (IMP-3) fixed the field order. Lock
     it so positional construction in future tests stays stable.
 
-    Order matches the 9 batch-invariant args of v0.2.4's
-    _run_one_iteration."""
+    v0.7.0 added a trailing `command` field with a default value; v=3
+    history readers using `.get` see the default for older entries."""
     import dataclasses
     fields = [f.name for f in dataclasses.fields(BatchContext)]
     assert fields == [
@@ -86,6 +108,7 @@ def test_batch_context_field_order_matches_spec():
         "args",
         "batch_id",
         "env",
+        "command",
     ]
 
 

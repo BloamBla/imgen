@@ -670,15 +670,24 @@ def run_one_iteration(
     print(f"   {C.DIM}backend: {ctx.backend} q{it.final_quantize}  "
           f"steps: {it.final_steps}  guidance: {it.final_guidance}  "
           f"strength: {it.final_strength}  seed: {ctx.seed}{C.END}")
+    # v0.7.0: ctx.input_path is None for t2i (`imgen draw`). The display
+    # line swaps in a t2i marker; the history JSONL serialises None as
+    # JSON null so future replay readers see absence-as-null cleanly.
+    input_display = ctx.input_path.name if ctx.input_path else "(text-to-image)"
     print(f"   {C.DIM}size: {ctx.width}x{ctx.height}  "
-          f"input: {ctx.input_path.name} → output: {output_path}{C.END}")
+          f"input: {input_display} → output: {output_path}{C.END}")
     print()
 
     started = datetime.datetime.now()
     history_entry: dict = {
         "ts": started.isoformat(timespec="seconds"),
-        "input": str(ctx.input_path),
+        "input": str(ctx.input_path) if ctx.input_path else None,
         "output": str(output_path),
+        # v0.7.0: which subcommand produced this entry — drives replay
+        # routing back through the right orchestrator. v=3 read-compat
+        # additive (older entries fall through `entry.get("command",
+        # "generate")` at the reader).
+        "command": ctx.command,
         # `style` stored as the per-iteration style name when there's
         # no custom prompt — replay uses it to reload the same preset.
         "style": style_name if not ctx.effective_custom_prompt else None,

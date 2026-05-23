@@ -781,7 +781,7 @@ def build_mflux_cmd(
     *,
     binary: Path,
     backend: Backend,
-    input_path: Path,
+    input_path: Path | None,
     output_path: Path,
     prompt: str,
     negative: str,
@@ -814,6 +814,13 @@ def build_mflux_cmd(
     + interactive runs) explaining the mismatch. Empty tuple (default)
     → no LoRA argv emitted, identical to v0.5 behaviour.
 
+    ``input_path`` (v0.7.0): ``Path | None`` — None for t2i (``imgen
+    draw``) where there's no source photo. When None, the
+    ``backend.image_flag <path>`` argv pair is omitted entirely.
+    Backends supporting t2i (``flux-dev``) still declare
+    ``image_flag="--image-path"`` for dataclass-shape consistency;
+    the runtime gate is here, not on the dataclass field.
+
     v0.3.2: dropped ``--metadata``. mflux's ``--metadata`` writes a
     ``<output>.metadata.json`` sidecar next to every generated image,
     which clutters the user's gallery folder. The PNG itself still
@@ -827,7 +834,10 @@ def build_mflux_cmd(
     cmd = [
         str(binary),
         "--quantize", str(quantize),
-        backend.image_flag, str(input_path),
+    ]
+    if input_path is not None:
+        cmd += [backend.image_flag, str(input_path)]
+    cmd += [
         "--prompt", prompt,
         "--steps", str(steps),
         "--guidance", str(guidance),
