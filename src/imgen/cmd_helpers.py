@@ -114,6 +114,37 @@ __all__ = [
 # ── v0.6: LoRA stack resolution + trigger-word prepending ─────────────
 
 
+def _flatten_cli_lora(
+    cli_lora: list | None,
+) -> tuple[LoraRef, ...]:
+    """Normalise the ``cli_lora`` shape to a flat tuple of LoraRefs.
+
+    Pre-v0.7.0 the CLI ``--lora`` produced ``list[LoraRef]`` (one ref
+    per repeated flag). v0.7.0 added comma-split per element, so the
+    argparse-collected shape became ``list[list[LoraRef]]`` (each
+    repeated flag yields a list of refs from
+    :func:`parser._lora_refs_arg`). Programmatic callers
+    (``replay_entry`` rehydrating from history) still pass flat
+    ``list[LoraRef]``. This helper accepts either shape and returns
+    a flat tuple, so the precedence logic in
+    :func:`resolve_effective_loras` doesn't need to care.
+
+    Detection is element-by-element rather than depth-by-depth: each
+    item is either a ``LoraRef`` (legacy flat shape) or a
+    ``list[LoraRef]`` (v0.7.0 comma-split shape). Mixed inputs are
+    handled gracefully — defence-in-depth against future callers.
+    """
+    if not cli_lora:
+        return ()
+    out: list[LoraRef] = []
+    for item in cli_lora:
+        if isinstance(item, list):
+            out.extend(item)
+        else:
+            out.append(item)
+    return tuple(out)
+
+
 def resolve_effective_loras(
     preset,  # Style | dict — Style in prod since v0.6.2; replay shim may pass dict
     cli_lora: list | None,
@@ -142,15 +173,20 @@ def resolve_effective_loras(
       applies LoRAs in argv order, so the user's CLI additions layer
       ON TOP of the style's curated stack.
 
+    ``cli_lora`` accepts both ``list[LoraRef]`` (legacy / replay) and
+    ``list[list[LoraRef]]`` (v0.7.0 CLI shape after comma-split);
+    normalisation happens via :func:`_flatten_cli_lora`.
+
     Pure: no I/O, no mutation of either input. Returns an empty
     tuple when both sources are empty / disabled.
     """
+    cli_flat = _flatten_cli_lora(cli_lora)
     if no_lora:
-        return tuple(cli_lora) if cli_lora else ()
+        return cli_flat
     style_loras = tuple(preset.get("loras", ()))
-    if not cli_lora:
+    if not cli_flat:
         return style_loras
-    return style_loras + tuple(cli_lora)
+    return style_loras + cli_flat
 
 
 def prepend_trigger_words(

@@ -156,28 +156,55 @@ class TestLoraFlagOnGenerate:
         assert args.no_lora is False
 
     def test_single_lora_creates_one_element_list(self):
+        """v0.7.0: --lora type is now `_lora_refs_arg` (comma-split
+        capable) so `args.lora` shape is `list[list[LoraRef]]`. A
+        single --lora flag with a single ref → `[[LoraRef]]`.
+        :func:`cmd_helpers._flatten_cli_lora` normalises at use-site."""
         args = _parse(
             "generate", "photo.jpg", "-s", "anime",
             "--lora", "alvarobartt/ghibli-characters-flux-lora",
         )
         assert isinstance(args.lora, list)
         assert len(args.lora) == 1
-        assert args.lora[0].ref == "alvarobartt/ghibli-characters-flux-lora"
-        assert args.lora[0].weight == 1.0
+        assert len(args.lora[0]) == 1
+        assert args.lora[0][0].ref == "alvarobartt/ghibli-characters-flux-lora"
+        assert args.lora[0][0].weight == 1.0
 
     def test_multiple_lora_flags_append(self):
-        """``action='append'`` collects each --lora into the list in
-        the order they appeared on the CLI."""
+        """v0.7.0: ``action='append'`` collects each --lora call (each
+        returning a list of refs from _lora_refs_arg) into a list of
+        lists. Use :func:`_flatten_cli_lora` for semantic flat access;
+        the raw shape preserves which refs came from which flag."""
+        from imgen.cmd_helpers import _flatten_cli_lora
+
         args = _parse(
             "generate", "photo.jpg", "-s", "anime",
             "--lora", "a/first:0.8",
             "--lora", "b/second:0.4",
             "--lora", "c/third:0.2",
         )
-        assert [r.ref for r in args.lora] == [
-            "a/first", "b/second", "c/third",
-        ]
-        assert [r.weight for r in args.lora] == [0.8, 0.4, 0.2]
+        # Raw shape: 3 calls × 1 ref each.
+        assert [len(g) for g in args.lora] == [1, 1, 1]
+        # Flat semantic equivalent for assertions.
+        flat = _flatten_cli_lora(args.lora)
+        assert [r.ref for r in flat] == ["a/first", "b/second", "c/third"]
+        assert [r.weight for r in flat] == [0.8, 0.4, 0.2]
+
+    def test_comma_split_creates_multi_ref_inner_list(self):
+        """v0.7.0 (architect §C): `--lora a,b:0.5 --lora c` produces
+        a 2-element outer list (one per --lora call); inner list 0
+        has 2 refs, inner list 1 has 1. Flat sees 3 refs."""
+        from imgen.cmd_helpers import _flatten_cli_lora
+
+        args = _parse(
+            "generate", "photo.jpg", "-s", "anime",
+            "--lora", "a/one,b/two:0.5",
+            "--lora", "c/three",
+        )
+        assert [len(g) for g in args.lora] == [2, 1]
+        flat = _flatten_cli_lora(args.lora)
+        assert [r.ref for r in flat] == ["a/one", "b/two", "c/three"]
+        assert [r.weight for r in flat] == [1.0, 0.5, 1.0]
 
     def test_no_lora_sets_true(self):
         args = _parse("generate", "photo.jpg", "-s", "anime", "--no-lora")
@@ -214,12 +241,14 @@ class TestLoraFlagOnGenerate:
 
 class TestLoraFlagOnBatch:
     def test_batch_accepts_lora(self):
+        """v0.7.0: shape mirrors generate — `list[list[LoraRef]]`."""
         args = _parse(
             "batch", "/some/dir", "-s", "anime",
             "--lora", "x/y:0.6",
         )
         assert len(args.lora) == 1
-        assert args.lora[0].weight == 0.6
+        assert len(args.lora[0]) == 1
+        assert args.lora[0][0].weight == 0.6
 
     def test_batch_accepts_no_lora(self):
         args = _parse("batch", "/some/dir", "-s", "anime", "--no-lora")
@@ -233,10 +262,15 @@ class TestLoraFlagOnBatch:
             )
 
     def test_batch_multiple_lora_append(self):
+        """v0.7.0: shape is `list[list[LoraRef]]`; use _flatten_cli_lora
+        for flat semantic assertions."""
+        from imgen.cmd_helpers import _flatten_cli_lora
+
         args = _parse(
             "batch", "/some/dir", "-s", "anime",
             "--lora", "a/1:0.7",
             "--lora", "b/2:0.5",
         )
-        assert [r.ref for r in args.lora] == ["a/1", "b/2"]
-        assert [r.weight for r in args.lora] == [0.7, 0.5]
+        flat = _flatten_cli_lora(args.lora)
+        assert [r.ref for r in flat] == ["a/1", "b/2"]
+        assert [r.weight for r in flat] == [0.7, 0.5]

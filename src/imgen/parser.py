@@ -196,6 +196,50 @@ def _lora_ref_arg(s: str):
     return LoraRef(ref=ref, weight=weight, compatible_with=("flux-1",))
 
 
+def _lora_refs_arg(s: str):
+    """argparse validator for ``--lora`` accepting comma-list values.
+
+    v0.7.0 (architect §C): `--lora` accepts both repeated flag AND
+    comma-separated value, mirroring how `--style anime,ghibli,pixar`
+    works in v0.2.3+. Examples:
+
+      * ``--lora a/b`` → ``[LoraRef("a/b", 1.0)]``
+      * ``--lora a/b:0.7,c/d`` → ``[LoraRef("a/b", 0.7),
+        LoraRef("c/d", 1.0)]``
+      * ``--lora a/b --lora c/d`` → 2 refs (repeated flag; argparse's
+        ``action='append'`` collects, ``resolve_effective_loras``
+        flattens the resulting list-of-lists)
+
+    Each comma-split element is parsed via :func:`_lora_ref_arg`, so
+    every per-element guard (control bytes, oversized refs, flag-shape
+    rejection, weight range) fires identically.
+
+    Whitespace around each element is stripped (``"a/b , c/d"`` parses
+    as two clean refs). An empty element (e.g. ``"a,,b"``) is rejected
+    — the caller probably meant to type a ref, and silently dropping
+    empties would hide typos.
+
+    Returns ``list[LoraRef]`` per call. The argparse stanza uses
+    ``action="append"`` so the dest collects ``list[list[LoraRef]]``;
+    ``cmd_helpers.resolve_effective_loras`` flattens at use-site.
+
+    Note: HF repo ids contain ``-_/.`` only (no commas), so comma-split
+    is unambiguous for the HF-id case. Absolute paths on macOS APFS
+    can contain commas at the filesystem level; if a user has a LoRA
+    at ``/Volumes/disk/lora-v1,backup.safetensors``, the comma-split
+    will mis-parse. Documented limitation matching the colon-split
+    one (v0.6 python IMP-1) — CLI weight + comma syntax are HF-only;
+    absolute paths with separators must use styles.d TOML.
+    """
+    parts = [p.strip() for p in s.split(",")]
+    if any(not p for p in parts):
+        raise argparse.ArgumentTypeError(
+            "--lora value contains an empty comma-element "
+            f"(check for stray commas in {s!r})"
+        )
+    return [_lora_ref_arg(p) for p in parts]
+
+
 # ── Parser ───────────────────────────────────────────────────────────────
 
 def build_parser(
@@ -507,11 +551,12 @@ def _add_lora_args(p: argparse.ArgumentParser) -> None:
     )
     mode = group.add_mutually_exclusive_group()
     mode.add_argument(
-        "--lora", action="append", type=_lora_ref_arg, default=None,
-        metavar="REF[:WEIGHT]",
+        "--lora", action="append", type=_lora_refs_arg, default=None,
+        metavar="REF[:WEIGHT][,REF[:WEIGHT]...]",
         help="LoRA HF repo id (e.g. 'strangerzonehf/Flux-Animeo-v1-LoRA') "
              "or absolute path to .safetensors, with optional :WEIGHT "
-             "suffix (default 1.0). Repeatable to stack multiple LoRAs.",
+             "suffix (default 1.0). Repeatable AND comma-split: "
+             "--lora A,B:0.5 --lora C stacks 3 LoRAs in arg order.",
     )
     mode.add_argument(
         "--no-lora", dest="no_lora", action="store_true", default=False,
