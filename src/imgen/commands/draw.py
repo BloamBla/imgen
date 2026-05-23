@@ -350,8 +350,11 @@ def cmd_draw(args) -> int:
     # 12) Loop over the N iterations. KeyboardInterrupt mid-loop
     # returns 130 with whatever's been generated so far (open_results
     # below still opens the partial run-dir).
-    succeeded: list = []
-    failed: list = []
+    # v0.7.4 python NIT-2: tighten the bare `list` annotations to the
+    # concrete tuple shapes that `open_results` / `print_batch_summary`
+    # / `exit_code` consume. Matches the i2i orchestrators' style.
+    succeeded: list[tuple[str, Path, int]] = []
+    failed: list[tuple[str, int, Path]] = []
     for idx, it in enumerate(iterations, start=1):
         cont = run_one_iteration(
             it=it,

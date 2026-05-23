@@ -81,9 +81,7 @@ from .paths import DEFAULT_OUTPUT_DIR, SAFE_OUTPUT_EXTS, VENV_BIN
 from .runs import (
     BatchContext,
     BatchLogger,
-    DrawIterationGroup,
     Iteration,
-    IterationGroup,
     PerInputBatch,
     auto_run_dirname,
     next_available_path,
@@ -499,10 +497,17 @@ def _summarise_enhance_results_and_pack(
     results: list[EnhanceResult],
     eff: dict,
 ) -> tuple[list[EnhanceResult], str | None]:
-    """Shared post-LLM-call summary path: prints the one-line outcome
-    and returns ``(results, model_name_or_None)``. Extracted v0.7.3 so
-    both ``maybe_enhance_prompts`` and ``maybe_enhance_for_command``
-    share the exact same surface UX.
+    """Post-LLM-call summary path: prints the one-line outcome and
+    returns ``(results, eff["model"])``. Reached ONLY on the enabled
+    path — the disabled path (``eff["enabled"]=False``) in
+    ``maybe_enhance_prompts`` short-circuits with ``(skip_results,
+    None)`` before reaching this helper. Extracted v0.7.3 so both
+    public entry points share the identical surface UX.
+
+    Returns the model name (not None) because being here means the
+    LLM ran; history rows downstream record ``enhance_model`` only
+    when the LLM was actually invoked. The disabled path's caller-
+    side ``None`` return for ``enhance_model`` is its own contract.
     """
     enhanced_n = sum(1 for r in results if r.was_enhanced)
     if enhanced_n == len(results):
@@ -599,29 +604,37 @@ def apply_enhance_results_to_iterations(
 
 
 def apply_enhance_results_to_groups(
-    groups: list[IterationGroup],
+    groups: list[PerInputBatch],
     enhance_results: list[EnhanceResult],
-) -> list[IterationGroup]:
+) -> list[PerInputBatch]:
     """Wrapper around :func:`apply_enhance_results_to_iterations` for
-    any per-group iteration shape implementing :class:`IterationGroup`
-    — eliminates the sliding-cursor block that used to live inline in
-    batch.py (v0.5 architect IMP #2, extracted in v0.6.4 as
-    ``apply_enhance_results_to_per_input``; signature promoted from
-    5-tuple to :class:`PerInputBatch` in v0.6.5; generalised from i2i-
-    only to Protocol-typed in v0.7.0 per architect FL-2).
+    cmd_batch's per-input shape. Eliminates the sliding-cursor block
+    that used to live inline in batch.py (v0.5 architect IMP #2,
+    extracted in v0.6.4 as ``apply_enhance_results_to_per_input``;
+    signature promoted to :class:`PerInputBatch` in v0.6.5; renamed
+    to ``_to_groups`` in v0.7.0).
 
-    ``groups`` is a list of any concrete :class:`IterationGroup` —
-    :class:`PerInputBatch` (i2i) or :class:`DrawIterationGroup` (t2i)
-    today; future :class:`VideoIterationGroup` plugs in identically.
-    Each group carries its iteration tuple. ``enhance_results`` is the
-    FLAT list returned by :func:`enhance_iteration_prompts` aligned to
+    ``groups`` is a list of :class:`PerInputBatch` (one per input
+    photo in cmd_batch's N×M flow). ``enhance_results`` is the FLAT
+    list returned by :func:`enhance_iteration_prompts` aligned to
     ``[it for g in groups for it in g.iters]``.
 
-    Returns a new list of the same concrete shapes with enhanced
+    v0.7.4: the v0.7.0 ``IterationGroup`` Protocol +
+    ``DrawIterationGroup`` sibling were retired — neither earned a
+    real consumer in two releases (v0.7.0 wrapped a single iter; v0.7.3
+    cmd_draw refactor moved to enhance-prompt-first, never building a
+    group). Signature tightened to ``list[PerInputBatch]`` since
+    PerInputBatch is the sole concrete shape in production. The name
+    ``_to_groups`` stays as a slight readability win over
+    ``_to_per_input`` (group is a meaningful noun: "the M iterations
+    of one input"). If a future video / multi-shot path needs a
+    Protocol-typed generalisation, resurrecting it is straightforward.
+
+    Returns a new list of :class:`PerInputBatch` with enhanced
     prompts spliced in. Per-group lengths preserved (helper doesn't
-    assume uniform group sizes; ragged groups stay intact).
-    Uses :func:`dataclasses.replace` so future field additions to any
-    concrete shape propagate automatically (v0.6.5 architect FL-6).
+    assume uniform group sizes; ragged groups stay intact). Uses
+    :func:`dataclasses.replace` so future field additions to
+    PerInputBatch propagate automatically (v0.6.5 architect FL-6).
 
     Pure: no I/O. Asserts the flat-shape count matches sum of group
     lengths — misalignment would silently miswire prompts.
@@ -632,7 +645,7 @@ def apply_enhance_results_to_groups(
             f"enhance-result count mismatch: groups sum to "
             f"{expected_flat} iterations vs {len(enhance_results)} results"
         )
-    out: list[IterationGroup] = []
+    out: list[PerInputBatch] = []
     cursor = 0
     for g in groups:
         group_len = len(g.iters)
