@@ -1,8 +1,15 @@
 # imgen
 
-Photo style-transfer CLI for Apple Silicon Macs. Wraps [mflux](https://github.com/filipstrand/mflux) (MLX-native FLUX Kontext / Qwen Image Edit) with sane defaults, presets, and zero MPS bugs.
+Local image generation CLI for Apple Silicon Macs. Two modes today: **`imgen draw`** generates images from text prompts (FLUX.1-dev), **`imgen generate` / `imgen batch`** restyle photos (FLUX.1-Kontext, Qwen-Image-Edit). Wraps [mflux](https://github.com/filipstrand/mflux) under the hood — on-device via MLX, no cloud, no API keys outside HuggingFace's gated-repo token.
 
 ```bash
+# Text-to-image (v0.7.0+)
+imgen draw "a samurai on a misty mountain at dawn"            # FLUX.1-dev default
+imgen draw "samurai" --enhance-prompt                         # LLM expands the brief into a rich prompt
+imgen draw "samurai" --lora some/style-lora,other/detail:0.6  # stack LoRAs
+imgen draw "samurai" --width 1280 --height 720                # custom aspect
+
+# Photo restyle (v0.1+)
 imgen photo.jpg                              # Pixar style (default)
 imgen photo.jpg --style anime
 imgen photo.jpg --style simpsons --preview   # ~3 min fast test
@@ -12,7 +19,7 @@ imgen photo.jpg --style anime --no-lora          # A/B vs the built-in LoRA (eve
 imgen batch ~/Desktop/holiday --style anime,ghibli   # every photo in folder × every style
 ```
 
-Every run creates a timestamped folder under `~/Desktop/imgen/` — e.g. `~/Desktop/imgen/2026-05-21-14-30-12/photo-pixar.png`. The result opens in Preview automatically. Change the parent with `--output-dir PATH` or pin an exact path with `--output FILE`.
+Every run creates a timestamped folder under `~/Desktop/imgen/` — e.g. `~/Desktop/imgen/2026-05-21-14-30-12/photo-pixar.png` (photo restyle) or `~/Desktop/imgen/2026-05-21-14-30-12/a-samurai-on-a-misty-mountain.png` (text-to-image, slug from the first 6 prompt-words). The result opens in Preview automatically. Change the parent with `--output-dir PATH` or pin an exact path with `--output FILE`.
 
 **Multi-style:** pass `--style anime,ghibli,pixar` to generate N images from one input in a single run — all dropped into the same timestamped folder, named by `<input>-<style>.png`. Confirms with a `[y/N]` summary before starting (skip with `-y/--yes`).
 

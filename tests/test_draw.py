@@ -359,3 +359,118 @@ class TestCmdDrawDryRun:
         assert rc == 0
         out = capsys.readouterr().out
         assert "a ninja from stdin" in out
+
+
+# ── Enhancer wiring for FLUX.1-dev (architect §K) ────────────────────
+
+
+class TestCmdDrawEnhancer:
+    """v0.7.0 step 6: cmd_draw threads the t2i prompt through the
+    LLM enhancer when --enhance-prompt is set. BACKENDS['flux-dev']
+    declares enhance_invariants=() (no substring anchor) and a
+    t2i-tuned enhance_system_prompt — verify the full chain via
+    a mocked orchestrator (same seam as test_generate_enhance.py)."""
+
+    def test_enhanced_prompt_reaches_cmd_argv(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        from imgen.backends import BACKENDS
+        from imgen.enhance import EnhanceResult
+
+        def fake_load(args):
+            return ("flux-dev", BACKENDS["flux-dev"], "tok",
+                    Path("/fake/mflux-generate"), None)
+        monkeypatch.setattr(
+            "imgen.commands.draw.load_backend_and_token", fake_load,
+        )
+
+        captured_system_prompt = []
+        def fake_orchestrator(
+            *, iteration_prompts, system_prompt, invariants,
+            model, temperature, max_tokens, timeout_s,
+        ):
+            captured_system_prompt.append(system_prompt)
+            return [
+                EnhanceResult(
+                    final_prompt=f"ENH: {p} with detailed lighting and cinematic composition",
+                    original_prompt=p,
+                    was_enhanced=True,
+                    fallback_reason=None,
+                    was_truncated=False,
+                    raw_llm_output=f"ENH: {p} with detailed lighting and cinematic composition",
+                )
+                for p in iteration_prompts
+            ]
+        monkeypatch.setattr(
+            "imgen.cmd_helpers.enhance_iteration_prompts", fake_orchestrator,
+        )
+
+        args = _make_args(
+            prompt="a samurai",
+            enhance=True,
+            dry_run=True,
+            output_dir=str(tmp_path),
+        )
+        rc = cmd_draw(args)
+        assert rc == 0
+        # The flux-dev t2i system prompt was passed to the LLM
+        # (not Kontext's i2i variant).
+        assert len(captured_system_prompt) == 1
+        assert "text-to-image diffusion" in captured_system_prompt[0]
+        # The enhanced prompt reaches the displayed cmd argv.
+        out = capsys.readouterr().out
+        assert "ENH: a samurai" in out
+
+    def test_invariants_empty_means_no_substring_check(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """flux-dev's enhance_invariants=() short-circuits the
+        check_invariants path — an enhancement that drops "samurai"
+        entirely would be REJECTED on flux (Kontext) but ACCEPTED on
+        flux-dev. Locks the t2i contract (architect §K: t2i prompt-
+        fidelity is weaker by design)."""
+        from imgen.backends import BACKENDS
+        from imgen.enhance import EnhanceResult
+
+        def fake_load(args):
+            return ("flux-dev", BACKENDS["flux-dev"], "tok",
+                    Path("/fake/mflux-generate"), None)
+        monkeypatch.setattr(
+            "imgen.commands.draw.load_backend_and_token", fake_load,
+        )
+
+        # The "enhanced" prompt has none of the original substrings —
+        # a Kontext-style invariant tuple would reject this.
+        def fake_orchestrator(
+            *, iteration_prompts, system_prompt, invariants,
+            model, temperature, max_tokens, timeout_s,
+        ):
+            # Lock-in: the orchestrator received the empty invariants
+            # tuple from flux-dev's Backend.enhance_invariants.
+            assert invariants == ()
+            return [
+                EnhanceResult(
+                    final_prompt="completely different output text",
+                    original_prompt=p,
+                    was_enhanced=True,
+                    fallback_reason=None,
+                    was_truncated=False,
+                    raw_llm_output="completely different output text",
+                )
+                for p in iteration_prompts
+            ]
+        monkeypatch.setattr(
+            "imgen.cmd_helpers.enhance_iteration_prompts", fake_orchestrator,
+        )
+
+        args = _make_args(
+            prompt="a samurai",
+            enhance=True,
+            dry_run=True,
+            output_dir=str(tmp_path),
+        )
+        rc = cmd_draw(args)
+        assert rc == 0
+        out = capsys.readouterr().out
+        # The unrelated enhanced text reaches argv unchallenged.
+        assert "completely different output text" in out
