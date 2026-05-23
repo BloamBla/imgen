@@ -38,7 +38,12 @@ from ..paths import (
 from ..backends import BUILTIN_BACKENDS, get_backend, list_backends
 from ..shell_rc import ALL_RC_FILES_REL
 from ..styles import BUILTIN_STYLES, list_styles, load_user_styles_dir
-from ..tokens import active_token_path, check_token_perms, load_token
+from ..tokens import (
+    active_token_path,
+    check_token_perms,
+    load_token,
+    safe_display_username,
+)
 
 # Matches `alias imgen=<value>` at line start (allowing leading
 # whitespace). The value is captured greedily to end-of-line and then
@@ -360,7 +365,12 @@ def _ping_hf_whoami_and_report(token: str) -> int:
         return 0
     try:
         user_info = HfApi().whoami(token=token)
-        username = user_info.get("name") or user_info.get("fullname") or "?"
+        raw_name = user_info.get("name") or user_info.get("fullname") or "?"
+        # v0.7.2 security NIT: HF account names are user-controlled —
+        # strip non-printable chars so an ANSI-laden username can't
+        # clear the user's terminal when doctor prints it. Symmetric
+        # with the validate_token path in tokens.py.
+        username = safe_display_username(raw_name)
         ok(f"   HF whoami: logged in as {username}")
         return 0
     except HfHubHTTPError as e:

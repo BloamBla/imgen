@@ -430,3 +430,84 @@ def test_token_validation_accepts_each_failure_kind():
     for kind in ("auth", "network", "parse"):
         result = TokenValidation(None, kind)  # type: ignore[arg-type]
         assert result.error == kind
+
+
+# ── v0.7.2: safe_display_username — control-byte sanitisation ────────
+
+
+class TestSafeDisplayUsername:
+    """v0.7.2 security NIT: HF account names are user-controlled.
+    A maliciously crafted account name with ANSI escapes could clear
+    the terminal when imgen setup / doctor prints it. Defence-in-
+    depth strip matching the v0.4 IMP-2 pattern for any user-supplied
+    string reaching the terminal."""
+
+    def test_plain_ascii_unchanged(self):
+        from imgen.tokens import safe_display_username
+        assert safe_display_username("alice") == "alice"
+
+    def test_unicode_printable_kept(self):
+        """Cyrillic / CJK / emoji — printable Unicode survives."""
+        from imgen.tokens import safe_display_username
+        assert safe_display_username("Станислав") == "Станислав"
+        assert safe_display_username("用户名") == "用户名"
+
+    def test_ansi_escape_replaced(self):
+        """\\x1b (ESC) starts an ANSI sequence — would clear the
+        terminal if printed verbatim. Stripped to ``?``."""
+        from imgen.tokens import safe_display_username
+        out = safe_display_username("alice\x1b[2Jevil")
+        assert "\x1b" not in out
+        assert "alice" in out
+        assert "evil" in out
+        assert "?" in out
+
+    def test_c0_controls_replaced(self):
+        """C0 range (\\x00–\\x1f including null, bell, backspace)."""
+        from imgen.tokens import safe_display_username
+        out = safe_display_username("alice\x00\x07\x08bob")
+        assert "\x00" not in out
+        assert "\x07" not in out
+        assert "\x08" not in out
+
+    def test_del_replaced(self):
+        """\\x7f (DEL) is non-printable, must be stripped."""
+        from imgen.tokens import safe_display_username
+        assert "\x7f" not in safe_display_username("foo\x7fbar")
+
+    def test_c1_controls_replaced(self):
+        """C1 range (\\x80–\\x9f) — terminal escape lead-ins."""
+        from imgen.tokens import safe_display_username
+        out = safe_display_username("alice\x9b[2Jbob")
+        assert "\x9b" not in out
+
+    def test_all_control_input_falls_back_to_question_mark(self):
+        from imgen.tokens import safe_display_username
+        assert safe_display_username("\x00\x01\x02") == "???"
+
+    def test_empty_input_returns_question_mark(self):
+        from imgen.tokens import safe_display_username
+        assert safe_display_username("") == "?"
+
+    def test_long_input_truncated(self):
+        from imgen.tokens import safe_display_username
+        long_name = "a" * 200
+        out = safe_display_username(long_name)
+        assert len(out) <= 80
+
+
+def test_validate_token_sanitises_username(monkeypatch):
+    """v0.7.2: end-to-end — a malicious account name comes back from
+    HF, validate_token strips control bytes before returning. Caller
+    in setup.py prints the username verbatim, so the sanitisation
+    must happen INSIDE validate_token."""
+    from imgen.tokens import validate_token
+    _patch_urlopen(
+        monkeypatch,
+        lambda req, timeout=None: _FakeResponse(
+            b'{"name": "alice\\u001b[2Jevil"}',
+        ),
+    )
+    result = validate_token("hf_abc")
+    assert result.username is not None
+    assert "\x1b" not in result.username

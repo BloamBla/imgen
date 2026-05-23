@@ -30,6 +30,7 @@ __all__ = [
     "active_token_path",
     "check_token_perms",
     "load_token",
+    "safe_display_username",
     "save_token_atomic",
     "validate_token",
 ]
@@ -38,6 +39,38 @@ __all__ = [
 # Typed as ``Literal`` so mypy --strict catches typos and exhaustive
 # match statements at call sites. (v0.3.6 architect IMP-2.)
 ValidationError = Literal["auth", "network", "parse"]
+
+
+def safe_display_username(name: str) -> str:
+    """v0.7.2 security NIT: strip non-printable chars from an HF
+    account name before printing.
+
+    HF account names are user-controlled (the HF user picks them).
+    A maliciously crafted account could embed control bytes — ANSI
+    escapes (``\\x1b[2J`` clears the terminal), C0 controls, DEL
+    (``\\x7f``), C1 controls (``\\x80``–``\\x9f``). The risk profile
+    is small (single-user Mac, user's own HF account), but the
+    repr-or-strip pattern is the established defence at every other
+    user-supplied-string-reaches-terminal surface (v0.4 security
+    IMP-2 on alias paths, v0.3.6 style filename safety, etc.).
+
+    Strategy: keep printable Unicode; replace control chars with
+    a single ``?``. Empty result (e.g. all-control input) falls
+    back to ``"?"``. Length cap 80 chars — no HF username is that
+    long; if one is, truncate with ``…`` so the display line stays
+    one row.
+
+    Pure: no I/O.
+    """
+    safe = "".join(c if c.isprintable() else "?" for c in name)
+    if not safe:
+        return "?"
+    if len(safe) > 80:
+        safe = safe[:79] + "…"
+    return safe
+
+
+_safe_display_username = safe_display_username  # private alias for in-module use
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +218,14 @@ def validate_token(token: str) -> TokenValidation:
                 return TokenValidation(None, "parse")
             name = data.get("name") or data.get("fullname")
             if name:
+                # v0.7.2 security NIT: HF account names are user-
+                # controlled. A maliciously crafted account could
+                # embed ANSI escapes (e.g. `\x1b[2J` to clear the
+                # terminal) that fire when imgen setup / doctor
+                # prints the name. Strip non-printable chars before
+                # returning — defence-in-depth matching the v0.4
+                # security IMP-2 pattern on user-supplied strings.
+                name = _safe_display_username(name)
                 return TokenValidation(name, None)
             return TokenValidation(None, "parse")
     except urllib.error.HTTPError as e:
