@@ -300,22 +300,26 @@ def test_list_loras_flag_parsed():
 
 def test_print_loras_shows_built_in_mappings(tmp_path, capsys):
     """`--list-loras` surfaces every built-in style's LoRA mapping with
-    repo ref, weight, trigger word, and cache state. HF cache is
-    pointed at an empty tmp dir so every entry shows 'not downloaded'.
+    repo ref, weight, trigger word, and cache state. Both caches
+    pointed at empty tmp dirs so every entry shows 'not downloaded'.
 
-    v0.6.1: anime + pixar reverted to text-only after the FLUX.1-dev
-    vs Kontext attention shape mismatch was discovered post-ship.
-    Only ghibli still ships a built-in LoRA."""
+    v0.6.3: six built-in styles ship LoRAs after Phase 1 + Phase 2
+    research (anime / anime_alt / pixar / pixar_alt / ghibli / vangogh
+    / pencil). simpsons stays text-only. Smoke-test the output's
+    structural invariants (ghibli line present, weight precision,
+    trigger format, compat-group label) without pinning each row —
+    per-style row content is locked in tests/test_styles.py.
+    """
     from imgen.parser import print_loras
-    rc = print_loras(hf_cache=tmp_path)
+    # Empty mflux cache too so the cache-state column is deterministic.
+    rc = print_loras(hf_cache=tmp_path, mflux_loras_cache=tmp_path / "empty")
     out = capsys.readouterr().out
     assert rc == 0
-    # Only ghibli ships a built-in LoRA after v0.6.1 hotfix.
+    # ghibli line was the v0.6.0 surviving built-in and is still shipped.
     assert "openfree/flux-chatgpt-ghibli-lora" in out
     # Weight is shown with 2-decimal precision.
     assert "@0.80" in out
     # Trigger shown for activation discoverability.
-    assert "Ghibli style" in out
     assert "Ghibli style" in out
     # flux-1 compat group shown.
     assert "flux-1" in out

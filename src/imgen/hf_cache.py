@@ -38,6 +38,17 @@ def hf_cache_dir_for(repo: str, hf_cache: Path) -> Path:
     ``author/name`` repo lands under
     ``<HF_HOME>/hub/models--<author>--<name>/`` with ``snapshots/`` and
     ``blobs/`` subdirectories.
+
+    Path-traversal note (v0.5 security NIT-2): a repo id like
+    ``"foo/../bar"`` becomes the string ``"models--foo--..--bar"``
+    after the ``replace("/", "--")``. Python's ``Path /`` does NOT
+    interpret ``..`` as a parent-dir traversal in the middle of a
+    single-component name — ``hf_cache / "models--foo--..--bar"``
+    yields a literal child of ``hf_cache`` named with two dots in the
+    middle, not an escape upward. So this helper is traversal-safe
+    even on attacker-controlled ``repo``. Don't "simplify" by passing
+    the repo string through any path-normaliser (``os.path.normpath``
+    / ``Path.resolve``) — that WOULD enable the traversal.
     """
     if not repo or repo.startswith("/"):
         return Path(repo) if repo else hf_cache

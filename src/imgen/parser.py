@@ -462,14 +462,20 @@ def _add_enhance_args(p: argparse.ArgumentParser) -> None:
     )
     enable = group.add_mutually_exclusive_group()
     enable.add_argument(
-        "--enhance-prompt", dest="enhance", action="store_true", default=None,
+        "--enhance-prompt", dest="enhance", action="store_true",
         help="Expand the prompt via the local LLM before generating.",
     )
     enable.add_argument(
-        "--no-enhance", dest="enhance", action="store_false", default=None,
+        "--no-enhance", dest="enhance", action="store_false",
         help="Disable the enhancer for this run (overrides "
              "`[enhance] default = true` in config.toml).",
     )
+    # v0.5 python I-5: argparse takes the LAST ``default=`` it sees on
+    # the dest when args share a dest via ``add_mutually_exclusive_group``,
+    # which makes ``default=None`` on each arg order-fragile. Set the
+    # default once on the parser instead so a future re-order can't
+    # silently flip the "no CLI override" sentinel.
+    p.set_defaults(enhance=None)
     group.add_argument(
         "--enhance-model", type=_clean_model_ref, default=None, metavar="REF",
         help="HF repo or local path for the enhancer LLM (overrides "

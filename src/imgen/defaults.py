@@ -65,7 +65,17 @@ MFLUX_PIN = "mflux==0.17.5"
 #                          invariant checks (so ``prompt`` differs from
 #                          ``prompt_original``)
 #   enhance_model (str|null): which LLM was used, e.g.
-#                          ``"mlx-community/Qwen2.5-7B-Instruct-4bit"``
+#                          ``"mlx-community/Qwen2.5-7B-Instruct-4bit"``.
+#                          Null when the LLM's output was discarded
+#                          (invariant_violated / runner_error / empty
+#                          output) — the value records WHAT MFLUX SAW
+#                          (record-truth), not what the user INTENDED to
+#                          enhance with (record-intent). Replay with
+#                          ``--re-enhance`` reads ``enhance_model`` to
+#                          decide which LLM to re-run; a null entry
+#                          means "no enhancement actually happened in
+#                          this run, so there's nothing to re-do".
+#                          (v0.5 architect NIT #7 trade-off doc.)
 #   enhance_fallback_reason (str|null): None when ``enhanced=True``;
 #                          one of "user_opt_out" / "input_too_long"
 #                          / "empty_input" / "empty_llm_output"

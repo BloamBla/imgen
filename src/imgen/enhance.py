@@ -441,6 +441,15 @@ def run_with_mlx_lm(
     pass nothing → defaults to ``sys.executable`` + the real
     ``imgen.enhance_runner`` module via ``-m``.
 
+    Not user-controllable by design (v0.5 security NIT-3): neither
+    kwarg is exposed via CLI or config. Both values flow into a
+    ``subprocess.run`` call that uses ``cmd`` as a list (no shell) and
+    a constrained env dict (no PATH interpolation of relative names).
+    Test code that overrides these passes paths that already exist on
+    disk; we never quote / format them into a shell command. Don't add
+    a CLI flag or config field that lets external input set either
+    without re-auditing the subprocess call shape.
+
     Empty ``items`` list short-circuits — no subprocess at all. This
     matters because an enhance-enabled run with all iterations having
     empty prompts would otherwise pay the LLM-load cost for zero work.
@@ -565,6 +574,14 @@ def enhance_iteration_prompts(
     ``run_llm`` is an injection seam for tests — pass a callable with
     the same signature as :func:`run_with_mlx_lm` to skip the real
     subprocess.
+
+    Note on the ``timeout_s`` parameter (v0.5 python N-2): this
+    function's public kwarg is ``timeout_s`` (seconds, float). Internally
+    it's forwarded to :func:`run_with_mlx_lm` (or the injected ``run_llm``)
+    via the ``timeout=`` kwarg (the underlying signature uses ``timeout``,
+    not ``timeout_s``). The orchestrator's ``_s`` suffix makes the unit
+    obvious at the API boundary; the runner's plain ``timeout`` matches
+    Python's stdlib subprocess timeout convention.
     """
     n = len(iteration_prompts)
 

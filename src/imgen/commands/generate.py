@@ -43,7 +43,7 @@ from ..cmd_helpers import (
     resolve_styles_list,
     run_one_iteration,
 )
-from ..colors import C, die, info, warn
+from ..colors import C, die, info, step, warn
 from ..defaults import DEFAULTS
 from ..history import load_history
 from ..images import detect_resolution
@@ -252,7 +252,6 @@ def cmd_generate(args) -> int:
         # 9) Dry run — show every M cmd, skip resource checks + history.
         if args.dry_run:
             for it in iterations:
-                from ..colors import step
                 step(f"Dry run — would execute ({it.style_name}):")
                 print()
                 print(format_cmd(it.cmd))

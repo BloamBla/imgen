@@ -92,8 +92,9 @@ class LoraRef:
 class Style:
     """v0.6.2 (architect I-2): promotion of the v0.1.x ``dict[str, Any]``
     preset shape into a frozen+slots dataclass. Six fields cover the
-    full surface of every built-in style as of v0.6.1 plus the v0.6
-    LoRA stack:
+    full surface of every built-in style as of v0.6.3 (six fields +
+    LoRA stack — covers anime / anime_alt / pixar / pixar_alt / ghibli
+    / vangogh / pencil / simpsons):
 
       * ``prompt`` — the base prompt sent to mflux (with optional scope
         substitution + LoRA trigger prepend + v0.5 LLM enhancement).
@@ -164,6 +165,17 @@ class Style:
         # Fields that legitimately default to a non-None empty value
         # (``negative=""``, ``loras=()``) keep the "in" semantics since
         # callers read them unconditionally regardless of the gate.
+        #
+        # v0.6.4 architect NIT-5: the ``key.startswith("_")`` guard
+        # blocks dunder attribute leakage through ``"key" in style`` —
+        # ``"__class__" in style`` (or ``__init__``, ``__hash__``, etc.)
+        # would otherwise return True via ``getattr(self, key, None)``
+        # since dunders ARE attributes on the instance. Dataclass-slot
+        # fields can technically be named with a leading underscore but
+        # we've never used that convention in this codebase and it
+        # collides with dunder semantics, so the broad filter is safe
+        # and prevents future surprises if a contributor adds a
+        # ``@property`` named ``_internal`` to Style.
         if not isinstance(key, str) or key.startswith("_"):
             return False
         return getattr(self, key, None) is not None

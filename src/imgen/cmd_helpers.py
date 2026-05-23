@@ -1002,6 +1002,17 @@ def build_iterations(
     # Optionally accepts a caller-provided ``warned_incompat_loras`` set
     # to dedup across multiple build_iterations calls (cmd_batch shares
     # one across N inputs → 1 warn per unique LoRA total instead of N).
+    #
+    # v0.6.4 python NIT-3: the dedup key is ``(backend_group, lora.ref)``
+    # — intentionally NOT including ``weight`` because the warn is about
+    # COMPAT (backend can't load the LoRA), not about weight value. Two
+    # LoraRef instances with the same ref but different weights collapse
+    # to the same warn, which is correct semantically. A future caller
+    # that constructs the SAME ref with TWO different ``compatible_with``
+    # tuples would have its second tuple silently swallowed by the
+    # ``setdefault`` below (only the first occurrence's compat list
+    # surfaces in the warn). That edge case is unreachable today via
+    # CLI / TOML loader paths but worth a comment for the future.
     incompat_keys: set[tuple[str, str]] = set()
     incompat_details: dict[tuple[str, str], tuple[str, ...]] = {}
     # `args.style` is None when the parser fell back to merged_defaults

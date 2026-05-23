@@ -413,9 +413,9 @@ def validate_user_backend_schema(data: dict, source: Path) -> Backend:
     The ``[secret]`` section is optional. If present, ``env_var`` must
     be set; ``required`` defaults to True.
 
-    Mirrors styles.validate_user_style_schema / load_user_style_file
-    shape. Future ``_schema.py::validate_against_schema`` extraction
-    (v0.2 backlog item, three-callers trigger now) is deferred to v0.5.
+    Mirrors :func:`styles.load_user_style_file` shape. Both call sites
+    go through the shared ``_schema.py::validate_against_schema`` helper
+    extracted in v0.4 (closed the v0.2-era 3-callers-rule trigger).
     """
     from .colors import warn
 
