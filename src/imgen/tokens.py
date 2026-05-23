@@ -61,6 +61,17 @@ def safe_display_username(name: str) -> str:
     one row.
 
     Pure: no I/O.
+
+    Accepted residual risk (v0.7.2 security NIT, documented):
+    ``str.isprintable()`` PASSES bidirectional control codepoints
+    (U+202E RTL OVERRIDE, U+200B ZERO-WIDTH SPACE, U+200D ZERO-WIDTH
+    JOINER, U+2066–U+2069 isolates) and confusable / homoglyph
+    characters. On a capable terminal these can visually reorder or
+    hide text. Blocking all non-ASCII is hostile to legitimate
+    international usernames (Cyrillic, CJK, emoji ARE valid HF
+    names), so we accept the residual risk for the single-user-Mac
+    threat profile. Tighten only if a use case appears that demands
+    strict ASCII-or-bust display.
     """
     safe = "".join(c if c.isprintable() else "?" for c in name)
     if not safe:
@@ -68,9 +79,6 @@ def safe_display_username(name: str) -> str:
     if len(safe) > 80:
         safe = safe[:79] + "…"
     return safe
-
-
-_safe_display_username = safe_display_username  # private alias for in-module use
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,7 +233,7 @@ def validate_token(token: str) -> TokenValidation:
                 # prints the name. Strip non-printable chars before
                 # returning — defence-in-depth matching the v0.4
                 # security IMP-2 pattern on user-supplied strings.
-                name = _safe_display_username(name)
+                name = safe_display_username(name)
                 return TokenValidation(name, None)
             return TokenValidation(None, "parse")
     except urllib.error.HTTPError as e:
