@@ -8,7 +8,7 @@ imgen photo.jpg --style anime
 imgen photo.jpg --style simpsons --preview   # ~3 min fast test
 imgen photo.jpg --custom-prompt "Mona Lisa painting style"
 imgen photo.jpg --style anime --enhance-prompt   # smarter prompts → better results
-imgen photo.jpg --style ghibli --no-lora         # A/B vs the built-in LoRA (6 of 7 styles ship LoRAs in v0.6.3)
+imgen photo.jpg --style anime --no-lora          # A/B vs the built-in LoRA (every non-simpsons style ships one in v0.6.3)
 imgen batch ~/Desktop/holiday --style anime,ghibli   # every photo in folder × every style
 ```
 
@@ -303,13 +303,13 @@ Six built-in styles ship with curated LoRAs after v0.6.3 (research round 2 on Ko
 
 | Style       | LoRA                                                         | Weight | Trigger             | License                                |
 |-------------|--------------------------------------------------------------|--------|---------------------|----------------------------------------|
-| `anime`     | `Shakker-Labs/FLUX.1-Kontext-dev-LoRA-Flat-Cartoon-Style`    | 0.8    | `flat cartoon style`| `flux-1-dev-non-commercial-license`    |
+| `anime`     | `Shakker-Labs/FLUX.1-Kontext-dev-LoRA-Flat-Cartoon-Style`    | 0.8    | `flat cartoon style`| non-commercial (see model card)        |
 | `anime_alt` | `Kontext-Style/Irasutoya_lora`                               | 0.8    | `Irasutoya style`   | unspecified — see commercial-use note  |
 | `pixar`     | `Kontext-Style/Poly_lora`                                    | 0.8    | `Poly style`        | unspecified — see commercial-use note  |
 | `pixar_alt` | `Kontext-Style/3D_Chibi_lora`                                | 0.8    | `3D Chibi`          | unspecified — see commercial-use note  |
 | `ghibli`    | `openfree/flux-chatgpt-ghibli-lora`                          | 0.8    | `Ghibli style`      | `flux-1-dev-non-commercial-license`    |
 | `vangogh`   | `Kontext-Style/Oil_Painting_lora`                            | 0.8    | `Oil Painting`      | unspecified — see commercial-use note  |
-| `pencil`    | `Shakker-Labs/FLUX.1-Kontext-dev-LoRA-Sketch-Style`          | 0.8    | `sketch`            | `flux-1-dev-non-commercial-license`    |
+| `pencil`    | `Shakker-Labs/FLUX.1-Kontext-dev-LoRA-Sketch-Style`          | 0.8    | `sketch`            | non-commercial (see model card)        |
 
 `simpsons` stays text-only — no Kontext-trained Simpsons LoRA on HF survived the visual A/B for that specific aesthetic.
 
@@ -425,9 +425,9 @@ In practice all built-in LoRAs are flux-1 only. Switching `--backend qwen` produ
 
 Per-LoRA license (as published on the upstream HF model card):
 
-- **Shakker-Labs Kontext LoRAs** (`Flat-Cartoon-Style`, `Sketch-Style`) — `flux-1-dev-non-commercial-license`. Non-commercial only; same NC tier as FLUX-Kontext-dev base.
+- **Shakker-Labs Kontext LoRAs** (`Flat-Cartoon-Style`, `Sketch-Style`) — HF reports `license: other`; the model cards reference FLUX NC, so practically non-commercial. Check the model card directly for the latest wording.
 - **`openfree/flux-chatgpt-ghibli-lora`** — `flux-1-dev-non-commercial-license`. Non-commercial only.
-- **Kontext-Style org LoRAs** (`Poly_lora`, `3D_Chibi_lora`, `Oil_Painting_lora`, `Irasutoya_lora`) — **license unspecified** on the upstream model cards. `imgen` ships these for non-commercial use only (the FLUX-NC base license gates commercial use regardless). Review upstream licenses directly before any commercial use.
+- **Kontext-Style org LoRAs** (`Poly_lora`, `3D_Chibi_lora`, `Oil_Painting_lora`, `Irasutoya_lora`) — **license unspecified** on the upstream model cards (no `license` field in HF metadata). `imgen` ships these for non-commercial use only (the FLUX-NC base license gates commercial use regardless). Review upstream model cards directly before any commercial use.
 
 The blanket caveat in the LoRA section above (FLUX-NC base gates commercial use) applies to every LoRA invoked through `imgen` regardless of the LoRA's own upstream license, because the base model is what actually runs.
 

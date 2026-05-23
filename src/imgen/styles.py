@@ -515,8 +515,13 @@ BUILTIN_STYLES: dict[str, "Style"] = {
     # tagging without actual Kontext attention training. Sketch-Style
     # uses the upstream short-form trigger "sketch"; the pencil prompt
     # already contains "sketch" as a whole word so auto-prepend is a
-    # no-op — the LoRA still loads + activates via fused weight delta
-    # alone. License: flux-1-dev-non-commercial-license.
+    # no-op — the LoRA's fused weight delta applies via --lora-paths
+    # / --lora-scales regardless of trigger presence in the text, so
+    # the visual effect still fires. (Trigger presence reinforces the
+    # delta in some LoRA training regimens but is not strictly required
+    # for activation; full empirical confirmation that trigger-absent
+    # output matches trigger-present output is a v0.7-era A/B if a user
+    # surfaces a quality gap.) License: flux-1-dev-non-commercial-license.
     "pencil": Style(
         prompt=(
             "Restyle this person as a detailed graphite pencil sketch "
@@ -823,6 +828,33 @@ def load_user_styles_dir(dir_path: Path) -> dict[str, "Style"]:
             continue
     return result
 
+
+# Reserved style-name suffixes — keep this list in sync as the project
+# accretes naming conventions. New suffixes need an explicit policy
+# decision (don't just invent them by precedent).
+#
+#   _NNNN  — 4-digit numeric: machine-generated collision resolution
+#            when a user TOML in ~/.imgen/styles.d/ clashes with a
+#            built-in or earlier user-file name. Owned by
+#            `_find_free_suffix` + `_strip_auto_suffix`. Users shouldn't
+#            name their own TOMLs with this suffix (will be stripped
+#            during collision rename).
+#
+#   _alt   — Human-curated alternative LoRA variant of a primary style.
+#            Same prompt + scene_suffix as the primary; only the LoRA
+#            stack differs. Introduced in v0.6.3 for `anime_alt` /
+#            `pixar_alt` where two Kontext-compatible LoRA candidates
+#            survived Phase-2 user A/B and the user wanted both
+#            accessible. The drift-prevention lock-in lives in
+#            tests/test_styles.py::test_alt_styles_share_non_lora_fields
+#            _with_primary. Don't introduce `_strong` / `_v2` / `_lite`
+#            without a similar ADR + lock-in test.
+#
+# Architect IMP-2 from the v0.6.3 pre-tag review proposed lifting the
+# `_alt` affordance into data (a `Style.variant_of: str | None` field)
+# alongside the v0.7 `Style.role` discriminator. That cleanup retires
+# the suffix convention entirely in favour of explicit grouping —
+# tracked in project_v063_backlog.md as FL.
 
 _SUFFIX_RE = re.compile(r"_\d{4}$")
 

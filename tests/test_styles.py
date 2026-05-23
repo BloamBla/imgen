@@ -322,6 +322,68 @@ def test_v063_lora_picks_per_style():
         )
 
 
+def test_alt_styles_share_non_lora_fields_with_primary():
+    """v0.6.3 (architect IMP-1): ``anime_alt`` and ``pixar_alt`` share
+    every non-LoRA field (prompt, negative, guidance, strength,
+    scene_suffix) with their primary counterparts. The whole POINT of
+    the ``_alt`` convention is "same style, different LoRA" — drift
+    between primary and alt would silently break that promise.
+
+    Lock-in here so a future prompt tune on ``anime`` is forced to
+    either update ``anime_alt`` in lockstep OR explicitly disable the
+    parity assertion (which requires editing this test, which requires
+    review).
+    """
+    from imgen.styles import BUILTIN_STYLES
+    pairs = [("anime", "anime_alt"), ("pixar", "pixar_alt")]
+    parity_fields = ("prompt", "negative", "guidance", "strength", "scene_suffix")
+    for primary, alt in pairs:
+        primary_style = BUILTIN_STYLES[primary]
+        alt_style = BUILTIN_STYLES[alt]
+        for field in parity_fields:
+            primary_val = getattr(primary_style, field)
+            alt_val = getattr(alt_style, field)
+            assert primary_val == alt_val, (
+                f"{alt} drifted from {primary} on `{field}`:\n"
+                f"  {primary}.{field} = {primary_val!r}\n"
+                f"  {alt}.{field}     = {alt_val!r}\n"
+                f"`_alt` styles must share every non-LoRA field with "
+                f"their primary — only `loras` may differ. If the "
+                f"divergence is intentional, drop `_alt` and give the "
+                f"new style a distinct name."
+            )
+        # And the loras MUST differ — same LoRA on primary + alt would
+        # make the alt redundant.
+        assert primary_style.loras != alt_style.loras, (
+            f"{alt} ships the same LoRA stack as {primary} — "
+            f"`_alt` only exists to expose an alternative LoRA"
+        )
+
+
+def test_builtin_lora_triggers_pass_is_safe_stem():
+    """v0.6.3 security NIT-3 follow-up: built-in LoRA triggers are
+    Python string literals in ``BUILTIN_STYLES`` and never pass through
+    ``_is_safe_stem`` via the user-TOML loader path. They're trusted
+    by code-review at commit time, but a defence-in-depth test
+    asserts the invariant explicitly.
+
+    Catches a future built-in trigger that accidentally contains a
+    control byte (C0 / DEL / C1) — those bytes would otherwise ride
+    into the prompt → mflux argv → log file → user's terminal on
+    ``cat <log>``.
+    """
+    from imgen.styles import BUILTIN_STYLES, _is_safe_stem
+    for name, style in BUILTIN_STYLES.items():
+        for lora in style.loras:
+            if lora.trigger is None:
+                continue
+            assert _is_safe_stem(lora.trigger), (
+                f"BUILTIN_STYLES[{name!r}].loras trigger "
+                f"{lora.trigger!r} contains control bytes — would "
+                f"propagate into prompt → mflux argv → log file"
+            )
+
+
 def test_simpsons_stays_text_only():
     """simpsons remains text-only after v0.6.3 — Phase 1 found no
     Kontext-trained Simpsons LoRA worth shipping. Shakker-Labs/

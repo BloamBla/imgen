@@ -199,13 +199,21 @@ def test_apply_scope_scene_keeps_recognizable_expression_variant():
 
 
 @pytest.mark.parametrize("name", [
-    "pixar", "anime", "simpsons", "ghibli", "vangogh", "pencil",
+    "pixar", "pixar_alt", "anime", "anime_alt", "simpsons",
+    "ghibli", "vangogh", "pencil",
 ])
 def test_every_built_in_has_scene_suffix(name):
-    """All 6 built-in styles carry their own ``scene_suffix`` tuned
-    to the style's visual school. Lock-in test so a future refactor
-    that drops the field silently doesn't fall the style back to the
-    generic — the per-style language is part of the brand promise."""
+    """Every built-in style carries its own ``scene_suffix`` tuned to
+    the style's visual school. Lock-in test so a future refactor that
+    drops the field silently doesn't fall the style back to the generic
+    — the per-style language is part of the brand promise.
+
+    v0.6.3: list extended to include the new ``anime_alt`` and
+    ``pixar_alt`` styles (Phase-2-picked alternative LoRA variants
+    sharing prompts with their primary counterparts). Per architect /
+    python pre-tag review (IMP-2 / IMP-3): hardcoded ``6`` parametrize
+    list was a stale assumption from v0.6.1.
+    """
     from imgen.styles import BUILTIN_STYLES
     suffix = BUILTIN_STYLES[name].get("scene_suffix")
     assert isinstance(suffix, str) and suffix.strip(), (
@@ -218,7 +226,9 @@ def test_every_built_in_has_scene_suffix(name):
 
 @pytest.mark.parametrize("name,must_contain", [
     ("pixar", "Pixar"),
+    ("pixar_alt", "Pixar"),
     ("anime", "anime"),
+    ("anime_alt", "anime"),
     ("simpsons", "Simpsons"),
     ("ghibli", "Ghibli"),
     ("vangogh", "Van Gogh"),

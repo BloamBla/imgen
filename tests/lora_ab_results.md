@@ -6,7 +6,7 @@ Methodology below; data tables sit at the bottom of the file. Append rows as we 
 
 ## 🎯 v0.6.3 Phase 1 outcome (2026-05-23)
 
-7 candidates smoke-tested at Q4 + 8-step `--preview` on M2 Pro 32GB. Reference photo: `~/Desktop/imgen/refs/AEA68E24-F874-4518-97FA-83BA76CE1070_1_105_c.jpeg`. All Phase-1-passed outputs are at `~/Desktop/imgen/v0.6.3-smoke-2026-05-23/` for user visual A/B (Phase 2).
+7 candidates smoke-tested at Q4 + 8-step `--preview` on M2 Pro 32GB. Reference photo: a single portrait at `~/Desktop/imgen/refs/<uuid>.jpeg` (author-supplied, not committed; pick your own portrait if reproducing). All Phase-1-passed outputs land at `~/Desktop/imgen/v0.6.3-smoke-2026-05-23/` for visual A/B (Phase 2).
 
 | # | LoRA | Built-in slot | Phase 1 | Wall-clock | PNG |
 |---|---|---|---|---|---|
@@ -20,18 +20,20 @@ Methodology below; data tables sit at the bottom of the file. Append rows as we 
 
 **Crash #4** reproduces the v0.6.0 Animeo/Canopus-Pixar signature exactly — `(1,4992,16) × (64,3072)` mismatch on first denoise step. Confirms the lesson: HF "Kontext" tagging is author self-declaration; verify by inference.
 
-**Ship gate**: at least 1 verified candidate exists for every non-ghibli builtin (anime / pixar / simpsons / vangogh / pencil). ghibli stays on the existing `openfree/flux-chatgpt-ghibli-lora`. Phase 2 visual A/B is the user's call — they pick winners after looking at the PNGs.
+**Ship gate**: at least 1 verified candidate exists for every non-ghibli builtin (anime / pixar / simpsons / vangogh / pencil). ghibli stays on the existing `openfree/flux-chatgpt-ghibli-lora`. Phase 2 visual A/B was the user's call after looking at the PNG outputs.
 
-**Decision pending from user (Phase 2)**: for each slot below, pick `WIN` or `LOSE`. WINs get added to `BUILTIN_STYLES` in a separate commit referencing this doc.
+**Phase 2 verdicts (resolved 2026-05-23, applied in `BUILTIN_STYLES`)**:
 
-| Slot | Candidates to compare | Tie-breaker rationale |
+| Slot | Verdict | Notes |
 |---|---|---|
-| `anime` | Flat-Cartoon vs Irasutoya | Flat-Cartoon = generic cartoon (broader); Irasutoya = Japanese flat-illustration (closer to anime niche). Compare against the text-only `anime` baseline at `~/Desktop/imgen/2026-05-22-21-15-37/...anime.png` from yesterday. |
-| `pixar` | 3D_Chibi vs Poly | 3D_Chibi = stylized 3D character (closer to Toy Story); Poly = low-poly geometric (closer to Mario 64). Compare against text-only `pixar` baseline. |
-| `simpsons` | Flat-Cartoon (shared with anime) | Single candidate; Phase 2 decides if Flat-Cartoon's "flat cartoon" interpretation fits Simpsons' specific aesthetic (yellow skin / round eyes / bold outlines). |
-| `vangogh` | Oil_Painting | Single candidate; high prior since explicit Kontext oil-paint training. |
-| `pencil` | Sketch-Style | Single candidate (Monochrome-Pencil crashed). Sketch ≠ pencil but visually adjacent. |
-| `ghibli` | — | Already ships `openfree/flux-chatgpt-ghibli-lora`. No A/B needed. |
+| `anime` | **WIN** Shakker-Labs/Flat-Cartoon-Style | Primary pick; Irasutoya kept accessible under new `anime_alt` style |
+| `anime_alt` (new) | **WIN** Kontext-Style/Irasutoya_lora | User wanted both LoRAs accessible — same prompt, alt LoRA |
+| `pixar` | **WIN** Kontext-Style/Poly_lora | Primary pick; 3D_Chibi kept under new `pixar_alt` style |
+| `pixar_alt` (new) | **WIN** Kontext-Style/3D_Chibi_lora | Same logic as anime_alt |
+| `simpsons` | **LOSE** (no LoRA shipped) | Flat-Cartoon doesn't fit Simpsons-specific aesthetic; stays text-only |
+| `vangogh` | **WIN** Kontext-Style/Oil_Painting_lora | — |
+| `pencil` | **WIN** Shakker-Labs/Sketch-Style | Replaces v0.6.x text-only fallback |
+| `ghibli` | unchanged | Already ships `openfree/flux-chatgpt-ghibli-lora` since v0.6.0 |
 
 **License posture concern**: Kontext-Style org LoRAs (3D_Chibi, Poly, Oil_Painting, Irasutoya) don't publish license on model cards. Shakker-Labs LoRAs (Flat-Cartoon, Sketch) carry `flux-1-dev-non-commercial-license` — same NC tier as the FLUX-Kontext-dev base. Recommend documenting the Kontext-Style licenses as "unspecified — review before commercial use" in README LoRA section when adding them to BUILTIN_STYLES (matching the FLUX-NC blanket caveat from v0.6.2).
 
@@ -185,4 +187,4 @@ Known anime/pixar gap: HF Kontext-tagged anime LoRAs are sparse (only `SakikoLab
 
 Per the v0.6 design memo: A/B-gated promotion was a pre-ship requirement that v0.6.0 skipped under "ship first, A/B after" pressure. The skip caused the v0.6.0→v0.6.1 burn. This file is the discipline gate that prevents that pattern from repeating: nothing enters `BUILTIN_STYLES["loras"]` without a row here showing `WIN`.
 
-See: `~/.claude/projects/-Users-stanislav-khromazhenkov-imgen/memory/feedback_kontext_lora_compat.md` for the original lesson.
+See README's LoRA section and the v0.6.1 commit (`c60dfac`) for the original lesson — that commit captured the first occurrence of the Kontext-vs-FLUX.1-dev shape mismatch and reverted two built-in LoRA picks.
