@@ -55,10 +55,8 @@ from __future__ import annotations
 import datetime
 import os
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as _dataclass_replace
 from pathlib import Path
-
-from dataclasses import replace as _dataclass_replace
 
 from .backends import (
     Backend,
@@ -85,7 +83,7 @@ from .runs import (
     auto_run_dirname,
     next_available_run_dir,
 )
-from .styles import LoraRef, StyleNotFound, get_style
+from .styles import LoraRef, Style, StyleNotFound, get_style
 from .subprocess_helpers import run_with_stderr_redaction
 from .tokens import load_token
 
@@ -888,6 +886,14 @@ class IterationParams:
     defaults precedence is applied. Returned by
     :func:`_resolve_iteration_params` so the outer loop only assembles
     the :class:`Iteration` from named, validated values.
+
+    Intentionally promoted past the single-use threshold (currently
+    only ``build_iterations`` consumes it): the named-attribute form
+    beats an anonymous 4-tuple for read-clarity at the call site, and
+    future ``imgen draw`` work per [[project-v063-backlog]] FL-1 will
+    extend IterationParams with a ``role``-aware optional field —
+    keeping the dataclass shape here means the extension lands as a
+    new field, not a tuple-shape break. (v0.6.4 architect NIT-1.)
     """
     final_steps: int
     final_quantize: int
@@ -895,10 +901,29 @@ class IterationParams:
     final_strength: float
 
 
+@dataclass(frozen=True, slots=True)
+class LoraResolution:
+    """Resolved LoRA stack for one iteration + the prompt with trigger
+    words prepended. Returned by :func:`_resolve_iteration_loras` so
+    the outer ``build_iterations`` loop reads as named-field access
+    instead of 4-tuple positional unpacking.
+
+    Same shape rationale as :class:`IterationParams` (v0.6.4 architect
+    NIT-3): three of the four return values are LoRA tuples differing
+    only in filter stage — a positional unpack would silently miswire
+    if a future contributor swapped two LoRA-tuple slots. Frozen+slots
+    is consistent with the project's other config dataclasses.
+    """
+    effective_loras: tuple
+    compatible_loras: tuple
+    incompat_loras: tuple
+    prompt_with_triggers: str
+
+
 def _resolve_iteration_params(
     *,
     args,
-    preset,  # Style instance
+    preset: Style,
     merged_defaults: dict,
 ) -> IterationParams:
     """Apply v0.3.x parameter precedence rules and return the resolved
@@ -953,11 +978,11 @@ def _resolve_iteration_params(
 
 def _resolve_iteration_prompt(
     *,
-    preset,  # Style instance
+    preset: Style,
     args,
     effective_custom_prompt: str | None,
     style_was_explicit: bool,
-) -> str:
+) -> str | None:
     """Resolve the prompt text for one iteration. 3-way dispatch:
 
       * explicit full-style + ``--custom-prompt``     → AUGMENTATION
@@ -1010,16 +1035,15 @@ def _resolve_iteration_prompt(
 
 def _resolve_iteration_loras(
     *,
-    preset,  # Style instance
+    preset: Style,
     args,
     be,
     prompt: str,
-) -> tuple[tuple[LoraRef, ...], tuple[LoraRef, ...], tuple[LoraRef, ...], str]:
+) -> LoraResolution:
     """Resolve the LoRA stack for one iteration + emit the prompt with
     trigger words prepended.
 
-    Returns ``(effective_loras, compatible_loras, incompat_loras,
-    prompt_with_triggers)``:
+    Returns a :class:`LoraResolution`:
 
       * ``effective_loras`` — style + CLI stack post-``--no-lora``
         opt-out; what flows into ``build_mflux_cmd`` for argv emission.
@@ -1032,9 +1056,10 @@ def _resolve_iteration_loras(
         compatible LoRA's trigger word prepended if missing.
 
     Extracted v0.6.4 from ``build_iterations`` per the v0.6.2 architect
-    IMP-2 split. Pure: no I/O, no mutation of inputs. The warn for
-    incompat LoRAs is emitted once-per-pair by the orchestrator after
-    its loop completes (v0.6.x IMP-3 dedup).
+    IMP-2 split (v0.6.4 architect NIT-3 promoted the 4-tuple return
+    into a named LoraResolution dataclass). Pure: no I/O, no mutation
+    of inputs. The warn for incompat LoRAs is emitted once-per-pair
+    by the orchestrator after its loop completes (v0.6.x IMP-3 dedup).
     """
     cli_lora_list = getattr(args, "lora", None)
     no_lora = bool(getattr(args, "no_lora", False))
@@ -1043,7 +1068,12 @@ def _resolve_iteration_loras(
         effective_loras, be,
     )
     prompt_with_triggers = prepend_trigger_words(prompt, compatible_loras)
-    return effective_loras, compatible_loras, incompat_loras, prompt_with_triggers
+    return LoraResolution(
+        effective_loras=effective_loras,
+        compatible_loras=compatible_loras,
+        incompat_loras=incompat_loras,
+        prompt_with_triggers=prompt_with_triggers,
+    )
 
 
 def build_iterations(
@@ -1150,19 +1180,16 @@ def build_iterations(
         # backend compat; prepend trigger words for compatible LoRAs.
         # Incompatibles roll up into the dedup accumulators so the
         # post-loop warn block emits once per unique (group, ref).
-        (
-            effective_loras,
-            compatible_loras,
-            iter_incompat,
-            prompt,
-        ) = _resolve_iteration_loras(
+        lora_resolution = _resolve_iteration_loras(
             preset=preset, args=args, be=be, prompt=prompt,
         )
-        if iter_incompat:
+        prompt = lora_resolution.prompt_with_triggers
+        if lora_resolution.incompat_loras:
             incompat_keys.update(
-                (be.lora_compat_group, lora.ref) for lora in iter_incompat
+                (be.lora_compat_group, lora.ref)
+                for lora in lora_resolution.incompat_loras
             )
-            for lora in iter_incompat:
+            for lora in lora_resolution.incompat_loras:
                 incompat_details.setdefault(
                     (be.lora_compat_group, lora.ref),
                     tuple(sorted(lora.compatible_with)),
@@ -1185,7 +1212,7 @@ def build_iterations(
             height=height,
             mlx_cache_gb=merged_defaults["mlx_cache_gb"],
             battery_stop=merged_defaults["battery_stop"],
-            loras=effective_loras,
+            loras=lora_resolution.effective_loras,
         )
 
         iterations.append(Iteration(
@@ -1202,7 +1229,7 @@ def build_iterations(
             # warn-and-skipped by filter_compatible_loras above. This is
             # exactly what landed on the argv, and what v=3 history
             # records for replay determinism.
-            loras=compatible_loras,
+            loras=lora_resolution.compatible_loras,
         ))
 
     # v0.6.x backlog python IMP-3: emit one warn per (backend_group, ref)

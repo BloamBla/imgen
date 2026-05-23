@@ -114,6 +114,21 @@ class EnhanceResult:
     elsewhere. v0.5 python I-4: the coarse token alone was useful for
     aggregation but lost the actual violation detail, making the
     history hard to debug after the fact.
+
+    Security boundary on ``fallback_detail`` (v0.6.4 security IMP-1):
+    the field may transitively carry user-supplied strings — built-
+    in backend invariants are project-controlled, but user backend
+    TOMLs declared in ``~/.imgen/backends.d/`` can set arbitrary
+    ``enhance_invariants`` substrings that end up in the
+    ``check_invariants`` reason string. Today this field is written
+    only to ``~/.imgen/history.jsonl`` and never rendered to a
+    terminal / log, so control-byte / escape-injection display
+    hazards don't apply. If a future surface DOES render
+    ``fallback_detail`` directly (e.g. an ``imgen history --verbose``
+    flag), pass it through ``repr()`` or an equivalent control-byte
+    escape — same discipline as the v0.4 ``warn(repr(...))`` pattern
+    on user-supplied alias paths in doctor.
+
     ``raw_llm_output`` is kept for history / debug — None when the LLM
     was never invoked (disabled / too-long input).
     """

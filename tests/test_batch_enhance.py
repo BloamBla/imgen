@@ -550,6 +550,16 @@ class TestApplyEnhanceResultsToPerInput:
         assert [len(t[4]) for t in out] == [3, 1]
         assert out[1][4][0].prompt == "ENH p2-a"
 
+    def test_empty_input_passes_through(self):
+        """v0.6.4 python NIT-2: zero inputs with zero results is a
+        defined edge of the contract (helper is documented as pure).
+        ``sum([])==0==len([])`` so the guard passes; result is ``[]``.
+        Lock-in so a future contract narrowing doesn't silently
+        reject the empty case."""
+        from imgen.cmd_helpers import apply_enhance_results_to_per_input
+        out = apply_enhance_results_to_per_input([], [])
+        assert out == []
+
     def test_count_mismatch_raises(self):
         """Misalignment between sum-of-group-lengths and flat results
         is loud, not silent — silent miswire would assign wrong
