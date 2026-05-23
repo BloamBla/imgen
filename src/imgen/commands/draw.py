@@ -51,6 +51,7 @@ from ..cmd_helpers import (
     open_results,
     preflight_resources,
     print_batch_summary,
+    prompt_slug,
     resolve_enhance_config,
     resolve_output_layout,
     run_one_iteration,
@@ -138,6 +139,7 @@ def _confirm_draw(
     num_iterations: int,
     first_output: Path,
     run_dir: Path | None,
+    slug: str,
     eta_seconds: int | None,
 ) -> bool:
     """Confirm gate. Shows prompt preview, output target, ETA × N.
@@ -147,6 +149,13 @@ def _confirm_draw(
     the run-dir + count — listing N filenames would bloat the gate
     line without adding info (slug is shared, only the ``-1.png``
     suffix varies).
+
+    v0.7.3 fix (python IMP / security NIT-2): the range display was
+    deriving slug via ``first_output.stem.rsplit('-', 1)[0]`` which
+    failed cosmetically when ``next_available_path`` inserted a
+    collision suffix on the first iteration (e.g. ``<slug>-1-2.png``
+    → stem ``<slug>-1-2`` → rsplit yielding ``<slug>-1`` not
+    ``<slug>``). Pass the canonical slug explicitly.
     """
     preview = prompt if len(prompt) <= 80 else prompt[:77] + "..."
     if num_iterations == 1:
@@ -160,7 +169,7 @@ def _confirm_draw(
         # with num_iterations > 1 (validated at build_draw_iterations).
         print(f"   {C.DIM}output:{C.END} {run_dir}/")
         print(f"   {C.DIM}count:{C.END}  {num_iterations} variations "
-              f"({first_output.stem.rsplit('-', 1)[0]}-1..-{num_iterations}.png)")
+              f"({slug}-1..-{num_iterations}.png)")
     if eta_seconds is not None:
         total_eta = eta_seconds * num_iterations
         per_image = format_duration(eta_seconds)
@@ -247,6 +256,14 @@ def cmd_draw(args) -> int:
     # entry records the enhance metadata (was_enhanced / fallback_reason
     # / fallback_detail / model). They all share the same enhance
     # decision since the prompt was the same.
+    #
+    # INVARIANT: this broadcast assumes all N iterations share ONE
+    # input prompt. The v0.7.x roadmap mentions --prompt-modifier /
+    # per-iteration prompt variation (v0.7.0 §O list); when that
+    # lands, switch `maybe_enhance_prompts(prompts=[...])` to N
+    # distinct prompts and drop this multiplication. EnhanceResult
+    # is frozen+slots so the shared reference can't be mutated, but
+    # the cardinality assumption WILL break if N prompts diverge.
     enhance_results = [unique_enhance_results[0]] * num_iterations
 
     # 6) Build N iterations using the (possibly enhanced) prompt + seed
@@ -295,6 +312,7 @@ def cmd_draw(args) -> int:
             num_iterations=total,
             first_output=iterations[0].output_path,
             run_dir=run_dir,
+            slug=prompt_slug(enhanced_prompt),
             eta_seconds=one_eta,
         )
         if not proceed:
@@ -358,6 +376,13 @@ def cmd_draw(args) -> int:
                     is_batch=True,
                     no_open=args.no_open,
                 )
+            # v0.7.3 python IMP: surface the "K ok / J failed" summary
+            # for the completed slots so the user sees what did finish.
+            # `total=idx - 1` (completed slots) instead of `total` (the
+            # full N) avoids "0/0 of N" confusion when interrupted
+            # before the first image even started writing.
+            if is_batch and (succeeded or failed):
+                print_batch_summary(succeeded, failed, total=idx - 1)
             return 130
 
     # v0.7.0 (post-tag review UX-gap): if mflux exited non-zero AND

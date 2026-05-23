@@ -141,6 +141,16 @@ class Iteration:
     output_path: Path
     cmd: list[str]
     loras: tuple = ()   # tuple[styles.LoraRef, ...] — forward ref to dodge cycle
+    # v0.7.3 fix: per-iteration seed. CRITICAL for cmd_draw's
+    # --num-iterations N where each iteration uses a different ladder
+    # seed (base, base+1, ..., base+N-1). Pre-fix run_one_iteration
+    # wrote ``ctx.seed`` (the base) to every history row, so replaying
+    # row K>1 generated row 1's image, silently breaking the headline
+    # determinism promise. Default 0 keeps existing i2i callers
+    # (build_iterations) working without changes — those set the
+    # field explicitly per the architect's "Iteration self-contained
+    # for replay" guidance from the v0.7.3 pre-tag review.
+    seed: int = 0
 
     # Same opt-out reasoning as BatchContext: `cmd: list[str]` is not
     # hashable, so a caller using Iteration as a set/dict-key would

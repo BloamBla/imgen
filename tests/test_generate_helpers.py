@@ -1825,6 +1825,11 @@ def _full_iter(tmp_path, style="anime") -> Iteration:
         final_strength=0.6,
         output_path=tmp_path / f"out-{style}.png",
         cmd=["/fake/mflux", "--prompt", "x"],
+        # v0.7.3: per-iteration seed lives on Iteration. Tests that
+        # exercise the history serialiser need to match the ctx.seed
+        # used at run_one_iteration call time — fixtures keep them in
+        # lockstep (ctx.seed=42 from _full_ctx; it.seed=42 here).
+        seed=42,
     )
 
 

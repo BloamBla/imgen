@@ -692,3 +692,80 @@ def test_history_entry_carries_command_field_for_draw(
     assert e["prompt"] == "a draw test prompt"
     # Generate entries would have "input" as a path string; locking
     # the new nullable shape.
+
+
+def test_history_n_iterations_records_per_row_seed_ladder(
+    tmp_state_dir, monkeypatch, tmp_path,
+):
+    """v0.7.3 pre-tag CRITICAL fix lock-in: a draw run with N=3 writes
+    3 distinct history rows with seeds [base, base+1, base+2]. Pre-fix
+    (v0.7.3 commit `6ac326f`) wrote `ctx.seed` (= base) to all 3 rows,
+    silently breaking `imgen replay` reproducibility for rows 2..N
+    (each replay generated the same image as row 1 because the
+    recorded seed was the base, not the actual ladder step).
+
+    End-to-end: cmd_draw → run_one_iteration → safe_append_history.
+    No stubbing of run_one_iteration — exercises the real history
+    serialiser via the production code path."""
+    from imgen.backends import BACKENDS
+    from imgen.commands.draw import cmd_draw
+    from types import SimpleNamespace
+    from imgen.defaults import DEFAULTS
+
+    def fake_load(args):
+        return ("flux-dev", BACKENDS["flux-dev"], "tok",
+                Path("/fake/mflux-generate"), None)
+    monkeypatch.setattr(
+        "imgen.commands.draw.load_backend_and_token", fake_load,
+    )
+    monkeypatch.setattr(
+        "imgen.cmd_helpers.run_with_stderr_redaction",
+        lambda cmd, **kw: (
+            Path(cmd[cmd.index("--output") + 1]).touch(),
+            0,
+        )[1],
+    )
+    monkeypatch.setattr(
+        "imgen.cmd_helpers.preflight_resources", lambda **kw: None,
+    )
+    args = SimpleNamespace(
+        prompt="ladder seed test",
+        prompt_file=None,
+        steps=None,
+        quantize=None,
+        guidance=None,
+        seed=700,           # base seed
+        num_iterations=3,   # → ladder seeds 700, 701, 702
+        backend="flux-dev",
+        preview=False,
+        width=1024,
+        height=1024,
+        no_open=True,
+        yes=True,
+        dry_run=False,
+        force=True,
+        enhance=False,
+        enhance_model=None,
+        enhance_temperature=None,
+        imgen_config_enhance={},
+        output=None,
+        output_dir=str(tmp_path),
+        lora=None,
+        no_lora=False,
+        imgen_merged_defaults=DEFAULTS,
+        imgen_config_output_dir=None,
+    )
+    rc = cmd_draw(args)
+    assert rc == 0
+    entries = load_history()
+    # Last 3 entries are this draw run's iterations.
+    draw_entries = [e for e in entries if e.get("command") == "draw"]
+    last_three = draw_entries[-3:]
+    assert len(last_three) == 3
+    # CRITICAL lock-in: per-row seed values match the ladder.
+    seeds = [e["seed"] for e in last_three]
+    assert seeds == [700, 701, 702], (
+        f"history seed ladder broken: expected [700, 701, 702], got {seeds}. "
+        f"Likely regression of the v0.7.3 pre-tag CRITICAL fix where "
+        f"run_one_iteration wrote ctx.seed (= base_seed) to all N rows."
+    )

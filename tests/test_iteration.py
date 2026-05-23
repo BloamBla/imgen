@@ -103,12 +103,12 @@ def test_iteration_field_order_matches_spec():
     rely on positional construction in tests (and future code that
     might build via *args). Lock it.
 
-    Order: style_name, prompt, negative, final_steps, final_quantize,
-    final_guidance, final_strength, output_path, cmd, loras.
-
-    ``loras`` (v0.6) was appended at the end with default ``()`` so
-    v0.5-era positional construction (9-arg form) still works without
-    touching the field tuple.
+    ``loras`` (v0.6) and ``seed`` (v0.7.3 fix) were appended at the
+    end with defaults so older positional construction stays valid:
+    9 args (v0.5) → 10 args (v0.6 + loras=()) → 11 args (v0.7.3 +
+    seed=0). i2i callers (build_iterations) and t2i callers
+    (build_draw_iterations) set seed explicitly; the default exists
+    only for any unknown third-party programmatic caller.
     """
     import dataclasses
     fields = [f.name for f in dataclasses.fields(Iteration)]
@@ -123,6 +123,7 @@ def test_iteration_field_order_matches_spec():
         "output_path",
         "cmd",
         "loras",
+        "seed",
     ]
 
 

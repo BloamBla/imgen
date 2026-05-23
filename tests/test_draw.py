@@ -326,6 +326,37 @@ class TestBuildDrawIterations:
                 num_iterations=0,
             )
 
+    def test_per_iteration_seed_on_iteration_object(self, tmp_path):
+        """v0.7.3 pre-tag CRITICAL fix: Iteration.seed carries the
+        per-iteration ladder seed (NOT base_seed for all). Pre-fix,
+        run_one_iteration wrote ctx.seed (= base) to every history
+        row, breaking replay reproducibility for rows 2..N.
+
+        Lock-in: build N=3 → Iteration.seed values are
+        [base, base+1, base+2], matching the argv --seed values."""
+        from imgen.backends import BACKENDS
+        from imgen.cmd_helpers import build_draw_iterations
+        out = build_draw_iterations(
+            args=_make_args(),
+            prompt="a samurai",
+            merged_defaults=DEFAULTS,
+            be=BACKENDS["flux-dev"],
+            binary=Path("/fake/mflux-generate"),
+            width=1024,
+            height=1024,
+            explicit_output=None,
+            run_dir=tmp_path,
+            base_seed=500,
+            num_iterations=3,
+        )
+        # Iteration.seed reads independently of cmd argv.
+        assert [it.seed for it in out] == [500, 501, 502]
+        # Cross-check: argv --seed matches Iteration.seed (no drift
+        # between the two surfaces).
+        for it in out:
+            argv_seed = int(it.cmd[it.cmd.index("--seed") + 1])
+            assert argv_seed == it.seed
+
     def test_all_iterations_share_compatible_loras(self, tmp_path):
         """LoRA resolution runs ONCE outside the loop (same prompt →
         same triggers → same compat-filtered stack); lock the

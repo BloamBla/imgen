@@ -688,7 +688,7 @@ def run_one_iteration(
         step(f"Generating {style_name} → {output_path.name}")
     print(f"   {C.DIM}backend: {ctx.backend} q{it.final_quantize}  "
           f"steps: {it.final_steps}  guidance: {it.final_guidance}  "
-          f"strength: {it.final_strength}  seed: {ctx.seed}{C.END}")
+          f"strength: {it.final_strength}  seed: {it.seed}{C.END}")
     # v0.7.0: ctx.input_path is None for t2i (`imgen draw`). The display
     # line swaps in a t2i marker; the history JSONL serialises None as
     # JSON null so future replay readers see absence-as-null cleanly.
@@ -724,7 +724,11 @@ def run_one_iteration(
         "preview": ctx.args.preview,
         "prompt": it.prompt,
         "negative": it.negative,
-        "seed": ctx.seed,
+        # v0.7.3 fix: per-Iteration seed, NOT ctx.seed (which is the
+        # base of the cmd_draw ladder; writing it to every row would
+        # collapse N draw iterations onto the same recorded seed and
+        # break replay reproducibility for rows 2..N).
+        "seed": it.seed,
         "steps": it.final_steps,
         "guidance": it.final_guidance,
         "strength": it.final_strength,
@@ -1410,6 +1414,10 @@ def build_draw_iterations(
             output_path=output_path,
             cmd=cmd,
             loras=lora_resolution.compatible_loras,
+            # v0.7.3 fix: per-iteration seed lives on the Iteration
+            # itself so run_one_iteration's history serialiser writes
+            # the correct ladder-step seed (not ctx.seed = base).
+            seed=iter_seed,
         ))
 
     return iterations
@@ -1605,6 +1613,13 @@ def build_iterations(
             # exactly what landed on the argv, and what v=3 history
             # records for replay determinism.
             loras=lora_resolution.compatible_loras,
+            # v0.7.3: per-Iteration seed. i2i (cmd_generate/cmd_batch)
+            # uses one seed across all M styles of a single input —
+            # all iterations of one build_iterations call share the
+            # same seed, equal to ctx.seed. Field set explicitly so
+            # the run_one_iteration history serialiser reads from
+            # ``it.seed`` (post-v0.7.3) uniformly across i2i + t2i.
+            seed=seed,
         ))
 
     # v0.6.x backlog python IMP-3: emit one warn per (backend_group, ref)
