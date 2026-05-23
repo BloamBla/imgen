@@ -103,6 +103,7 @@ __all__ = [
     "prepend_trigger_words",
     "print_batch_summary",
     "resolve_effective_loras",
+    "resolve_enhance_config",
     "resolve_output_layout",
     "resolve_styles_list",
     "run_one_iteration",
@@ -355,13 +356,57 @@ def safe_append_history(entry: dict) -> None:
 # ── v0.5: LLM prompt enhancer integration ──────────────────────────────
 
 
+def resolve_enhance_config(
+    *,
+    cli_enable: bool | None,
+    cli_model: str | None,
+    cli_temperature: float | None,
+    config_enhance: dict,
+) -> dict:
+    """Apply CLI > config > module-default precedence to the enhance
+    settings and return the resolved dict (matches the existing
+    ``config.effective_enhance`` contract — keys ``enabled`` /
+    ``model`` / ``temperature`` / ``max_tokens`` / ``timeout_s``).
+
+    Split out of :func:`maybe_enhance_for_command` in v0.6.4 per the
+    v0.5 architect IMP #3. The wrapper used to poke ``args`` directly
+    (``getattr(args, "enhance", None)`` etc.) which coupled it to the
+    argparse Namespace shape — callers (commands/generate.py +
+    commands/batch.py) now do the explicit two-step:
+
+    .. code:: python
+
+        eff = resolve_enhance_config(
+            cli_enable=args.enhance,
+            cli_model=args.enhance_model,
+            cli_temperature=args.enhance_temperature,
+            config_enhance=getattr(args, "imgen_config_enhance", {}),
+        )
+        results, model = maybe_enhance_for_command(
+            eff_enhance=eff, backend_obj=be, iterations=iterations,
+        )
+
+    Pure delegation to :func:`config.effective_enhance` — same shape,
+    different name (``resolve_enhance_config`` reads as an action; the
+    older ``effective_enhance`` name reads as a getter). The architect
+    naming was preferred for the call-site clarity.
+    """
+    return effective_enhance(
+        cli_enable=cli_enable,
+        config_enhance=config_enhance,
+        cli_model=cli_model,
+        cli_temperature=cli_temperature,
+    )
+
+
 def maybe_enhance_for_command(
     *,
-    args,
+    eff_enhance: dict,
     backend_obj: Backend,
     iterations: list[Iteration],
 ) -> tuple[list[EnhanceResult], str | None]:
-    """Resolve enhance config, optionally run the LLM, return aligned results.
+    """Optionally run the LLM enhancer, return results aligned with
+    ``iterations``.
 
     Returns ``(enhance_results, enhance_model)``:
 
@@ -374,18 +419,18 @@ def maybe_enhance_for_command(
       ran, ``None`` when disabled (so history entries don't claim
       an unused model).
 
-    Bridges the CLI/config seam (args.enhance + ``[enhance]`` section)
-    to the pure orchestrator :func:`enhance.enhance_iteration_prompts`.
-    Tests bypass this wrapper and call the orchestrator directly with
-    a mocked LLM callable.
+    Takes ``eff_enhance`` (the pre-resolved config dict from
+    :func:`resolve_enhance_config`) rather than the args Namespace —
+    keeps the wrapper decoupled from argparse so future config
+    sources (CRON / HTTP API / library use) can drive the enhancer
+    without spelunking through an ``args`` shape. v0.6.4 split per
+    v0.5 architect IMP #3.
+
+    Tests bypass this wrapper and call the underlying orchestrator
+    :func:`enhance.enhance_iteration_prompts` directly with a mocked
+    LLM callable.
     """
-    config_enhance = getattr(args, "imgen_config_enhance", {})
-    eff = effective_enhance(
-        cli_enable=getattr(args, "enhance", None),
-        config_enhance=config_enhance,
-        cli_model=getattr(args, "enhance_model", None),
-        cli_temperature=getattr(args, "enhance_temperature", None),
-    )
+    eff = eff_enhance
 
     if not eff["enabled"]:
         # Build aligned skip-results so the run loop has something to

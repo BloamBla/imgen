@@ -71,6 +71,7 @@ from ..cmd_helpers import (
     open_results,
     preflight_resources,
     print_batch_summary,
+    resolve_enhance_config,
     resolve_output_layout,
     resolve_styles_list,
     run_one_iteration,
@@ -277,8 +278,14 @@ def cmd_batch(args) -> int:
         # enhancement happened before they say yes to a long batch.
         # The pre-enhance prompt is captured inside each EnhanceResult's
         # original_prompt field (no parallel list needed).
+        eff_enhance = resolve_enhance_config(
+            cli_enable=getattr(args, "enhance", None),
+            cli_model=getattr(args, "enhance_model", None),
+            cli_temperature=getattr(args, "enhance_temperature", None),
+            config_enhance=getattr(args, "imgen_config_enhance", {}),
+        )
         enhance_results, enhance_model = maybe_enhance_for_command(
-            args=args,
+            eff_enhance=eff_enhance,
             backend_obj=be,
             iterations=all_iters,
         )

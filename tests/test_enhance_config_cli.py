@@ -139,6 +139,37 @@ def test_missing_enhance_section_yields_empty_dict(tmp_path):
 # ── effective_enhance precedence ───────────────────────────────────────
 
 
+class TestResolveEnhanceConfigDelegatesToEffectiveEnhance:
+    """v0.6.4 (v0.5 architect IMP #3): the new
+    ``cmd_helpers.resolve_enhance_config`` is a thin delegation to
+    ``config.effective_enhance`` with the same return contract. Lock-in
+    that the two helpers stay in sync — if a future change to
+    effective_enhance's shape drifts, this test surfaces it."""
+
+    def test_resolve_enhance_config_matches_effective_enhance(self):
+        from imgen.cmd_helpers import resolve_enhance_config
+        # Probe a representative combination (CLI override + config
+        # base + explicit kwargs) so any arg-order or default drift
+        # between the two helpers fails the test loudly.
+        kwargs = dict(
+            cli_enable=True,
+            cli_model="org/custom",
+            cli_temperature=0.3,
+            config_enhance={
+                "default": False, "model": "ignored", "max_tokens": 250,
+            },
+        )
+        from_resolve = resolve_enhance_config(**kwargs)
+        from_effective = effective_enhance(**kwargs)
+        assert from_resolve == from_effective
+        # Spot-check the CLI > config precedence still applies.
+        assert from_resolve["enabled"] is True
+        assert from_resolve["model"] == "org/custom"
+        assert from_resolve["temperature"] == 0.3
+        # Config wins over module default for non-overridden keys.
+        assert from_resolve["max_tokens"] == 250
+
+
 class TestEffectiveEnhance:
     def test_module_defaults_when_config_empty_cli_none(self):
         out = effective_enhance(cli_enable=None, config_enhance={})

@@ -648,8 +648,16 @@ def enhance_iteration_prompts(
     # already inside the "enhance is on" code path so the high-level
     # should_enhance gate is redundant — use is_enhanceable directly
     # for the per-prompt content check. (v0.5 architect NIT #1.)
+    #
+    # v0.6.4 python N-4: ``pre_results`` is a ``dict[int, EnhanceResult]``
+    # keyed by iteration index. The v0.5 shape was
+    # ``list[EnhanceResult | None]`` filled lazily, which forced two
+    # ``# type: ignore[misc]`` filter-comprehensions to drop the None
+    # sentinels at return time. The dict shape encodes "slots assigned
+    # so far" precisely and lets the final return be a clean ``[d[i]
+    # for i in range(n)]`` — no Optional in the type, no type-ignore.
     enhanceable: list[int] = []  # indices of prompts to pass to LLM
-    pre_results: list[EnhanceResult | None] = [None] * n
+    pre_results: dict[int, EnhanceResult] = {}
     for i, p in enumerate(iteration_prompts):
         if not is_enhanceable(p):
             # Stamp the right reason based on which gate tripped.
@@ -670,8 +678,10 @@ def enhance_iteration_prompts(
 
     # If nothing to enhance, skip the subprocess entirely.
     if not enhanceable:
-        # All slots already filled by the pre-result loop above.
-        return [r for r in pre_results if r is not None]  # type: ignore[misc]
+        # Every iteration index was filled by the pre-result loop above
+        # (since none were enhanceable, all hit one of the fallback
+        # branches). Iterate in index order to preserve caller alignment.
+        return [pre_results[i] for i in range(n)]
 
     items = [
         {"system": system_prompt, "user": iteration_prompts[i]}
@@ -703,7 +713,7 @@ def enhance_iteration_prompts(
             for p in iteration_prompts
         ]
 
-    # Stitch LLM outputs back into the result list at the correct slots.
+    # Stitch LLM outputs back into the result dict at the correct slots.
     for slot_idx, llm_output in zip(enhanceable, llm_outputs):
         pre_results[slot_idx] = decide_final_prompt(
             original=iteration_prompts[slot_idx],
@@ -711,5 +721,7 @@ def enhance_iteration_prompts(
             invariants=invariants,
         )
 
-    # Every slot is filled by now.
-    return [r for r in pre_results if r is not None]  # type: ignore[misc]
+    # Every slot 0..n-1 is filled by now (the pre-loop covered the
+    # non-enhanceable ones, the LLM loop just covered the rest). Caller-
+    # alignment depends on index order, not dict iteration order.
+    return [pre_results[i] for i in range(n)]
