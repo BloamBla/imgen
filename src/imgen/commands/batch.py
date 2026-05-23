@@ -61,7 +61,6 @@ from ..runs import (
     PerInputBatch,
 )
 from ..cmd_helpers import (
-    apply_enhance_results_to_iterations,
     apply_enhance_results_to_per_input,
     build_iterations,
     check_prompt_style_compat,
@@ -374,7 +373,14 @@ def cmd_batch(args) -> int:
                 backend=backend,
                 quant=heaviest_quant,
                 preview=args.preview,
-                scope=args.scope,
+                # v0.6.5 architect IMP-A: scope is i2i-only — mirror
+                # the _resolve_iteration_prompt getattr defence so the
+                # future imgen draw subparser, which omits --scope,
+                # passes through here without an AttributeError. cmd_batch
+                # itself still binds args.scope unconditionally because
+                # batch is i2i-only by definition; this is the call into
+                # the shared logger surface that's also visited by draw.
+                scope=getattr(args, "scope", None),
                 seed=seed,
             )
 

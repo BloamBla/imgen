@@ -83,14 +83,27 @@ MFLUX_PIN = "mflux==0.17.5"
 #                          / "not_supported_by_backend"
 #   enhance_fallback_detail (str|null, v0.6.4+): verbose diagnostic
 #                          string when the coarse fallback_reason
-#                          token loses detail. Currently populated
-#                          only for "invariant_violated" — the
-#                          check_invariants reason names which
-#                          clause(s) the LLM dropped. None for paths
-#                          where the coarse token IS the full story.
-#                          Read-compatible additive field; v=2/v=3
-#                          readers using ``entry.get`` see it as
-#                          missing on entries written before v0.6.4.
+#                          token loses detail. Populated for
+#                          "invariant_violated" (the check_invariants
+#                          reason names which clause(s) the LLM dropped)
+#                          and, since v0.6.5, for "runner_error" (the
+#                          str(RunnerError) message — model-load trace,
+#                          timeout, etc.). None for paths where the
+#                          coarse token IS the full story. Read-
+#                          compatible additive field; v=2/v=3 readers
+#                          using ``entry.get`` see it as missing on
+#                          entries written before v0.6.4.
+#
+#                          Note (v0.6.5): for v=3 history rows written
+#                          by v0.6.0–v0.6.4, the runner-error message
+#                          lived in ``raw_llm_output`` instead and
+#                          this field is absent/null. A future
+#                          ``imgen history --verbose`` reader should
+#                          prefer this field first and fall back to
+#                          ``raw_llm_output`` only when
+#                          ``enhance_fallback_reason == "runner_error"``
+#                          and this is null — see EnhanceResult
+#                          docstring in enhance.py for the full rule.
 #
 # v=3 (v0.6): added optional ``loras`` field recording the LoRA stack
 # mflux actually saw for the iteration. Architect-CRITICAL #1 from the

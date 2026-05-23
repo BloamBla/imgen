@@ -13,6 +13,12 @@ What lives here:
 - ``LOGS_DIR`` / ``LOG_RETENTION_DAYS`` / ``ensure_logs_dir`` /
   ``open_log_file_append`` — per-batch log file handling for
   multi-style runs.
+- ``BatchContext`` / ``Iteration`` / ``PerInputBatch`` — frozen+slots
+  shapes the run-loop machinery threads through subprocess + history
+  + log surfaces. ``PerInputBatch`` was promoted from a bare 5-tuple
+  in v0.6.5; the trio is structurally a `cmd_batch` triplet
+  (``BatchContext`` global / ``PerInputBatch`` per-input slot /
+  ``Iteration`` per-(input,style) work item).
 
 These used to live in ``paths.py`` (v0.2.3); split out in v0.2.4 because
 ``paths.py`` was meant for pure filesystem-path constants and the run/
@@ -151,9 +157,9 @@ class PerInputBatch:
     ``LoraResolution``'s lora-stack tuples — the dataclass itself is
     frozen, and the contained sequence being a tuple eliminates the
     "tuple field, mutable element" gotcha for in-place mutation by
-    callers. ``apply_enhance_results_to_per_input`` constructs new
-    :class:`Iteration` instances via :func:`dataclasses.replace` and
-    casts the rebuilt list to a tuple here.
+    callers. Producers (``cmd_batch`` at the discovery loop and
+    ``apply_enhance_results_to_per_input`` at the post-enhance rebuild)
+    cast the built list to a tuple at construction.
 
     ``__hash__ = None`` because :class:`Iteration` is itself unhashable
     (``cmd: list[str]``); any container holding Iterations inherits
@@ -163,8 +169,7 @@ class PerInputBatch:
     mflux_input: Path
     width: int
     height: int
-    iters: tuple  # tuple[Iteration, ...] — annotation stays bare to avoid
-                  # forward-ref string for a same-module class.
+    iters: tuple[Iteration, ...]
 
     __hash__ = None  # type: ignore[assignment]
 

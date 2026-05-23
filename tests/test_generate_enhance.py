@@ -386,6 +386,41 @@ def test_runner_error_falls_back_all_with_diagnostic(
     assert e["enhance_fallback_reason"] == "runner_error"
 
 
+def test_args_without_scope_attr_passes_through_run_one_iteration(
+    tmp_state_dir, tmp_path, stub_mflux, stub_backend, stub_dims,
+    stub_open, stub_sips, monkeypatch,
+):
+    """v0.6.5 (architect IMP-A) end-to-end lock-in for the FL-3 closure:
+    a Namespace WITHOUT a ``scope`` attribute (mirroring what the future
+    ``imgen draw`` parser will produce) passes through cmd_generate
+    cleanly — no AttributeError at:
+
+      * ``_resolve_iteration_prompt`` (the FL-3 helper)
+      * ``logger.write_header(scope=...)`` (architect IMP-A site #2)
+      * ``run_one_iteration`` history entry (architect IMP-A site #3)
+
+    The history row records ``scope=None`` — readers already use
+    ``entry.get`` so absence-as-None lands cleanly. ``preview`` is NOT
+    stripped because it's declared on both i2i and t2i parsers (initial
+    image dimension shorthand vs t2i initial canvas size); only scope
+    is i2i-only."""
+    photo = tmp_path / "photo.jpg"
+    photo.write_bytes(b"jpeg")
+    args = _gen_args(image=photo, output_dir=str(tmp_path / "out"),
+                     style=["anime"], enhance=False)
+    # Strip scope only — preview stays universal.
+    del args.scope
+    assert not hasattr(args, "scope")
+    assert hasattr(args, "preview")
+
+    rc = cmd_generate(args)
+    assert rc == 0
+    from imgen.history import load_history
+    e = load_history()[0]
+    assert e["scope"] is None
+    assert e["preview"] is False
+
+
 def test_runner_error_warn_reads_fallback_detail(
     tmp_state_dir, tmp_path, stub_mflux, stub_backend, stub_dims,
     stub_open, stub_sips, monkeypatch, capsys,

@@ -536,9 +536,11 @@ def apply_enhance_results_to_per_input(
     per_input_iters: list[PerInputBatch],
     enhance_results: list[EnhanceResult],
 ) -> list[PerInputBatch]:
-    """v0.6.4 wrapper around :func:`apply_enhance_results_to_iterations`
-    for ``cmd_batch``'s per-input shape — eliminates the sliding-cursor
-    block that used to live inline in batch.py (v0.5 architect IMP #2).
+    """Wrapper around :func:`apply_enhance_results_to_iterations` for
+    ``cmd_batch``'s per-input shape — eliminates the sliding-cursor
+    block that used to live inline in batch.py (v0.5 architect IMP #2,
+    extracted in v0.6.4; signature promoted from 5-tuple to
+    :class:`PerInputBatch` in v0.6.5 per architect IMP-3).
 
     ``per_input_iters`` is the cmd_batch shape: one
     :class:`~imgen.runs.PerInputBatch` per discovered input photo,
@@ -574,13 +576,13 @@ def apply_enhance_results_to_per_input(
         new_iters = apply_enhance_results_to_iterations(
             list(pib.iters), group_results,
         )
-        out.append(PerInputBatch(
-            input_path=pib.input_path,
-            mflux_input=pib.mflux_input,
-            width=pib.width,
-            height=pib.height,
-            iters=tuple(new_iters),
-        ))
+        # v0.6.5 architect FL-6: ``replace`` carries every non-overridden
+        # field through unchanged, so a future :class:`PerInputBatch`
+        # field addition (e.g. ``original_dimensions``, draw-marker)
+        # propagates automatically. Manual field-by-field rebuild would
+        # silently drop new fields. Matches the
+        # ``apply_enhance_results_to_iterations`` pattern at line 529.
+        out.append(_dataclass_replace(pib, iters=tuple(new_iters)))
     return out
 
 
@@ -641,7 +643,16 @@ def run_one_iteration(
         # no custom prompt — replay uses it to reload the same preset.
         "style": style_name if not ctx.effective_custom_prompt else None,
         "custom_prompt": ctx.effective_custom_prompt,
-        "scope": ctx.args.scope,
+        # v0.6.5 architect IMP-A: complete the FL-3 defence. `scope` is
+        # i2i-parser-specific; the future imgen draw will not declare
+        # it on its Namespace. History readers already use `.get` so
+        # None lands cleanly. Without this getattr run_one_iteration
+        # would AttributeError mid-batch AFTER mflux had already
+        # produced the image — partial run + traceback. Pre-empt here.
+        # `preview` stays a direct attribute access — it's declared on
+        # both i2i and t2i parsers (image-input dimension shorthand /
+        # initial size), so no getattr needed.
+        "scope": getattr(ctx.args, "scope", None),
         "preview": ctx.args.preview,
         "prompt": it.prompt,
         "negative": it.negative,

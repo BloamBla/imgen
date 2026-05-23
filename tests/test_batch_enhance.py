@@ -154,11 +154,17 @@ def _make_stub_orchestrator(
     *,
     transform=None,
     fallback_reason=None,
+    fallback_detail=None,
 ):
     """Patch ``imgen.cmd_helpers.enhance_iteration_prompts`` at the
     import site that ``maybe_enhance_for_command`` uses. Returns the
     calls list for inspection. Mirror of the helper in
-    tests/test_generate_enhance.py — keeps both surfaces aligned."""
+    tests/test_generate_enhance.py — keeps both surfaces aligned.
+
+    v0.6.5 (architect IMP-1 lock-in): ``fallback_detail`` optional —
+    forwarded to the produced EnhanceResult so batch-side tests can
+    exercise the runner_error + detail wire-up symmetrically with
+    test_generate_enhance.py."""
     if transform is None:
         def transform(p):  # noqa: E306
             return f"ENH: {p}"
@@ -184,6 +190,7 @@ def _make_stub_orchestrator(
                     fallback_reason=fallback_reason,
                     was_truncated=False,
                     raw_llm_output=None,
+                    fallback_detail=fallback_detail,
                 ))
             else:
                 results.append(EnhanceResult(
@@ -413,6 +420,40 @@ def test_runner_error_falls_back_consistently_across_batch(
     entries = load_history()
     assert len(entries) == 6
     assert {e["enhance_fallback_reason"] for e in entries} == {"runner_error"}
+
+
+def test_runner_error_warn_reads_fallback_detail_in_batch(
+    tmp_state_dir, tmp_path, stub_mflux, stub_backend, stub_dims,
+    stub_finder, stub_sips, monkeypatch, capsys,
+):
+    """v0.6.5 (architect IMP-1) batch-side mirror of the
+    test_generate_enhance.py lock-in: the shared
+    ``maybe_enhance_for_command`` warn line reads ``fallback_detail``
+    (the verbose diagnostic) — including via the cmd_batch entry path.
+    Locks the wire-up at the batch surface so a future regression
+    that's only exercised under N×M wouldn't sneak through the
+    cmd_generate-only test."""
+    _make_stub_orchestrator(
+        monkeypatch,
+        fallback_reason="runner_error",
+        fallback_detail="mlx_lm.load: model 'fake/model' not found",
+    )
+    input_dir = _make_input_dir(tmp_path, "a.jpg")
+    args = _args(
+        directory=input_dir, output_dir=tmp_path / "out",
+        style=["anime"],
+        enhance=True,
+    )
+
+    rc = cmd_batch(args)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Enhance runner failed" in out
+    # The diagnostic from fallback_detail surfaces in the warn line —
+    # !r-escaped (security IMP-2 pattern). Checks the unquoted substring
+    # so the assertion stays robust to repr()'s quote-style choice.
+    assert "mlx_lm.load: model" in out
+    assert "not found" in out
 
 
 # ── Dry-run + enhance ─────────────────────────────────────────────────

@@ -320,7 +320,11 @@ def cmd_generate(args) -> int:
                     backend=backend,
                     quant=heaviest_quant,
                     preview=args.preview,
-                    scope=args.scope,
+                    # v0.6.5 architect IMP-A: see batch.py write_header
+                    # call for rationale. Pre-emptive getattr so the
+                    # future imgen draw subparser's args (no --scope)
+                    # passes through.
+                    scope=getattr(args, "scope", None),
                     seed=seed,
                 )
 
