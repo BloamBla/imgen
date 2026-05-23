@@ -176,11 +176,11 @@ def resolve_effective_loras(
       explicitly to override a built-in. Without this carve-out
       ``no_lora=True + cli_lora=[X]`` would return empty and silently
       drop the replay reconstruction — a Architect-CRITICAL #1 hazard.
-    * Otherwise the style's ``preset.get("loras", ())`` provides the
-      base stack; ``cli_lora`` (if non-None) is APPENDED. Order in
-      the final tuple = style LoRAs first, CLI LoRAs after. mflux
-      applies LoRAs in argv order, so the user's CLI additions layer
-      ON TOP of the style's curated stack.
+    * Otherwise the style's ``preset.loras`` (always a tuple, default
+      ``()``) provides the base stack; ``cli_lora`` (if non-None) is
+      APPENDED. Order in the final tuple = style LoRAs first, CLI
+      LoRAs after. mflux applies LoRAs in argv order, so the user's
+      CLI additions layer ON TOP of the style's curated stack.
 
     ``cli_lora`` accepts both ``list[LoraRef]`` (legacy / replay) and
     ``list[list[LoraRef]]`` (v0.7.0 CLI shape after comma-split);
@@ -192,7 +192,7 @@ def resolve_effective_loras(
     cli_flat = _flatten_cli_lora(cli_lora)
     if no_lora:
         return cli_flat
-    style_loras = tuple(preset.get("loras", ()))
+    style_loras = preset.loras
     if not cli_flat:
         return style_loras
     return style_loras + cli_flat
@@ -330,7 +330,7 @@ def check_prompt_style_compat(
         # build_iterations. Nothing to reject here.
         return
     # No custom prompt → every listed style must have its own.
-    missing_prompt = [s for s in styles_list if not get_style(s).get("prompt")]
+    missing_prompt = [s for s in styles_list if not get_style(s).prompt]
     if missing_prompt:
         die(f"Style(s) without a prompt: {', '.join(missing_prompt)}. "
             "Pass --custom-prompt (or --prompt-file) to supply one.",
@@ -1106,8 +1106,8 @@ def _resolve_iteration_params(
 
     if args.guidance is not None:
         final_guidance = args.guidance
-    elif "guidance" in preset:
-        final_guidance = preset["guidance"]
+    elif preset.guidance is not None:
+        final_guidance = preset.guidance
     else:
         final_guidance = merged_defaults["guidance"]
 
@@ -1120,8 +1120,8 @@ def _resolve_iteration_params(
     cli_strength = getattr(args, "strength", None)
     if cli_strength is not None:
         final_strength = cli_strength
-    elif "strength" in preset:
-        final_strength = preset["strength"]
+    elif preset.strength is not None:
+        final_strength = preset.strength
     else:
         final_strength = merged_defaults["strength"]
 
@@ -1163,8 +1163,8 @@ def _resolve_iteration_prompt(
     workaround on the draw parser.
     """
     scope = getattr(args, "scope", None)
-    scene_suffix = preset.get("scene_suffix")
-    preset_prompt = preset.get("prompt")
+    scene_suffix = preset.scene_suffix
+    preset_prompt = preset.prompt
     if effective_custom_prompt and preset_prompt and style_was_explicit:
         # v0.3.5 augmentation: explicit full-style + custom-prompt → the
         # preset prompt is the BASE (scope applied to it), then the
@@ -1638,8 +1638,8 @@ def build_iterations(
       * ``guidance`` : CLI > preset  > merged_defaults
       * ``strength`` : CLI > preset  > merged_defaults
       * ``prompt``   : custom_prompt verbatim (if set), else
-                       preset["prompt"] with optional scope substitution
-      * ``negative`` : preset.get("negative", "")
+                       preset.prompt with optional scope substitution
+      * ``negative`` : preset.negative (always a string, empty by default)
 
     ``output_path`` per iteration:
       * if ``explicit_output`` is set (legacy --output FILE) → that path
@@ -1691,7 +1691,7 @@ def build_iterations(
             style_was_explicit=style_was_explicit,
         )
 
-        negative = preset.get("negative", "")
+        negative = preset.negative
 
         # 2. Numeric parameter precedence (CLI > preview > preset >
         # defaults; rules vary per field — locked by tests).

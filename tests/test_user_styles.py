@@ -7,6 +7,7 @@ import pytest
 
 from imgen.styles import (
     BUILTIN_STYLES,
+    Style,
     UserStyleError,
     load_user_style_file,
     load_user_styles_dir,
@@ -97,7 +98,11 @@ def test_load_user_style_file_warns_on_unknown_field(tmp_path, capsys):
     p = tmp_path / "extra.toml"
     p.write_text('prompt = "x"\nmade_up_key = "ignored"\n')
     preset = load_user_style_file(p)
-    assert "made_up_key" not in preset
+    # v0.7.9: Style is slot-bound; an unknown key was already filtered
+    # by validate_against_schema. hasattr is structurally False — no
+    # need for the v0.6.x `"made_up_key" not in preset` dict-compat
+    # check (that API was removed).
+    assert not hasattr(preset, "made_up_key")
     captured = capsys.readouterr()
     assert "made_up_key" in (captured.out + captured.err)
 
@@ -155,7 +160,7 @@ def test_load_user_styles_dir_filename_as_style_name(tmp_path):
     (d / "vapor.toml").write_text('prompt = "vapor"')
     result = load_user_styles_dir(d)
     assert set(result.keys()) == {"noir", "vapor"}
-    assert result["noir"]["prompt"] == "noir"
+    assert result["noir"].prompt == "noir"
 
 
 def test_load_user_styles_dir_skips_non_toml(tmp_path):
@@ -290,11 +295,11 @@ def test_merge_user_styles_doesnt_mutate_inputs():
 def test_merge_user_styles_conflict_with_builtin_gets_0001_suffix(capsys):
     """User-defined 'anime' must not shadow built-in 'anime'. Gets renamed
     to 'anime_0001' with a warning. Built-in stays accessible as 'anime'."""
-    builtins = {"anime": {"prompt": "builtin anime"}}
-    user = {"anime": {"prompt": "user anime"}}
+    builtins = {"anime": Style(prompt="builtin anime")}
+    user = {"anime": Style(prompt="user anime")}
     merged = merge_user_styles(builtins, user)
-    assert merged["anime"]["prompt"] == "builtin anime"  # built-in wins
-    assert merged["anime_0001"]["prompt"] == "user anime"
+    assert merged["anime"].prompt == "builtin anime"  # built-in wins
+    assert merged["anime_0001"].prompt == "user anime"
     captured = capsys.readouterr()
     assert "anime_0001" in (captured.out + captured.err)
 
@@ -302,26 +307,29 @@ def test_merge_user_styles_conflict_with_builtin_gets_0001_suffix(capsys):
 def test_merge_user_styles_conflict_with_existing_user_increments():
     """Hypothetical: if 'anime_0001' is ALSO taken (e.g. user has both
     anime.toml and anime_0001.toml), incrementing the suffix until free."""
-    builtins = {"anime": {"prompt": "builtin"}}
+    builtins = {"anime": Style(prompt="builtin")}
     user = {
-        "anime": {"prompt": "u1"},
-        "anime_0001": {"prompt": "u2"},  # explicit user-named clash
+        "anime": Style(prompt="u1"),
+        "anime_0001": Style(prompt="u2"),  # explicit user-named clash
     }
     merged = merge_user_styles(builtins, user)
-    assert merged["anime"]["prompt"] == "builtin"
+    assert merged["anime"].prompt == "builtin"
     # anime_0001 was already taken by user's explicit name, so the
     # *unnamed* (filename-derived) anime → anime_0002
     assert "anime_0001" in merged
     assert "anime_0002" in merged
     # Which assignment maps to which depends on input dict order; just
     # assert both user prompts are accessible somewhere.
-    user_prompts = {merged["anime_0001"]["prompt"], merged["anime_0002"]["prompt"]}
+    user_prompts = {merged["anime_0001"].prompt, merged["anime_0002"].prompt}
     assert user_prompts == {"u1", "u2"}
 
 
 def test_merge_user_styles_builtin_unchanged_after_conflict():
     """Built-in dict must not be modified during the merge — pure function."""
-    builtins = {"anime": {"prompt": "builtin", "guidance": 4.0}}
-    user = {"anime": {"prompt": "user"}}
+    builtin_anime = Style(prompt="builtin", guidance=4.0)
+    builtins = {"anime": builtin_anime}
+    user = {"anime": Style(prompt="user")}
     merge_user_styles(builtins, user)
-    assert builtins["anime"] == {"prompt": "builtin", "guidance": 4.0}
+    assert builtins["anime"] is builtin_anime
+    assert builtins["anime"].prompt == "builtin"
+    assert builtins["anime"].guidance == 4.0

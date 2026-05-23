@@ -112,16 +112,15 @@ class Style:
         LoRA = identical to v0.5 behaviour. ``parse_lora_refs``
         validates user-supplied entries before they land here.
 
-    Dict-compat API kept for v0.6.2 migration: ``preset.get("prompt")``
-    and ``preset["prompt"]`` keep working alongside attribute access
-    (``preset.prompt``). The hybrid surface lets legacy test code and
-    legacy ``cmd_helpers.build_iterations`` call sites carry on
-    unchanged while new code prefers attribute access. **Removal
-    target: v0.7** — the t2i (``imgen draw``) work will already touch
-    every call site to add t2i-aware fields, so the dict-compat shedding
-    rides along in the same cut. Until then ``preset["..."]`` is the
-    deprecated surface; new code should use ``preset.<field>`` directly.
-    (architect v0.6.2 IMP-1.)
+    Dict-compat API **REMOVED in v0.7.9** (architect v0.7.8 IMP-1
+    follow-through). The transitional ``preset.get("prompt")`` /
+    ``preset["prompt"]`` / ``"prompt" in preset`` shims have been
+    deleted; attempting any of those now raises ``AttributeError``
+    / ``TypeError`` loudly so the failure surfaces at the call site,
+    not silently in a downstream None-vs-empty branch. v0.6.2 → v0.7.8
+    migration window is closed; all production callers (cmd_helpers
+    + parser) and tests use attribute access (``preset.prompt``,
+    ``preset.loras``, ``preset.guidance is not None``).
 
     On ``enhance_invariants``: NOT promoted into Style. The invariants
     (``("facial identity", "exact facial features", ...)``) are
@@ -145,49 +144,12 @@ class Style:
     scene_suffix: str | None = None
     loras: tuple[LoraRef, ...] = ()
 
-    # Dict-compat read surface. Read-only by virtue of frozen=True; the
-    # underlying fields cannot be set, so __setitem__ would always raise.
-    def __getitem__(self, key: str):
-        try:
-            return getattr(self, key)
-        except AttributeError as e:
-            raise KeyError(key) from e
-
-    def __contains__(self, key: object) -> bool:
-        # v0.6.2 python IMP-1: a slotted dataclass ALWAYS has every
-        # declared field as an attribute (default ``None``/``""``/``()``
-        # if not set). Naive ``hasattr`` would make ``"guidance" in
-        # style`` always True — which breaks ``build_iterations``'s
-        # ``"guidance" in preset → preset["guidance"]`` gate (it would
-        # land ``None`` in the mflux argv). Treat a None-valued field
-        # as "not in" — matches the v0.5 dict behaviour where an
-        # absent TOML key meant the key WASN'T in the dict at all.
-        # Fields that legitimately default to a non-None empty value
-        # (``negative=""``, ``loras=()``) keep the "in" semantics since
-        # callers read them unconditionally regardless of the gate.
-        #
-        # v0.6.4 architect NIT-5: the ``key.startswith("_")`` guard
-        # blocks dunder attribute leakage through ``"key" in style`` —
-        # ``"__class__" in style`` (or ``__init__``, ``__hash__``, etc.)
-        # would otherwise return True via ``getattr(self, key, None)``
-        # since dunders ARE attributes on the instance. Dataclass-slot
-        # fields can technically be named with a leading underscore but
-        # we've never used that convention in this codebase and it
-        # collides with dunder semantics, so the broad filter is safe
-        # and prevents future surprises if a contributor adds a
-        # ``@property`` named ``_internal`` to Style.
-        if not isinstance(key, str) or key.startswith("_"):
-            return False
-        return getattr(self, key, None) is not None
-
-    def get(self, key: str, default=None):
-        # v0.6.2 python NIT-1: ``style.get("__class__")`` would
-        # otherwise return the Style class object via getattr — match
-        # __contains__'s ``_``-prefix and non-string guards so reads
-        # are symmetric.
-        if not isinstance(key, str) or key.startswith("_"):
-            return default
-        return getattr(self, key, default)
+    # v0.7.9: dict-compat shims (__getitem__, __contains__, get) deleted.
+    # Use attribute access exclusively (preset.prompt, preset.loras,
+    # preset.guidance is not None). Subscript / `in` / .get() will now
+    # raise TypeError / AttributeError, which is the loud-fail behaviour
+    # this transition wanted: anyone who missed a call-site update finds
+    # out at runtime, not via a silent None landing in mflux argv.
 
 
 # Cap on a single LoraRef's ref-string length. HF repo ids are well
@@ -946,9 +908,8 @@ def get_style(name: str) -> "Style":
     KeyError subclass) when ``name`` is not in the merged registry.
 
     v0.6.2 (architect I-2): return type changed from ``dict`` to
-    :class:`Style`. Dict-compat read API on Style preserves the
-    ``preset.get("prompt")`` / ``preset["prompt"]`` call shape for the
-    duration of the migration.
+    :class:`Style`. v0.7.9: dict-compat shims removed — callers must
+    use attribute access (``style.prompt`` / ``style.loras`` etc.).
     """
     merged = _load_merged_styles()
     if name not in merged:

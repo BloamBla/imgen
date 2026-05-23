@@ -187,11 +187,11 @@ class TestLoraInUserStyleTOML:
             ']\n'
         )
         preset = load_user_style_file(toml)
-        assert "loras" in preset
-        assert len(preset["loras"]) == 1
-        assert preset["loras"][0].ref == "strangerzonehf/Flux-Animeo-v1-LoRA"
-        assert preset["loras"][0].weight == 0.8
-        assert preset["loras"][0].trigger == "Animeo"
+        assert bool(preset.loras)
+        assert len(preset.loras) == 1
+        assert preset.loras[0].ref == "strangerzonehf/Flux-Animeo-v1-LoRA"
+        assert preset.loras[0].weight == 0.8
+        assert preset.loras[0].trigger == "Animeo"
 
     def test_toml_with_double_bracket_loras_table_parses(self, tmp_path):
         """``[[loras]]`` array-of-tables syntax (TOML's other shape
@@ -209,9 +209,9 @@ class TestLoraInUserStyleTOML:
             'weight = 0.4\n'
         )
         preset = load_user_style_file(toml)
-        assert len(preset["loras"]) == 2
-        assert preset["loras"][0].weight == 0.8
-        assert preset["loras"][1].weight == 0.4
+        assert len(preset.loras) == 2
+        assert preset.loras[0].weight == 0.8
+        assert preset.loras[1].weight == 0.4
 
     def test_toml_without_loras_yields_empty_field(self, tmp_path):
         """Backward compat: a style TOML that doesn't mention loras

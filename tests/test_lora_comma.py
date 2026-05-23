@@ -18,7 +18,7 @@ import pytest
 
 from imgen.cmd_helpers import _flatten_cli_lora, resolve_effective_loras
 from imgen.parser import _lora_ref_arg, _lora_refs_arg
-from imgen.styles import LoraRef
+from imgen.styles import LoraRef, Style
 
 
 class TestLoraRefsArg:
@@ -155,7 +155,7 @@ class TestResolveEffectiveLorasWithCommaSplit:
         style = LoraRef(ref="style/lora", weight=0.8)
         cli_a = LoraRef(ref="cli/a", weight=1.0)
         cli_b = LoraRef(ref="cli/b", weight=0.5)
-        preset = {"loras": (style,)}
+        preset = Style(loras=(style,))
         # v0.7.0 shape: --lora cli/a,cli/b → argparse collects [[cli_a, cli_b]]
         out = resolve_effective_loras(preset, [[cli_a, cli_b]], no_lora=False)
         assert out == (style, cli_a, cli_b)
@@ -166,7 +166,7 @@ class TestResolveEffectiveLorasWithCommaSplit:
         style = LoraRef(ref="style/lora", weight=0.8)
         stored_a = LoraRef(ref="stored/a", weight=1.0)
         stored_b = LoraRef(ref="stored/b", weight=0.5)
-        preset = {"loras": (style,)}
+        preset = Style(loras=(style,))
         # no_lora=True is the replay path; cli_lora carries the stored stack.
         out = resolve_effective_loras(
             preset, [stored_a, stored_b], no_lora=True,
@@ -179,7 +179,7 @@ class TestResolveEffectiveLorasWithCommaSplit:
         a = LoraRef(ref="a/b", weight=1.0)
         b = LoraRef(ref="c/d", weight=0.5)
         c = LoraRef(ref="e/f", weight=1.0)
-        preset = {"loras": ()}
+        preset = Style(loras=())
         out = resolve_effective_loras(preset, [[a, b], [c]], no_lora=False)
         assert out == (a, b, c)
 
@@ -188,6 +188,6 @@ class TestResolveEffectiveLorasWithCommaSplit:
         still works when cli_lora is the list-of-lists shape."""
         style = LoraRef(ref="style/lora", weight=0.8)
         cli_a = LoraRef(ref="cli/a", weight=1.0)
-        preset = {"loras": (style,)}
+        preset = Style(loras=(style,))
         out = resolve_effective_loras(preset, [[cli_a]], no_lora=True)
         assert out == (cli_a,)

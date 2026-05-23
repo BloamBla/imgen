@@ -215,7 +215,7 @@ def test_every_built_in_has_scene_suffix(name):
     list was a stale assumption from v0.6.1.
     """
     from imgen.styles import BUILTIN_STYLES
-    suffix = BUILTIN_STYLES[name].get("scene_suffix")
+    suffix = BUILTIN_STYLES[name].scene_suffix
     assert isinstance(suffix, str) and suffix.strip(), (
         f"{name}: missing or empty scene_suffix field"
     )
@@ -240,7 +240,7 @@ def test_per_style_scene_suffix_mentions_its_style(name, must_contain):
     mentions 'Ghibli', etc. Catches accidental copy-paste between
     style suffixes."""
     from imgen.styles import BUILTIN_STYLES
-    suffix = BUILTIN_STYLES[name]["scene_suffix"]
+    suffix = BUILTIN_STYLES[name].scene_suffix
     assert must_contain in suffix, (
         f"{name}: scene_suffix doesn't mention '{must_contain}': "
         f"{suffix!r}"
@@ -255,7 +255,7 @@ def test_every_built_in_scene_suffix_is_unique():
     styles."""
     from imgen.styles import BUILTIN_STYLES
     suffixes = [
-        BUILTIN_STYLES[n]["scene_suffix"]
+        BUILTIN_STYLES[n].scene_suffix
         for n in ("pixar", "anime", "simpsons", "ghibli",
                   "vangogh", "pencil")
     ]
@@ -276,10 +276,10 @@ def test_apply_scope_scene_on_built_in_uses_per_style_suffix(name):
 
     style = BUILTIN_STYLES[name]
     result = apply_scope(
-        style["prompt"], "scene",
-        scene_suffix=style["scene_suffix"],
+        style.prompt, "scene",
+        scene_suffix=style.scene_suffix,
     )
-    assert result.endswith(style["scene_suffix"])
+    assert result.endswith(style.scene_suffix)
     assert SCOPE_SCENE_SUFFIX_GENERIC not in result
 
 
@@ -291,7 +291,7 @@ def test_apply_scope_person_appends_suffix_to_every_built_in(name):
     background-preservation suffix to every built-in preset."""
     from imgen.styles import STYLES
 
-    original = STYLES[name]["prompt"]
+    original = STYLES[name].prompt
     result = apply_scope(original, "person")
     assert result == original + SCOPE_PERSON_SUFFIX
 

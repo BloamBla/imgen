@@ -863,10 +863,10 @@ def print_styles() -> int:
     step("Available styles")
     for name in list_styles():
         preset = get_style(name)
-        prompt = preset.get("prompt") or "(param-only — pass --custom-prompt)"
+        prompt = preset.prompt or "(param-only — pass --custom-prompt)"
         print(f"  {C.BOLD}{name:14}{C.END} "
-              f"{C.DIM}(guidance={preset.get('guidance')}, "
-              f"strength={preset.get('strength')}){C.END}")
+              f"{C.DIM}(guidance={preset.guidance}, "
+              f"strength={preset.strength}){C.END}")
         print(f"             {prompt[:80]}...")
     return 0
 
@@ -941,7 +941,7 @@ def print_loras(
     with_loras: list[tuple[str, tuple]] = []
     for name in list_styles():
         preset = get_style(name)
-        loras = preset.get("loras", ())
+        loras = preset.loras
         if loras:
             with_loras.append((name, loras))
         else:

@@ -417,7 +417,7 @@ def test_print_loras_marks_local_path_correctly(tmp_path, capsys, monkeypatch):
     ``(missing)``.
     """
     from imgen import parser
-    from imgen.styles import LoraRef
+    from imgen.styles import LoraRef, Style
 
     local_safetensors = tmp_path / "my-custom.safetensors"
     local_safetensors.write_bytes(b"\x00\x00\x00\x00")
@@ -431,7 +431,7 @@ def test_print_loras_marks_local_path_correctly(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(
         parser,
         "get_style",
-        lambda _: {"loras": (fake_lora,)},
+        lambda _: Style(loras=(fake_lora,)),
     )
     parser.print_loras(hf_cache=tmp_path)
     out = capsys.readouterr().out
@@ -449,7 +449,7 @@ def test_print_loras_marks_local_path_correctly(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(
         parser,
         "get_style",
-        lambda _: {"loras": (missing_lora,)},
+        lambda _: Style(loras=(missing_lora,)),
     )
     parser.print_loras(hf_cache=tmp_path)
     out = capsys.readouterr().out

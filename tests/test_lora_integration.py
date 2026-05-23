@@ -22,7 +22,7 @@ from imgen.cmd_helpers import (
     resolve_effective_loras,
 )
 from imgen.defaults import DEFAULTS
-from imgen.styles import LoraRef
+from imgen.styles import LoraRef, Style
 
 
 # ── resolve_effective_loras ────────────────────────────────────────────
@@ -30,15 +30,15 @@ from imgen.styles import LoraRef
 
 class TestResolveEffectiveLoras:
     def test_neither_style_nor_cli_yields_empty(self):
-        preset = {"prompt": "x"}
+        preset = Style(prompt="x")
         out = resolve_effective_loras(preset, cli_lora=None, no_lora=False)
         assert out == ()
 
     def test_no_lora_overrides_style_loras(self):
-        preset = {
-            "prompt": "x",
-            "loras": (LoraRef(ref="style/lora", weight=0.8),),
-        }
+        preset = Style(
+            prompt="x",
+            loras=(LoraRef(ref="style/lora", weight=0.8),),
+        )
         out = resolve_effective_loras(preset, cli_lora=None, no_lora=True)
         assert out == ()
 
@@ -50,10 +50,10 @@ class TestResolveEffectiveLoras:
         snapshot is reproduced. Architect-CRITICAL #1 fix from the
         v0.6 pre-tag review. Without this carve-out replay would
         silently drop the stored stack."""
-        preset = {
-            "prompt": "x",
-            "loras": (LoraRef(ref="style/current_builtin"),),
-        }
+        preset = Style(
+            prompt="x",
+            loras=(LoraRef(ref="style/current_builtin"),),
+        )
         cli = [LoraRef(ref="replay/stored")]
         out = resolve_effective_loras(preset, cli_lora=cli, no_lora=True)
         # Style's current built-in suppressed; replay's stored stack survives.
@@ -64,23 +64,23 @@ class TestResolveEffectiveLoras:
         falls back to the original v0.5 semantics: empty tuple. Models
         the user's --no-lora invocation (drop everything) and the
         v=3 history entry with loras=[] (text-only original run)."""
-        preset = {
-            "prompt": "x",
-            "loras": (LoraRef(ref="style/lora", weight=0.8),),
-        }
+        preset = Style(
+            prompt="x",
+            loras=(LoraRef(ref="style/lora", weight=0.8),),
+        )
         assert resolve_effective_loras(preset, cli_lora=None, no_lora=True) == ()
         assert resolve_effective_loras(preset, cli_lora=[], no_lora=True) == ()
 
     def test_style_loras_passed_through_when_no_cli(self):
         a = LoraRef(ref="a/1", weight=0.8)
         b = LoraRef(ref="b/2", weight=0.4)
-        preset = {"prompt": "x", "loras": (a, b)}
+        preset = Style(prompt="x", loras=(a, b))
         out = resolve_effective_loras(preset, cli_lora=None, no_lora=False)
         assert out == (a, b)
 
     def test_cli_only_when_style_has_none(self):
         cli_lora = [LoraRef(ref="cli/lora", weight=0.7)]
-        preset = {"prompt": "x"}
+        preset = Style(prompt="x")
         out = resolve_effective_loras(preset, cli_lora=cli_lora, no_lora=False)
         assert out == tuple(cli_lora)
 
@@ -92,7 +92,7 @@ class TestResolveEffectiveLoras:
         style_b = LoraRef(ref="style/b", weight=0.4)
         cli_x = LoraRef(ref="cli/x", weight=0.5)
         cli_y = LoraRef(ref="cli/y", weight=0.3)
-        preset = {"prompt": "x", "loras": (style_a, style_b)}
+        preset = Style(prompt="x", loras=(style_a, style_b))
         out = resolve_effective_loras(
             preset, cli_lora=[cli_x, cli_y], no_lora=False,
         )
@@ -101,14 +101,14 @@ class TestResolveEffectiveLoras:
     def test_empty_cli_list_treated_as_none(self):
         """argparse passes None for absent --lora; if a caller passes
         [], same effect — no CLI additions."""
-        preset = {"prompt": "x", "loras": (LoraRef(ref="s/1"),)}
+        preset = Style(prompt="x", loras=(LoraRef(ref="s/1"),))
         out = resolve_effective_loras(preset, cli_lora=[], no_lora=False)
         assert out == (LoraRef(ref="s/1"),)
 
     def test_returns_tuple_not_list(self):
         """Downstream Iteration / build_mflux_cmd expects tuple."""
         out = resolve_effective_loras(
-            {"prompt": "x"}, cli_lora=None, no_lora=False,
+            Style(prompt="x"), cli_lora=None, no_lora=False,
         )
         assert isinstance(out, tuple)
 
@@ -320,14 +320,14 @@ class TestBuildIterationsLoRA:
         """Style ships a flux-1 LoRA; backend is flux-1; iteration's
         cmd contains --lora-paths + --lora-scales for it."""
         styles = {
-            "anime": {
-                "prompt": "anime portrait",
-                "loras": (LoraRef(
+            "anime": Style(
+                prompt="anime portrait",
+                loras=(LoraRef(
                     ref="strangerzonehf/Flux-Animeo-v1-LoRA",
                     weight=0.8,
                     compatible_with=("flux-1",),
                 ),),
-            },
+            ),
         }
         its = _build(fake_styles=styles, tmp_path=tmp_path)
         assert "--lora-paths" in its[0].cmd
@@ -336,7 +336,7 @@ class TestBuildIterationsLoRA:
 
     def test_style_with_no_loras_produces_no_lora_argv(self, tmp_path):
         """Backward compat: a style without `loras` field works as v0.5."""
-        styles = {"anime": {"prompt": "anime portrait"}}
+        styles = {"anime": Style(prompt="anime portrait")}
         its = _build(fake_styles=styles, tmp_path=tmp_path)
         assert "--lora-paths" not in its[0].cmd
 
@@ -344,10 +344,10 @@ class TestBuildIterationsLoRA:
         """--lora REF appends to the style's stack — argv shows BOTH
         style and CLI refs in order."""
         styles = {
-            "anime": {
-                "prompt": "anime portrait",
-                "loras": (LoraRef(ref="style/lora", weight=0.8),),
-            },
+            "anime": Style(
+                prompt="anime portrait",
+                loras=(LoraRef(ref="style/lora", weight=0.8),),
+            ),
         }
         args = _build_args(
             lora=[LoraRef(ref="cli/lora", weight=0.5)],
@@ -359,10 +359,10 @@ class TestBuildIterationsLoRA:
 
     def test_no_lora_drops_style_loras_from_cmd(self, tmp_path):
         styles = {
-            "anime": {
-                "prompt": "anime portrait",
-                "loras": (LoraRef(ref="style/lora", weight=0.8),),
-            },
+            "anime": Style(
+                prompt="anime portrait",
+                loras=(LoraRef(ref="style/lora", weight=0.8),),
+            ),
         }
         args = _build_args(no_lora=True)
         its = _build(fake_styles=styles, tmp_path=tmp_path, args=args)
@@ -372,14 +372,14 @@ class TestBuildIterationsLoRA:
         """LoRA with trigger → iteration.prompt has the trigger
         prepended."""
         styles = {
-            "anime": {
-                "prompt": "anime portrait",
-                "loras": (LoraRef(
+            "anime": Style(
+                prompt="anime portrait",
+                loras=(LoraRef(
                     ref="strangerzonehf/Flux-Animeo-v1-LoRA",
                     weight=0.8,
                     trigger="Animeo",
                 ),),
-            },
+            ),
         }
         its = _build(fake_styles=styles, tmp_path=tmp_path)
         # Iteration's stored prompt starts with the trigger.
@@ -392,12 +392,12 @@ class TestBuildIterationsLoRA:
         """If the style's preset prompt already contains the trigger,
         no prepending."""
         styles = {
-            "anime": {
-                "prompt": "Animeo anime portrait",  # trigger present
-                "loras": (LoraRef(
+            "anime": Style(
+                prompt="Animeo anime portrait",  # trigger present
+                loras=(LoraRef(
                     ref="x/y", weight=0.8, trigger="Animeo",
                 ),),
-            },
+            ),
         }
         its = _build(fake_styles=styles, tmp_path=tmp_path)
         # Counted ONCE in the final prompt, not duplicated.
@@ -407,14 +407,14 @@ class TestBuildIterationsLoRA:
         """A FLUX-2 LoRA on a FLUX-1 backend → argv excludes it +
         warn names the ref."""
         styles = {
-            "anime": {
-                "prompt": "anime portrait",
-                "loras": (LoraRef(
+            "anime": Style(
+                prompt="anime portrait",
+                loras=(LoraRef(
                     ref="flux2-only/x",
                     weight=0.8,
                     compatible_with=("flux-2",),
                 ),),
-            },
+            ),
         }
         its = _build(fake_styles=styles, tmp_path=tmp_path)
         assert "--lora-paths" not in its[0].cmd
@@ -433,9 +433,9 @@ class TestBuildIterationsLoRA:
             ref="flux2-only/x", weight=0.8, compatible_with=("flux-2",),
         )
         styles = {
-            "anime": {"prompt": "anime portrait", "loras": (same_incompat,)},
-            "ghibli": {"prompt": "ghibli portrait", "loras": (same_incompat,)},
-            "pixar": {"prompt": "pixar portrait", "loras": (same_incompat,)},
+            "anime": Style(prompt="anime portrait", loras=(same_incompat,)),
+            "ghibli": Style(prompt="ghibli portrait", loras=(same_incompat,)),
+            "pixar": Style(prompt="pixar portrait", loras=(same_incompat,)),
         }
         args = _build_args(style=["anime", "ghibli", "pixar"])
         _build(
@@ -458,7 +458,7 @@ class TestBuildIterationsLoRA:
         incompat = LoraRef(
             ref="flux2-only/x", weight=0.8, compatible_with=("flux-2",),
         )
-        styles = {"anime": {"prompt": "anime portrait", "loras": (incompat,)}}
+        styles = {"anime": Style(prompt="anime portrait", loras=(incompat,))}
         fake_binary = tmp_path / "fake-mflux"
         fake_binary.write_text("#!/bin/sh\nexit 0\n")
         fake_binary.chmod(0o755)
@@ -503,14 +503,14 @@ class TestBuildIterationsLoRA:
         LoRA's trigger isn't prepended (it wouldn't fire anyway —
         prepending would pollute the prompt for no benefit)."""
         styles = {
-            "anime": {
-                "prompt": "anime portrait",
-                "loras": (LoraRef(
+            "anime": Style(
+                prompt="anime portrait",
+                loras=(LoraRef(
                     ref="flux2-only/x", weight=0.8,
                     compatible_with=("flux-2",),
                     trigger="FLUX2 only token",
                 ),),
-            },
+            ),
         }
         its = _build(fake_styles=styles, tmp_path=tmp_path)
         # Trigger not in the prompt — the incompatible LoRA was filtered

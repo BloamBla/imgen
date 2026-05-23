@@ -37,6 +37,7 @@ from imgen.commands.generate import (
     _validate_input_path,
 )
 from imgen.runs import BatchContext, BatchLogger, Iteration
+from imgen.styles import Style
 
 
 # ── _validate_input_path ────────────────────────────────────────────────
@@ -232,7 +233,7 @@ def test_check_prompt_style_compat_custom_prompt_with_param_only_ok(fake_styles)
     """Param-only style (no `prompt` key) + custom-prompt is the
     legitimate combo: style contributes guidance/strength/etc., CLI
     contributes prompt text."""
-    fake_styles["paramonly"] = {"strength": 0.6}  # no `prompt` key
+    fake_styles["paramonly"] = Style(strength=0.6)  # no `prompt` key
 
     # Must not raise — returns None on success.
     check_prompt_style_compat(
@@ -249,7 +250,7 @@ def test_check_prompt_style_compat_custom_prompt_with_prompt_bearing_ok(
     build_iterations. Pre-v0.3.5 this case died with a mutex error;
     the lift fixes the UX wart where `imgen photo.jpg --custom-prompt
     "..."` died because the default style (pixar) had a prompt."""
-    fake_styles["anime"] = {"prompt": "anime portrait", "strength": 0.6}
+    fake_styles["anime"] = Style(prompt="anime portrait", strength=0.6)
 
     # Must not raise — the combination is now supported via
     # augmentation; check_prompt_style_compat returns None.
@@ -267,9 +268,9 @@ def test_check_prompt_style_compat_multi_style_with_custom_prompt_ok(
     `-s anime,ghibli,pixar --custom-prompt "wearing a red kimono"`),
     and any param-only styles in the mix use the custom prompt as the
     sole prompt content with their tuning params. No die."""
-    fake_styles["anime"] = {"prompt": "anime portrait", "strength": 0.6}
-    fake_styles["ghibli"] = {"prompt": "ghibli scene", "strength": 0.5}
-    fake_styles["paramonly"] = {"strength": 0.7}
+    fake_styles["anime"] = Style(prompt="anime portrait", strength=0.6)
+    fake_styles["ghibli"] = Style(prompt="ghibli scene", strength=0.5)
+    fake_styles["paramonly"] = Style(strength=0.7)
 
     check_prompt_style_compat(
         styles_list=["anime", "paramonly", "ghibli"],
@@ -282,7 +283,7 @@ def test_check_prompt_style_compat_no_prompt_with_prompt_bearing_style_ok(
 ):
     """No custom prompt + style with its own prompt = v0.1.x default
     path. Must remain unchanged."""
-    fake_styles["anime"] = {"prompt": "anime portrait", "strength": 0.6}
+    fake_styles["anime"] = Style(prompt="anime portrait", strength=0.6)
 
     check_prompt_style_compat(
         styles_list=["anime"],
@@ -295,7 +296,7 @@ def test_check_prompt_style_compat_no_prompt_with_param_only_rejected(
 ):
     """Param-only style (e.g. user-added in styles.d/) needs a CLI
     prompt — no prompt + no style prompt = nothing to feed mflux."""
-    fake_styles["paramonly"] = {"strength": 0.6}
+    fake_styles["paramonly"] = Style(strength=0.6)
 
     with pytest.raises(SystemExit) as exc_info:
         check_prompt_style_compat(
@@ -312,8 +313,8 @@ def test_check_prompt_style_compat_empty_string_prompt_treated_as_missing(
     fake_styles,
 ):
     """A style with `prompt: ""` is effectively param-only — falsy
-    string in `if get_style(s).get("prompt")` matches the predicate."""
-    fake_styles["empty"] = {"prompt": "", "strength": 0.5}
+    string in `if get_style(s).prompt` matches the predicate."""
+    fake_styles["empty"] = Style(prompt="", strength=0.5)
 
     # No CLI prompt + falsy style prompt → reject (matches mutex semantics).
     with pytest.raises(SystemExit):
@@ -816,10 +817,10 @@ def test_build_iterations_single_style_preset_prompt(fake_styles, tmp_path):
     ``SCOPE_SCENE_SUFFIX`` to a trigger-free prompt) doesn't muddy the
     plumbing assertion. End-to-end scope behaviour is covered by the
     dedicated scope tests in this file + ``test_images.py``."""
-    fake_styles["anime"] = {
-        "prompt": "cinematic anime style, dramatic lighting",
-        "negative": "bad anatomy",
-    }
+    fake_styles["anime"] = Style(
+        prompt="cinematic anime style, dramatic lighting",
+        negative="bad anatomy",
+    )
 
     its = _build(
         fake_styles=fake_styles, tmp_path=tmp_path,
@@ -845,16 +846,16 @@ def test_build_iterations_default_scope_scene_keeps_identity_and_adds_background
     every default-scope invocation. This test locks the corrected
     end-to-end chain: parser → build_iterations → apply_scope with
     per-style scene_suffix → final Iteration.prompt."""
-    fake_styles["anime"] = {
-        "prompt": (
+    fake_styles["anime"] = Style(
+        prompt=(
             "Restyle this person as anime, while preserving the facial "
             "identity, hairstyle, body proportions, and pose"
         ),
-        "scene_suffix": (
+        scene_suffix=(
             ", and transform the background into a hand-painted "
             "anime environment"
         ),
-    }
+    )
 
     its = _build(fake_styles=fake_styles, tmp_path=tmp_path)
     prompt = its[0].prompt
@@ -871,14 +872,14 @@ def test_build_iterations_default_scope_scene_uses_generic_when_no_suffix(
 ):
     """v0.5 fallback path: a user-defined preset (or built-in whose
     scene_suffix was dropped accidentally) gets the generic background
-    directive appended. Validates the (preset.get("scene_suffix") or
+    directive appended. Validates the (preset.scene_suffix or
     GENERIC) lookup wiring through cmd_helpers.build_iterations."""
     from imgen.images import SCOPE_SCENE_SUFFIX_GENERIC
 
     # User style with no scene_suffix → fallback to generic.
-    fake_styles["watercolor"] = {
-        "prompt": "Render the subject as a watercolor painting",
-    }
+    fake_styles["watercolor"] = Style(
+        prompt="Render the subject as a watercolor painting",
+    )
 
     its = _build(
         fake_styles=fake_styles, tmp_path=tmp_path,
@@ -896,9 +897,9 @@ def test_build_iterations_scope_none_explicit_keeps_preset_verbatim(
     when callers explicitly opt in. Locks the fall-through behaviour
     for any future programmatic caller that wants the unmodified
     preset prompt."""
-    fake_styles["anime"] = {
-        "prompt": "Transform this person into anime, keep face identity",
-    }
+    fake_styles["anime"] = Style(
+        prompt="Transform this person into anime, keep face identity",
+    )
 
     its = _build(
         fake_styles=fake_styles, tmp_path=tmp_path,
@@ -919,10 +920,10 @@ def test_build_iterations_args_without_scope_attr_falls_through(
     ``imgen draw`` subparser (which omits ``--scope``) can pass its own
     Namespace through this helper untouched. Locks the no-AttributeError
     contract on a Namespace that has no ``scope`` field at all."""
-    fake_styles["anime"] = {
-        "prompt": "Restyle this person as anime",
-        "scene_suffix": ", and restyle the background as anime",
-    }
+    fake_styles["anime"] = Style(
+        prompt="Restyle this person as anime",
+        scene_suffix=", and restyle the background as anime",
+    )
 
     # SimpleNamespace built without a scope key — mirrors the future
     # draw parser whose argparse Namespace will not carry scope.
@@ -948,9 +949,9 @@ def test_build_iterations_augmentation_full_style_plus_custom_prompt(
     """v0.3.5 canonical augmentation: explicit full-style + custom-prompt
     → preset_prompt + ", " + custom. Single common addition applied
     across one (or many) styles in the same invocation."""
-    fake_styles["anime"] = {
-        "prompt": "anime portrait of this person",
-    }
+    fake_styles["anime"] = Style(
+        prompt="anime portrait of this person",
+    )
 
     its = _build(
         fake_styles=fake_styles, tmp_path=tmp_path,
@@ -971,9 +972,9 @@ def test_build_iterations_augmentation_multi_style_shares_custom_addition(
     "wearing a red kimono"` — every full-style iteration augments with
     the same user addition. Style varies; user's common detail stays
     constant across all M outputs."""
-    fake_styles["anime"] = {"prompt": "anime portrait"}
-    fake_styles["ghibli"] = {"prompt": "ghibli scene"}
-    fake_styles["pixar"] = {"prompt": "pixar render"}
+    fake_styles["anime"] = Style(prompt="anime portrait")
+    fake_styles["ghibli"] = Style(prompt="ghibli scene")
+    fake_styles["pixar"] = Style(prompt="pixar render")
 
     its = _build(
         fake_styles=fake_styles, tmp_path=tmp_path,
@@ -998,13 +999,13 @@ def test_build_iterations_augmentation_scope_applies_to_base_not_addition(
     per-style scene_suffix BETWEEN base prompt and user augmentation.
     User text is always passed through verbatim — it never gets
     rewritten by scope logic."""
-    fake_styles["anime"] = {
-        "prompt": (
+    fake_styles["anime"] = Style(
+        prompt=(
             "Restyle this person as anime, while preserving the "
             "facial identity"
         ),
-        "scene_suffix": ", and transform the background to anime",
-    }
+        scene_suffix=", and transform the background to anime",
+    )
 
     its = _build(
         fake_styles=fake_styles, tmp_path=tmp_path,
@@ -1036,7 +1037,7 @@ def test_build_iterations_custom_prompt_without_explicit_style_uses_only_custom(
     # Default style is "anime" via merged_defaults fallback; it has
     # a prompt, but augmentation must NOT trigger because --style
     # wasn't explicit.
-    fake_styles["anime"] = {"prompt": "anime portrait of this person"}
+    fake_styles["anime"] = Style(prompt="anime portrait of this person")
 
     its = _build(
         fake_styles=fake_styles, tmp_path=tmp_path,
@@ -1058,7 +1059,7 @@ def test_build_iterations_param_only_style_plus_custom_prompt_uses_only_custom(
     v0.2.x path that already worked: style provides tuning params,
     user provides prompt. v0.3.5 must preserve this — augmentation
     only kicks in when the style actually has a `prompt`."""
-    fake_styles["punchy"] = {"strength": 0.7, "guidance": 5.0}  # no prompt
+    fake_styles["punchy"] = Style(strength=0.7, guidance=5.0)  # no prompt
 
     its = _build(
         fake_styles=fake_styles, tmp_path=tmp_path,
@@ -1079,7 +1080,7 @@ def test_build_iterations_augmentation_no_double_comma_on_clean_base(
     """Augmentation always joins with ", " — guards against double-
     comma artifacts if a future preset prompt accidentally ends in
     a comma. Also asserts spacing is clean."""
-    fake_styles["anime"] = {"prompt": "anime portrait"}
+    fake_styles["anime"] = Style(prompt="anime portrait")
 
     its = _build(
         fake_styles=fake_styles, tmp_path=tmp_path,
@@ -1095,7 +1096,7 @@ def test_build_iterations_augmentation_no_double_comma_on_clean_base(
 def test_build_iterations_negative_defaults_to_empty(fake_styles, tmp_path):
     """Style without `negative` key → it.negative == "" (not None,
     not missing — mflux gets an empty string)."""
-    fake_styles["anime"] = {"prompt": "x"}
+    fake_styles["anime"] = Style(prompt="x")
 
     its = _build(fake_styles=fake_styles, tmp_path=tmp_path)
 
@@ -1103,7 +1104,7 @@ def test_build_iterations_negative_defaults_to_empty(fake_styles, tmp_path):
 
 
 def test_build_iterations_uses_custom_prompt_over_preset(fake_styles, tmp_path):
-    fake_styles["anime"] = {"prompt": "PRESET PROMPT"}
+    fake_styles["anime"] = Style(prompt="PRESET PROMPT")
 
     its = _build(
         fake_styles=fake_styles,
@@ -1118,7 +1119,7 @@ def test_build_iterations_custom_prompt_ignores_scope(fake_styles, tmp_path):
     """Scope-warn fires elsewhere (cmd_generate); the helper just must
     NOT apply scope to a custom prompt — scope mutates 'this person'
     inside preset prompts only."""
-    fake_styles["anime"] = {"prompt": "this person ignored"}
+    fake_styles["anime"] = Style(prompt="this person ignored")
 
     its = _build(
         fake_styles=fake_styles,
@@ -1141,16 +1142,16 @@ def test_build_iterations_scope_applied_to_preset_prompt(fake_styles, tmp_path):
     deletes that rewrite entirely and instead appends a background
     directive. Identity language stays verbatim, regardless of scope.
     """
-    fake_styles["anime"] = {
-        "prompt": (
+    fake_styles["anime"] = Style(
+        prompt=(
             "Restyle this person as anime, while preserving the facial "
             "identity, hairstyle, body proportions, and pose"
         ),
-        "scene_suffix": (
+        scene_suffix=(
             ", and transform the background and surroundings into "
             "anime environment"
         ),
-    }
+    )
 
     its = _build(
         fake_styles=fake_styles,
@@ -1169,7 +1170,7 @@ def test_build_iterations_scope_applied_to_preset_prompt(fake_styles, tmp_path):
 
 def test_build_iterations_scope_person_adds_suffix(fake_styles, tmp_path):
     """scope=person appends a background-preservation suffix."""
-    fake_styles["anime"] = {"prompt": "portrait of this person"}
+    fake_styles["anime"] = Style(prompt="portrait of this person")
 
     its = _build(
         fake_styles=fake_styles,
@@ -1186,7 +1187,12 @@ def test_build_iterations_scope_person_adds_suffix(fake_styles, tmp_path):
 def test_build_iterations_steps_cli_beats_preset_and_preview(
     fake_styles, tmp_path
 ):
-    fake_styles["anime"] = {"prompt": "x", "steps": 18}
+    # `steps` is intentionally NOT a Style field — preset.steps was
+    # never honoured (preview must win when user picks it for speed),
+    # so the test's original `{"steps": 18}` dict entry was inert.
+    # Style(prompt="x") suffices; CLI vs default-vs-preview is what
+    # the test actually verifies.
+    fake_styles["anime"] = Style(prompt="x")
 
     its = _build(
         fake_styles=fake_styles,
@@ -1203,7 +1209,7 @@ def test_build_iterations_steps_preview_beats_defaults(fake_styles, tmp_path):
     NOT in the precedence chain for steps — only CLI > preview > merged
     defaults applies. This is intentional from v0.1.x — preset shouldn't
     pin steps because the user picks --preview for speed."""
-    fake_styles["anime"] = {"prompt": "x"}
+    fake_styles["anime"] = Style(prompt="x")
 
     its = _build(
         fake_styles=fake_styles,
@@ -1219,7 +1225,7 @@ def test_build_iterations_steps_preview_beats_defaults(fake_styles, tmp_path):
 def test_build_iterations_steps_falls_back_to_merged_defaults(
     fake_styles, tmp_path
 ):
-    fake_styles["anime"] = {"prompt": "x"}
+    fake_styles["anime"] = Style(prompt="x")
 
     its = _build(fake_styles=fake_styles, tmp_path=tmp_path)
 
@@ -1227,7 +1233,7 @@ def test_build_iterations_steps_falls_back_to_merged_defaults(
 
 
 def test_build_iterations_quantize_cli_wins(fake_styles, tmp_path):
-    fake_styles["anime"] = {"prompt": "x"}
+    fake_styles["anime"] = Style(prompt="x")
 
     its = _build(
         fake_styles=fake_styles,
@@ -1241,7 +1247,7 @@ def test_build_iterations_quantize_cli_wins(fake_styles, tmp_path):
 def test_build_iterations_quantize_preview_beats_defaults(
     fake_styles, tmp_path
 ):
-    fake_styles["anime"] = {"prompt": "x"}
+    fake_styles["anime"] = Style(prompt="x")
 
     its = _build(
         fake_styles=fake_styles,
@@ -1254,7 +1260,7 @@ def test_build_iterations_quantize_preview_beats_defaults(
 
 
 def test_build_iterations_guidance_cli_beats_preset(fake_styles, tmp_path):
-    fake_styles["anime"] = {"prompt": "x", "guidance": 3.5}
+    fake_styles["anime"] = Style(prompt="x", guidance=3.5)
 
     its = _build(
         fake_styles=fake_styles,
@@ -1270,7 +1276,7 @@ def test_build_iterations_guidance_preset_beats_defaults(
 ):
     """Unlike steps, guidance precedence is CLI > preset > defaults —
     preview has no opinion on guidance."""
-    fake_styles["anime"] = {"prompt": "x", "guidance": 3.5}
+    fake_styles["anime"] = Style(prompt="x", guidance=3.5)
 
     its = _build(fake_styles=fake_styles, tmp_path=tmp_path)
 
@@ -1280,7 +1286,7 @@ def test_build_iterations_guidance_preset_beats_defaults(
 def test_build_iterations_guidance_falls_back_to_defaults(
     fake_styles, tmp_path
 ):
-    fake_styles["anime"] = {"prompt": "x"}  # no guidance key
+    fake_styles["anime"] = Style(prompt="x")  # no guidance key
 
     its = _build(fake_styles=fake_styles, tmp_path=tmp_path)
 
@@ -1290,7 +1296,7 @@ def test_build_iterations_guidance_falls_back_to_defaults(
 
 
 def test_build_iterations_strength_cli_beats_preset(fake_styles, tmp_path):
-    fake_styles["anime"] = {"prompt": "x", "strength": 0.55}
+    fake_styles["anime"] = Style(prompt="x", strength=0.55)
 
     its = _build(
         fake_styles=fake_styles,
@@ -1304,7 +1310,7 @@ def test_build_iterations_strength_cli_beats_preset(fake_styles, tmp_path):
 def test_build_iterations_strength_preset_beats_defaults(
     fake_styles, tmp_path
 ):
-    fake_styles["anime"] = {"prompt": "x", "strength": 0.55}
+    fake_styles["anime"] = Style(prompt="x", strength=0.55)
 
     its = _build(fake_styles=fake_styles, tmp_path=tmp_path)
 
@@ -1314,7 +1320,7 @@ def test_build_iterations_strength_preset_beats_defaults(
 def test_build_iterations_strength_falls_back_to_defaults(
     fake_styles, tmp_path
 ):
-    fake_styles["anime"] = {"prompt": "x"}
+    fake_styles["anime"] = Style(prompt="x")
 
     its = _build(fake_styles=fake_styles, tmp_path=tmp_path)
 
@@ -1331,9 +1337,9 @@ def test_build_iterations_multi_style_one_per_name(fake_styles, tmp_path):
     preset prompts (v0.3.3's hybrid apply_scope would otherwise append
     SCOPE_SCENE_SUFFIX to these trigger-free prompts under the default
     ``scope="scene"``)."""
-    fake_styles["anime"] = {"prompt": "a"}
-    fake_styles["ghibli"] = {"prompt": "g"}
-    fake_styles["pixar"] = {"prompt": "p"}
+    fake_styles["anime"] = Style(prompt="a")
+    fake_styles["ghibli"] = Style(prompt="g")
+    fake_styles["pixar"] = Style(prompt="p")
 
     its = _build(
         fake_styles=fake_styles,
@@ -1348,8 +1354,8 @@ def test_build_iterations_multi_style_one_per_name(fake_styles, tmp_path):
 
 def test_build_iterations_output_path_uses_run_dir(fake_styles, tmp_path):
     """run_dir mode: each iteration → <run_dir>/<input.stem>-<style>.png."""
-    fake_styles["anime"] = {"prompt": "x"}
-    fake_styles["ghibli"] = {"prompt": "y"}
+    fake_styles["anime"] = Style(prompt="x")
+    fake_styles["ghibli"] = Style(prompt="y")
     input_path = tmp_path / "vacation.jpg"
     run_dir = tmp_path / "run-1"
 
@@ -1373,7 +1379,7 @@ def test_build_iterations_explicit_output_overrides_run_dir(
     practice multi-style + --output is rejected upstream, but the
     helper itself doesn't enforce — defensive that it still produces
     something coherent.)"""
-    fake_styles["anime"] = {"prompt": "x"}
+    fake_styles["anime"] = Style(prompt="x")
     explicit = tmp_path / "forced.png"
 
     its = _build(
@@ -1393,7 +1399,7 @@ def test_build_iterations_returns_iteration_dataclass_not_dict(
 ):
     """Item 2's Iteration is the new typed contract — verify the helper
     returns it, not a dict (v0.2.3 shape)."""
-    fake_styles["anime"] = {"prompt": "x"}
+    fake_styles["anime"] = Style(prompt="x")
 
     its = _build(fake_styles=fake_styles, tmp_path=tmp_path)
 
@@ -1401,7 +1407,7 @@ def test_build_iterations_returns_iteration_dataclass_not_dict(
 
 
 def test_build_iterations_iteration_is_frozen(fake_styles, tmp_path):
-    fake_styles["anime"] = {"prompt": "x"}
+    fake_styles["anime"] = Style(prompt="x")
 
     its = _build(fake_styles=fake_styles, tmp_path=tmp_path)
 
@@ -1412,7 +1418,7 @@ def test_build_iterations_iteration_is_frozen(fake_styles, tmp_path):
 def test_build_iterations_cmd_is_list_of_str(fake_styles, tmp_path):
     """Smoke check: build_mflux_cmd was called, result stored in
     it.cmd as a list of strings ready for subprocess.Popen."""
-    fake_styles["anime"] = {"prompt": "x"}
+    fake_styles["anime"] = Style(prompt="x")
 
     its = _build(fake_styles=fake_styles, tmp_path=tmp_path)
 

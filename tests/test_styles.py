@@ -17,17 +17,17 @@ ALL_STYLES = list(STYLES.keys())
 @pytest.mark.parametrize("name", ALL_STYLES)
 def test_preset_has_required_keys(name):
     preset = STYLES[name]
-    assert "prompt" in preset, f"{name}: missing 'prompt'"
-    assert "negative" in preset, f"{name}: missing 'negative'"
-    assert isinstance(preset["prompt"], str)
-    assert isinstance(preset["negative"], str)
-    assert preset["prompt"].strip(), f"{name}: empty prompt"
+    assert preset.prompt is not None, f"{name}: missing 'prompt'"
+    assert bool(preset.negative), f"{name}: missing 'negative'"
+    assert isinstance(preset.prompt, str)
+    assert isinstance(preset.negative, str)
+    assert preset.prompt.strip(), f"{name}: empty prompt"
 
 
 @pytest.mark.parametrize("name", ALL_STYLES)
 def test_preset_guidance_in_argparse_range(name):
     """Argparse validator allows 0.5..15.0 — preset overrides must be in range."""
-    g = STYLES[name].get("guidance")
+    g = STYLES[name].guidance
     if g is not None:
         assert 0.5 <= g <= 15.0, f"{name}: guidance {g} out of [0.5, 15.0]"
 
@@ -35,7 +35,7 @@ def test_preset_guidance_in_argparse_range(name):
 @pytest.mark.parametrize("name", ALL_STYLES)
 def test_preset_strength_in_argparse_range(name):
     """Argparse validator allows 0.0..1.0 — preset overrides must be in range."""
-    s = STYLES[name].get("strength")
+    s = STYLES[name].strength
     if s is not None:
         assert 0.0 <= s <= 1.0, f"{name}: strength {s} out of [0.0, 1.0]"
 
@@ -50,7 +50,7 @@ def test_preset_uses_restyle_verb_not_transform_person(name):
     pattern. BFL guidance explicitly flags "Transform [person]" as
     identity-drift risk; "Restyle" / "Convert" target the rendering
     rather than the person object."""
-    prompt = STYLES[name]["prompt"]
+    prompt = STYLES[name].prompt
     assert prompt.startswith("Restyle this person as "), \
         f"{name}: prompt must lead with 'Restyle this person as …' " \
         f"(got: {prompt[:60]!r})"
@@ -65,7 +65,7 @@ def test_preset_has_explicit_preservation_clause(name):
     the prompt (BFL-recommended position). Without this anchor the
     style descriptors at the tail can drift the model away from the
     source person."""
-    prompt = STYLES[name]["prompt"]
+    prompt = STYLES[name].prompt
     assert "while preserving" in prompt, \
         f"{name}: missing 'while preserving …' preservation clause"
     # Must cover hairstyle + body proportions + pose at minimum
@@ -88,7 +88,7 @@ def test_preset_drops_legacy_keep_face_identity_phrasing(name):
     was deleted in the v0.5 ``apply_scope`` rewrite — built-ins now
     ship with the explicit preservation clause directly, no rewrite
     needed."""
-    prompt = STYLES[name]["prompt"]
+    prompt = STYLES[name].prompt
     assert "keep face identity" not in prompt
     assert "keep pose" not in prompt
 
@@ -250,7 +250,7 @@ def test_ghibli_ships_openfree_ghibli_lora_at_0p8():
     pixar / vangogh / pencil. See lock-in tests below for those.
     """
     from imgen.styles import LoraRef
-    loras = STYLES["ghibli"].get("loras", ())
+    loras = STYLES["ghibli"].loras
     assert len(loras) == 1
     assert loras[0] == LoraRef(
         ref="openfree/flux-chatgpt-ghibli-lora",
@@ -314,7 +314,7 @@ def test_v063_lora_picks_per_style():
         ),
     }
     for name, expected_lora in expected.items():
-        loras = STYLES[name].get("loras", ())
+        loras = STYLES[name].loras
         assert len(loras) == 1, f"{name} should ship exactly 1 LoRA"
         assert loras[0] == expected_lora, (
             f"{name}: BUILTIN_STYLES drift — expected {expected_lora}, "
@@ -392,7 +392,7 @@ def test_simpsons_stays_text_only():
     was that Flat-Cartoon does NOT fit Simpsons' specific yellow-
     skin / round-eyes / bold-outlines aesthetic. Lock-in so a
     future drive-by add doesn't silently regress."""
-    assert STYLES["simpsons"].get("loras", ()) == ()
+    assert STYLES["simpsons"].loras == ()
 
 
 def test_built_in_loras_target_flux_1_only():
@@ -409,52 +409,38 @@ def test_built_in_loras_target_flux_1_only():
             )
 
 
-def test_style_contains_returns_false_for_none_fields():
-    """v0.6.2 python IMP-1 regression: a Style with ``guidance=None``
-    (unset Optional field) must report ``"guidance" not in style`` so
-    cmd_helpers.build_iterations's ``"guidance" in preset → preset
-    ["guidance"]`` gate cleanly falls through to merged_defaults.
-
-    Without this, the slotted dataclass would always report every
-    declared field as "in" — landing ``None`` in mflux's --guidance
-    argv after the fallback chain incorrectly stopped early.
+def test_style_dict_compat_api_removed_in_v0_7_9():
+    """v0.7.9: the dict-compat shims (__getitem__, __contains__, get)
+    were deleted after the v0.7.8 architect review's IMP-1 noted that
+    3 callers pinned the surface. All production callers + tests now
+    use attribute access (`style.prompt`, `style.guidance is not None`,
+    `bool(style.loras)`). Misuse fails LOUDLY at runtime — no silent
+    None landing in mflux argv via a stale `.get` call. Lock-in:
+    each removed shim raises the expected exception type.
     """
     from imgen.styles import Style
     style = Style(prompt="x")
-    assert "prompt" in style
-    # None-valued Optional fields look "absent" — mirrors the v0.5 dict
-    # behaviour where a TOML omitting `guidance` produced a dict without
-    # that key at all.
-    assert "guidance" not in style
-    assert "strength" not in style
-    assert "scene_suffix" not in style
-    # Fields with non-None empty defaults stay "in" (callers read them
-    # unconditionally).
-    assert "negative" in style
-    assert "loras" in style
-    # And a fully populated style has every field "in".
-    full = Style(
-        prompt="x", negative="y", guidance=3.5, strength=0.5,
-        scene_suffix="z",
-    )
-    for f in ("prompt", "negative", "guidance", "strength", "scene_suffix"):
-        assert f in full
-    # Private / non-string keys are never "in".
-    assert "__class__" not in full
-    assert 42 not in full  # type: ignore[operator]
 
+    # __getitem__ removed → subscript raises TypeError ("not
+    # subscriptable") rather than returning None or KeyError.
+    with pytest.raises(TypeError):
+        _ = style["prompt"]
 
-def test_style_get_filters_private_attributes():
-    """v0.6.2 python NIT-1: ``Style.get("__class__")`` must return the
-    default, not the class object — match ``__contains__`` semantics.
-    """
-    from imgen.styles import Style
-    style = Style(prompt="x")
-    assert style.get("__class__", "sentinel") == "sentinel"
-    assert style.get("__init__", "sentinel") == "sentinel"
-    # Real fields still work.
-    assert style.get("prompt") == "x"
-    assert style.get("negative") == ""
+    # __contains__ removed → `in` raises TypeError ("not iterable")
+    # rather than False/True from the v0.6.2-v0.7.8 shim.
+    with pytest.raises(TypeError):
+        _ = "prompt" in style
+
+    # .get(...) removed → AttributeError, not the v0.6.2 shim's
+    # default-on-missing return.
+    with pytest.raises(AttributeError):
+        _ = style.get("prompt")
+
+    # Attribute access remains the canonical surface.
+    assert style.prompt == "x"
+    assert style.negative == ""
+    assert style.guidance is None
+    assert style.loras == ()
 
 
 def test_repo_from_cache_dir_asserts_on_missing_prefix():
