@@ -392,6 +392,38 @@ def build_parser(
     return p
 
 
+def _add_run_control_args(
+    p: argparse.ArgumentParser,
+    *,
+    preview_help: str = "Fast preview mode (smaller resolution + steps, lower quantization; ~5x faster, lower quality)",
+    no_open_help: str = "Don't open the result in Preview",
+    yes_help: str = "Skip the [y/N] confirm gate",
+    dry_run_help: str = "Show mflux command without running",
+    force_help: str = "Skip resource checks (RAM, parallel mflux, etc.) and try anyway. Use at your own risk.",
+) -> None:
+    """Universal run-control flags shared by every subcommand
+    (generate / batch / draw / refine). v0.7.9 extraction — closes
+    python NIT #6 from the v0.7.5 review trail (deferred until
+    pattern emerged; the 3rd subcommand `refine` crossed the
+    threshold and v0.7.8 architect re-confirmed the rule).
+
+    Per-subcommand help text via kwargs — flag SHAPE (action,
+    dashes, short-form) centralised so a future flag-shape change
+    (e.g. ``--dry-run`` becomes a choice flag, ``--no-open`` gains
+    a short alias) lands in one place rather than four. Each
+    keyword default is a generic phrasing that works without
+    customisation when a future subcommand wants minimum-overhead
+    onboarding.
+    """
+    p.add_argument(
+        "-p", "--preview", action="store_true", help=preview_help,
+    )
+    p.add_argument("--no-open", action="store_true", help=no_open_help)
+    p.add_argument("-y", "--yes", action="store_true", help=yes_help)
+    p.add_argument("--dry-run", action="store_true", help=dry_run_help)
+    p.add_argument("--force", action="store_true", help=force_help)
+
+
 def _add_generate_args(
     p: argparse.ArgumentParser,
     defaults: dict[str, Any],
@@ -458,23 +490,16 @@ def _add_generate_args(
                    help="scene=transform whole image (default — most photos "
                         "are scenes, not portraits); person=keep background "
                         "photorealistic and unchanged")
-    p.add_argument("-p", "--preview", action="store_true",
-                   help="Fast preview mode: smaller resolution, fewer steps, "
-                        "lower quantization (~5x faster, lower quality)")
     p.add_argument("--width", type=_int_range(64, 4096),
                    help="Override output width (64..4096)")
     p.add_argument("--height", type=_int_range(64, 4096),
                    help="Override output height (64..4096)")
-    p.add_argument("--no-open", action="store_true",
-                   help="Don't open result in Preview")
-    p.add_argument("-y", "--yes", action="store_true",
-                   help="Skip the [y/N] confirm gate that fires when generating "
-                        "multiple images (M ≥ 2 styles).")
-    p.add_argument("--dry-run", action="store_true",
-                   help="Show mflux command without running")
-    p.add_argument("--force", action="store_true",
-                   help="Skip resource checks (RAM, parallel mflux, etc.) "
-                        "and try anyway. Use at your own risk.")
+    _add_run_control_args(
+        p,
+        preview_help="Fast preview mode: smaller resolution, fewer steps, lower quantization (~5x faster, lower quality)",
+        no_open_help="Don't open result in Preview",
+        yes_help="Skip the [y/N] confirm gate that fires when generating multiple images (M ≥ 2 styles).",
+    )
     _add_enhance_args(p)
     _add_lora_args(p)
 
@@ -534,23 +559,17 @@ def _add_batch_args(
     p.add_argument("--scope", choices=["person", "scene"], default="scene",
                    help="scene=transform whole image (default); "
                         "person=keep background photorealistic and unchanged")
-    p.add_argument("-p", "--preview", action="store_true",
-                   help="Fast preview mode applied uniformly across all "
-                        "N×M generations (~5x faster, lower quality)")
     p.add_argument("--width", type=_int_range(64, 4096),
                    help="Override output width (uniform across the batch)")
     p.add_argument("--height", type=_int_range(64, 4096),
                    help="Override output height (uniform across the batch)")
-    p.add_argument("--no-open", action="store_true",
-                   help="Don't open the run folder in Finder")
-    p.add_argument("-y", "--yes", action="store_true",
-                   help="Skip the N×M confirm gate")
-    p.add_argument("--dry-run", action="store_true",
-                   help="Show mflux command for every N×M iteration "
-                        "without running")
-    p.add_argument("--force", action="store_true",
-                   help="Skip resource checks (RAM, parallel mflux, etc.) "
-                        "and try anyway. Use at your own risk.")
+    _add_run_control_args(
+        p,
+        preview_help="Fast preview mode applied uniformly across all N×M generations (~5x faster, lower quality)",
+        no_open_help="Don't open the run folder in Finder",
+        yes_help="Skip the N×M confirm gate",
+        dry_run_help="Show mflux command for every N×M iteration without running",
+    )
     _add_enhance_args(p)
     _add_lora_args(p)
 
@@ -645,11 +664,6 @@ def _add_draw_args(
         help=f"Quantization (default {defaults['quantize']}, "
              f"preview {PREVIEW_OVERRIDES['quantize']})",
     )
-    p.add_argument(
-        "-p", "--preview", action="store_true",
-        help="Fast preview mode: smaller resolution, fewer steps, "
-             "lower quantization (~5x faster, lower quality)",
-    )
     # t2i: --width/--height carry defaults — there's no input to detect
     # from. 1024x1024 is FLUX.1-dev canonical.
     p.add_argument(
@@ -660,22 +674,9 @@ def _add_draw_args(
         "--height", type=_int_range(64, 4096), default=1024,
         help="Output height 64..4096 (default 1024)",
     )
-    p.add_argument(
-        "--no-open", action="store_true",
-        help="Don't open the result in Preview",
-    )
-    p.add_argument(
-        "-y", "--yes", action="store_true",
-        help="Skip the [y/N] confirm gate",
-    )
-    p.add_argument(
-        "--dry-run", action="store_true",
-        help="Show mflux command without running",
-    )
-    p.add_argument(
-        "--force", action="store_true",
-        help="Skip resource checks (RAM, parallel mflux, etc.) and "
-             "try anyway. Use at your own risk.",
+    _add_run_control_args(
+        p,
+        preview_help="Fast preview mode: smaller resolution, fewer steps, lower quantization (~5x faster, lower quality)",
     )
     _add_enhance_args(p)
     _add_lora_args(p)
@@ -760,25 +761,10 @@ def _add_refine_args(
         help="Quantization (default 4 — safe for 2K² activations on 32GB "
              "Mac with klein-9B). Use 8 for max quality if you have headroom.",
     )
-    p.add_argument(
-        "-p", "--preview", action="store_true",
-        help="Fast preview mode (smaller resolution + steps).",
-    )
-    p.add_argument(
-        "--no-open", action="store_true",
-        help="Don't open the result in Preview",
-    )
-    p.add_argument(
-        "-y", "--yes", action="store_true",
-        help="Skip the [y/N] confirm gate",
-    )
-    p.add_argument(
-        "--dry-run", action="store_true",
-        help="Show mflux command without running",
-    )
-    p.add_argument(
-        "--force", action="store_true",
-        help="Skip resource checks (RAM, parallel mflux, etc.)",
+    _add_run_control_args(
+        p,
+        preview_help="Fast preview mode (smaller resolution + steps).",
+        force_help="Skip resource checks (RAM, parallel mflux, etc.)",
     )
     _add_lora_args(p)
 

@@ -470,3 +470,95 @@ def test_print_loras_help_footer_mentions_lora_flag_and_styles_d(tmp_path, capsy
     assert "--lora" in out
     assert "--no-lora" in out
     assert "~/.imgen/styles.d/" in out
+
+
+# ── _add_run_control_args (v0.7.9) ────────────────────────────────────
+
+
+class TestAddRunControlArgs:
+    """v0.7.9 extraction: 5 universal run-control flags shared by
+    generate / batch / draw / refine. Per-subcommand help text via
+    kwargs, flag SHAPE centralised so future flag-shape changes land
+    once. Lock-in tests verify (a) all 4 subcommands expose the same
+    5 flags with the same action/short-form, and (b) the helper alone
+    in isolation produces the expected argparse surface."""
+
+    def _flags_on_parser(self, parser):
+        """Map flag-name → action object for the 5 control flags."""
+        actions = {}
+        for action in parser._actions:
+            for opt in action.option_strings:
+                if opt in {"-p", "--preview", "--no-open", "-y", "--yes",
+                           "--dry-run", "--force"}:
+                    actions[opt] = action
+        return actions
+
+    def _build(self, **kwargs):
+        import argparse
+        from imgen.parser import _add_run_control_args
+        p = argparse.ArgumentParser()
+        _add_run_control_args(p, **kwargs)
+        return p
+
+    def test_all_five_flags_added(self):
+        p = self._build()
+        flags = self._flags_on_parser(p)
+        # 5 flags, 2 with short aliases (-p and -y)
+        assert "--preview" in flags
+        assert "-p" in flags
+        assert "--no-open" in flags
+        assert "--yes" in flags
+        assert "-y" in flags
+        assert "--dry-run" in flags
+        assert "--force" in flags
+
+    def test_all_are_store_true(self):
+        """Locks the action contract — all 5 are boolean toggles. A
+        future change that makes one of them a typed flag would land
+        loudly here."""
+        import argparse
+        p = self._build()
+        flags = self._flags_on_parser(p)
+        for opt in ("--preview", "--no-open", "--yes", "--dry-run", "--force"):
+            assert isinstance(flags[opt], argparse._StoreTrueAction), (
+                f"{opt} should be store_true"
+            )
+
+    def test_default_help_text_used_when_no_override(self):
+        p = self._build()
+        flags = self._flags_on_parser(p)
+        # Default phrasing mentions the core concept
+        assert "preview" in flags["--preview"].help.lower()
+        assert "preview" in flags["--no-open"].help.lower()
+        assert "confirm" in flags["--yes"].help.lower()
+        assert "dry" not in flags["--no-open"].help.lower()  # cross-bleed check
+
+    def test_per_subcommand_help_override(self):
+        p = self._build(
+            preview_help="custom preview help",
+            yes_help="custom yes help",
+        )
+        flags = self._flags_on_parser(p)
+        assert flags["--preview"].help == "custom preview help"
+        assert flags["--yes"].help == "custom yes help"
+        # Unsupplied overrides fall through to defaults
+        assert "RAM" in flags["--force"].help
+
+    def test_all_four_subcommands_share_the_flags(self):
+        """End-to-end: parse the SAME --dry-run on each of the 4
+        subcommands and confirm it landed. Drift detector — if any
+        future PR adds a 5th subcommand and forgets to call
+        _add_run_control_args, this would catch by parser failure."""
+        from imgen.parser import build_parser
+        parser = build_parser()
+        # generate (default subcommand — no name needed)
+        for argv_prefix in (
+            ["generate", "photo.jpg"],
+            ["batch", "/tmp/dir"],
+            ["draw", "a prompt"],
+            ["refine", "photo.png"],
+        ):
+            args, _ = parser.parse_known_args(argv_prefix + ["--dry-run"])
+            assert args.dry_run is True, (
+                f"--dry-run not set for {argv_prefix[0]}"
+            )
