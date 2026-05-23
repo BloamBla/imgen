@@ -325,6 +325,43 @@ class TestCmdRefineDryRun:
         assert "deformed, blurry" not in out
         assert "-pixar.png" not in out
 
+    def test_flux2_klein_edit_pins_guidance_to_1(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """v0.7.6 hotfix: mflux-generate-flux2-edit refuses --guidance
+        != 1.0 on non-base FLUX.2 models (klein-9b is the distilled
+        edit variant). cmd_refine pins guidance=1.0 for this backend
+        regardless of what the user passed — model property, not user
+        knob. Lock-in: even an explicit --guidance 3.5 must collapse
+        to --guidance 1.0 in argv when this backend is selected."""
+        from imgen.backends import BACKENDS
+        from imgen.commands.refine import cmd_refine
+        from PIL import Image
+
+        input_path = tmp_path / "samurai.png"
+        Image.new("RGB", (1024, 1024), "white").save(input_path)
+
+        def fake_load(args):
+            return ("flux2-klein-edit-9b", BACKENDS["flux2-klein-edit-9b"],
+                    "tok", Path("/fake/mflux-generate-flux2-edit"), None)
+        monkeypatch.setattr(
+            "imgen.commands.refine.load_backend_and_token", fake_load,
+        )
+
+        # User explicitly passes the FLUX.1-Kontext-shaped 3.5 default.
+        # Backend constraint must override.
+        args = _make_args(
+            input=str(input_path),
+            dry_run=True,
+            output_dir=str(tmp_path),
+            guidance=3.5,
+        )
+        rc = cmd_refine(args)
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "--guidance 1.0" in out
+        assert "--guidance 3.5" not in out
+
     def test_input_not_found_dies(self, tmp_path):
         from imgen.commands.refine import cmd_refine
         args = _make_args(

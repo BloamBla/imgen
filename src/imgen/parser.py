@@ -705,7 +705,9 @@ def _add_refine_args(
     )
     p.add_argument(
         "-g", "--guidance", type=_float_range(0.5, 15.0), default=None,
-        help=f"Guidance scale (default {defaults['guidance']}).",
+        help=f"Guidance scale (default {defaults['guidance']}). Ignored "
+             f"on the default flux2-klein-edit-9b backend — mflux pins "
+             f"guidance to 1.0 for non-base FLUX.2 models.",
     )
     p.add_argument(
         "--strength", type=_float_range(0.0, 1.0), default=0.3,
