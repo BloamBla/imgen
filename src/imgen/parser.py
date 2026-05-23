@@ -569,7 +569,23 @@ def _add_draw_args(
     )
     p.add_argument(
         "--seed", type=_int_range(0, 2**32 - 1), default=None,
-        help="Seed (default: random)",
+        help="Seed (default: random). With --num-iterations N, this is "
+             "the BASE seed; subsequent iterations use base+1, base+2, ...",
+    )
+    # v0.7.3: --num-iterations N — explore-mode randomness ladder.
+    # The canonical workflow: --preview --num-iterations 5 → 5 variations
+    # of the same prompt at preview cost (~2:50 each on M2 Pro), pick the
+    # best, then refine via cmd_generate i2i at Q8. Cap at 32 — protects
+    # against accidental `-n 9999`; nobody legitimately needs more in
+    # one invocation.
+    p.add_argument(
+        "-n", "--num-iterations", type=_int_range(1, 32), default=1,
+        metavar="N",
+        help="Generate N variations of the prompt (different seeds). "
+             "Default 1. Cap 32. With --seed X: seeds are X, X+1, ..., "
+             "X+N-1 (reproducible ladder). Without --seed: random base. "
+             "Output naming: N=1 keeps <slug>.png; N>=2 emits "
+             "<slug>-1.png ... <slug>-N.png.",
     )
     # v0.7.0: default `--backend flux-dev`. The shared `defaults["backend"]`
     # entry is "flux" (Kontext, i2i); draw's default lives at the

@@ -39,16 +39,15 @@ from ..colors import C, die, info, warn
 from ..defaults import DEFAULTS
 from ..history import load_history
 from ..prompt_input import PromptInputError, resolve_prompt
-from ..runs import BatchContext, DrawIterationGroup
+from ..runs import BatchContext
 from ..cmd_helpers import (
-    apply_enhance_results_to_groups,
-    build_draw_iteration,
+    build_draw_iterations,
     emit_gated_repo_hint_if_failed,
     estimate_one_seconds,
     exit_code,
     format_duration,
     load_backend_and_token,
-    maybe_enhance_for_command,
+    maybe_enhance_prompts,
     open_results,
     preflight_resources,
     print_batch_summary,
@@ -133,15 +132,43 @@ def _resolve_draw_prompt(args) -> str:
     )
 
 
-def _confirm_draw(prompt: str, output: Path, eta_seconds: int | None) -> bool:
-    """Single-shot confirm gate. Shows the prompt preview, output path,
-    and (when history has a comparable run) an ETA estimate."""
+def _confirm_draw(
+    *,
+    prompt: str,
+    num_iterations: int,
+    first_output: Path,
+    run_dir: Path | None,
+    eta_seconds: int | None,
+) -> bool:
+    """Confirm gate. Shows prompt preview, output target, ETA × N.
+
+    For ``num_iterations == 1`` displays the exact output path (or
+    ``--output FILE`` if set). For ``num_iterations >= 2`` displays
+    the run-dir + count — listing N filenames would bloat the gate
+    line without adding info (slug is shared, only the ``-1.png``
+    suffix varies).
+    """
     preview = prompt if len(prompt) <= 80 else prompt[:77] + "..."
-    info("About to generate 1 image:")
-    print(f"   {C.DIM}prompt:{C.END} {preview}")
-    print(f"   {C.DIM}output:{C.END} {output}")
+    if num_iterations == 1:
+        info("About to generate 1 image:")
+        print(f"   {C.DIM}prompt:{C.END} {preview}")
+        print(f"   {C.DIM}output:{C.END} {first_output}")
+    else:
+        info(f"About to generate {num_iterations} images (seed ladder):")
+        print(f"   {C.DIM}prompt:{C.END} {preview}")
+        # run_dir is non-None here because explicit_output is mutex
+        # with num_iterations > 1 (validated at build_draw_iterations).
+        print(f"   {C.DIM}output:{C.END} {run_dir}/")
+        print(f"   {C.DIM}count:{C.END}  {num_iterations} variations "
+              f"({first_output.stem.rsplit('-', 1)[0]}-1..-{num_iterations}.png)")
     if eta_seconds is not None:
-        print(f"   {C.DIM}eta:{C.END}    {format_duration(eta_seconds)} (±50%)")
+        total_eta = eta_seconds * num_iterations
+        per_image = format_duration(eta_seconds)
+        if num_iterations == 1:
+            print(f"   {C.DIM}eta:{C.END}    {per_image} (±50%)")
+        else:
+            print(f"   {C.DIM}eta:{C.END}    {format_duration(total_eta)} total "
+                  f"({per_image} per image, ±50%)")
     print()
     try:
         ans = input("Continue? [y/N] ").strip().lower()
@@ -152,50 +179,81 @@ def _confirm_draw(prompt: str, output: Path, eta_seconds: int | None) -> bool:
 
 
 def cmd_draw(args) -> int:
-    """`imgen draw <prompt>` — text-to-image single-shot.
+    """`imgen draw <prompt>` — text-to-image with optional N-iteration
+    seed-ladder explore mode (v0.7.3+).
 
     Pipeline:
 
     1. Resolve prompt (positional / --prompt-file / '-' stdin).
     2. Load backend + token; flux-dev needs the gated HF token.
-    3. Resolve output layout (--output PATH or run-dir + slug).
-    4. Build the single Iteration via build_draw_iteration.
-    5. Optionally enhance prompt via the LLM (flux-dev's
-       enhance_system_prompt is t2i-tuned per memory v0.7.0 design §K).
-    6. Dry-run path: print cmd + exit.
-    7. Resource preflight.
-    8. Confirm gate (unless --yes).
-    9. mkdir, run_one_iteration, open the result, summarise, exit.
+    3. Resolve output layout. Mutex: ``--output FILE`` + N>=2 rejected
+       (single file can't fan out to N images).
+    4. Base seed: explicit ``--seed X`` (deterministic ladder X..X+N-1)
+       or random.
+    5. **Enhancer fires ONCE on the unique prompt** (regardless of N)
+       via :func:`maybe_enhance_prompts` — same prompt → same enhanced
+       text, so paying the LLM cost N× would be wasteful. The single
+       EnhanceResult is replicated across the N iterations for history.
+    6. Build N iterations via :func:`build_draw_iterations` using the
+       enhanced prompt + seed ladder.
+    7. Dry-run path: print all N cmds + exit.
+    8. Resource preflight.
+    9. Confirm gate (unless --yes) — shows N + ETA × N.
+    10. mkdir, loop run_one_iteration N times, open the run-dir, exit.
     """
     merged_defaults = getattr(args, "imgen_merged_defaults", DEFAULTS)
     config_output_dir = getattr(args, "imgen_config_output_dir", None)
 
-    # 1) Prompt resolution. Hidden-from-ps paths (stdin, --prompt-file)
-    # work identically to cmd_generate's --custom-prompt = '-'.
+    # 1) Prompt resolution.
     prompt = _resolve_draw_prompt(args)
 
-    # 2) Backend + token. flux-dev needs the gated HF token (shared with
-    # Kontext's `~/.imgen/hf_token` file). load_backend_and_token also
-    # locates the mflux binary inside the venv.
+    # 2) Backend + token. flux-dev needs the gated HF token.
     backend, be, token, binary, backend_secret = load_backend_and_token(args)
 
-    # 3) Output layout. --output FILE wins; otherwise run-dir + slug.
+    # 3) Output layout + N-iteration mutex check.
     explicit_output, run_dir = resolve_output_layout(args, config_output_dir)
+    num_iterations = getattr(args, "num_iterations", 1)
+    if explicit_output is not None and num_iterations > 1:
+        die(
+            f"--output PATH is mutex with --num-iterations {num_iterations} "
+            f"(single output FILE can't fan out to {num_iterations} images). "
+            f"Use --output-dir DIR instead.",
+            code=2,
+        )
 
-    # 4) Seed: explicit or random.
-    seed = (
+    # 4) Base seed.
+    base_seed = (
         args.seed if args.seed is not None
         else int.from_bytes(os.urandom(4), "big")
     )
 
-    # 5) Build the single Iteration + wrap into a DrawIterationGroup so
-    # the enhancer step can route through the Protocol-typed helper
-    # `apply_enhance_results_to_groups`. Single-shot in v0.7.0
-    # (iters length 1); future --num-iterations N (v0.7.1+) extends
-    # the group's iters tuple without orchestrator-shape changes.
-    iteration = build_draw_iteration(
+    # 5) Enhancer fires ONCE for the unique prompt (v0.7.3 optimisation —
+    # all N seed-variants share the same prompt; paying the LLM cost N×
+    # would burn ~5s × N for an identical answer). The single
+    # EnhanceResult is replicated below for history alignment.
+    eff_enhance = resolve_enhance_config(
+        cli_enable=getattr(args, "enhance", None),
+        cli_model=getattr(args, "enhance_model", None),
+        cli_temperature=getattr(args, "enhance_temperature", None),
+        config_enhance=getattr(args, "imgen_config_enhance", {}),
+    )
+    unique_enhance_results, enhance_model = maybe_enhance_prompts(
+        eff_enhance=eff_enhance,
+        backend_obj=be,
+        prompts=[prompt],
+    )
+    enhanced_prompt = unique_enhance_results[0].final_prompt
+    # Replicate the SINGLE result across N iterations so each history
+    # entry records the enhance metadata (was_enhanced / fallback_reason
+    # / fallback_detail / model). They all share the same enhance
+    # decision since the prompt was the same.
+    enhance_results = [unique_enhance_results[0]] * num_iterations
+
+    # 6) Build N iterations using the (possibly enhanced) prompt + seed
+    # ladder. `iters[0]` uses base_seed, `iters[1]` uses base_seed+1, etc.
+    iterations = build_draw_iterations(
         args=args,
-        prompt=prompt,
+        prompt=enhanced_prompt,
         merged_defaults=merged_defaults,
         be=be,
         binary=binary,
@@ -203,61 +261,40 @@ def cmd_draw(args) -> int:
         height=args.height,
         explicit_output=explicit_output,
         run_dir=run_dir,
-        seed=seed,
+        base_seed=base_seed,
+        num_iterations=num_iterations,
     )
-    group = DrawIterationGroup(
-        width=args.width,
-        height=args.height,
-        iters=(iteration,),
-    )
-    iterations = list(group.iters)
 
-    # 6) Optional LLM enhancer. flux-dev declares enhance_invariants=()
-    # so the substring-anchor checks short-circuit cleanly — runner_error
-    # / empty_llm_output / input_too_long content paths still apply.
-    # apply_enhance_results_to_groups uses dataclasses.replace so the
-    # post-enhance Iteration carries the updated prompt+cmd inside the
-    # DrawIterationGroup; we then unpack back to a flat list for the
-    # downstream run_one_iteration loop.
-    eff_enhance = resolve_enhance_config(
-        cli_enable=getattr(args, "enhance", None),
-        cli_model=getattr(args, "enhance_model", None),
-        cli_temperature=getattr(args, "enhance_temperature", None),
-        config_enhance=getattr(args, "imgen_config_enhance", {}),
-    )
-    enhance_results, enhance_model = maybe_enhance_for_command(
-        eff_enhance=eff_enhance,
-        backend_obj=be,
-        iterations=iterations,
-    )
-    groups = apply_enhance_results_to_groups([group], enhance_results)
-    iterations = list(groups[0].iters)
+    total = len(iterations)
+    is_batch = total >= 2
 
-    # 7) Dry-run: print the cmd that would execute, exit clean.
+    # 7) Dry-run: print every N cmds, exit clean.
     if args.dry_run:
-        for it in iterations:
-            print(f"Dry run — would execute (draw):")
+        for idx, it in enumerate(iterations, start=1):
+            print(f"Dry run [{idx}/{total}] — would execute (draw):")
             print()
             print(format_cmd(it.cmd))
             print()
         return 0
 
-    # 8) Resource preflight — single iteration but the same RAM /
-    # parallel-mflux / battery checks apply.
-    heaviest_quant = iterations[0].final_quantize
+    # 8) Resource preflight — heaviest quant in the batch (all N share
+    # the same backend + quant today, but max() keeps it future-proof
+    # if per-iteration quant ever lands).
+    heaviest_quant = max(it.final_quantize for it in iterations)
     preflight_resources(
         backend=backend, heaviest_quant=heaviest_quant, force=args.force,
     )
 
-    # 9) Confirm gate (unless --yes). Single-shot UX: brief prompt +
-    # output preview + optional ETA from comparable history rows.
+    # 9) Confirm gate (unless --yes). Shows count + ETA × N for N>=2.
     if not args.yes:
         one_eta = estimate_one_seconds(
             load_history(), backend, heaviest_quant, args.preview,
         )
         proceed = _confirm_draw(
             prompt=iterations[0].prompt,
-            output=iterations[0].output_path,
+            num_iterations=total,
+            first_output=iterations[0].output_path,
+            run_dir=run_dir,
             eta_seconds=one_eta,
         )
         if not proceed:
@@ -273,10 +310,15 @@ def cmd_draw(args) -> int:
     # 11) BatchContext for the run loop. input_path=None signals t2i to
     # run_one_iteration's history-entry + step() display gates.
     # command="draw" drives future replay routing.
+    # v0.7.3: ctx.seed is the BASE seed of the ladder; each iteration's
+    # actual seed lives on Iteration.cmd's argv. The ctx.seed value
+    # ends up in history rows as a record of "what was the base seed"
+    # — replay rehydrates per-iteration seeds from each entry's stored
+    # `seed` field (already per-row in history).
     env = build_mflux_env(token=token, backend_secret=backend_secret)
     ctx = BatchContext(
         backend=backend,
-        seed=seed,
+        seed=base_seed,
         width=args.width,
         height=args.height,
         input_path=None,
@@ -287,23 +329,36 @@ def cmd_draw(args) -> int:
         command="draw",
     )
 
-    # 12) Run the single iteration.
+    # 12) Loop over the N iterations. KeyboardInterrupt mid-loop
+    # returns 130 with whatever's been generated so far (open_results
+    # below still opens the partial run-dir).
     succeeded: list = []
     failed: list = []
-    cont = run_one_iteration(
-        it=iterations[0],
-        idx=1,
-        total=1,
-        is_batch=False,
-        ctx=ctx,
-        logger=None,
-        succeeded=succeeded,
-        failed=failed,
-        enhance_result=enhance_results[0] if enhance_results else None,
-        enhance_model=enhance_model,
-    )
-    if not cont:
-        return 130  # KeyboardInterrupt mid-iteration.
+    for idx, it in enumerate(iterations, start=1):
+        cont = run_one_iteration(
+            it=it,
+            idx=idx,
+            total=total,
+            is_batch=is_batch,
+            ctx=ctx,
+            logger=None,
+            succeeded=succeeded,
+            failed=failed,
+            enhance_result=enhance_results[idx - 1],
+            enhance_model=enhance_model,
+        )
+        if not cont:
+            # KeyboardInterrupt during iteration `idx`. Partial-run UX:
+            # surface what completed, open run_dir so the user can see
+            # the N-1 (or fewer) images that did finish.
+            if succeeded and run_dir is not None and not args.no_open:
+                open_results(
+                    succeeded=succeeded,
+                    run_dir=run_dir,
+                    is_batch=True,
+                    no_open=args.no_open,
+                )
+            return 130
 
     # v0.7.0 (post-tag review UX-gap): if mflux exited non-zero AND
     # the backend declares a gated HF repo, surface a friendly hint
@@ -312,20 +367,18 @@ def cmd_draw(args) -> int:
     # cmd_batch get the same hint for FLUX-Kontext cold installs.
     emit_gated_repo_hint_if_failed(failed=failed, backend_obj=be)
 
-    # 13) Open result + summary + exit code. open_results' is_batch=False
-    # branch opens succeeded[-1][1] regardless of whether the path lives
-    # inside a run_dir (auto-named layout) or is an explicit --output PATH
-    # — both are honoured uniformly. Architect §F step 12 + pre-tag
-    # IMPORTANT #4: avoid the v0.7.0-step-5 bespoke Popen branch that
-    # bypassed SAFE_OUTPUT_EXTS + swallowed all exceptions.
+    # 13) Open result + summary + exit code. N>=2 → open Finder on the
+    # run-dir; N=1 → open the single PNG in Preview (or run_dir if
+    # the --output explicit-path case kept its parent in scope).
     open_results(
         succeeded=succeeded,
         run_dir=run_dir if run_dir is not None else (
             explicit_output.parent if explicit_output is not None else Path()
         ),
-        is_batch=False,
+        is_batch=is_batch,
         no_open=args.no_open,
     )
 
-    print_batch_summary(succeeded, failed, total=1)
-    return exit_code(is_batch=False, succeeded=succeeded, failed=failed)
+    if is_batch:
+        print_batch_summary(succeeded, failed, total=total)
+    return exit_code(is_batch=is_batch, succeeded=succeeded, failed=failed)

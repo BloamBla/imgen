@@ -160,6 +160,258 @@ class TestDrawParser:
         args = _parse_draw("a samurai", "--enhance-prompt")
         assert args.enhance is True
 
+    # ── v0.7.3: --num-iterations parser stanza ────────────────────────
+
+    def test_num_iterations_default_1(self):
+        args = _parse_draw("a samurai")
+        assert args.num_iterations == 1
+
+    def test_num_iterations_explicit(self):
+        args = _parse_draw("a samurai", "--num-iterations", "5")
+        assert args.num_iterations == 5
+
+    def test_num_iterations_short_alias(self):
+        args = _parse_draw("a samurai", "-n", "3")
+        assert args.num_iterations == 3
+
+    def test_num_iterations_below_1_rejected(self):
+        with pytest.raises(SystemExit):
+            _parse_draw("a samurai", "--num-iterations", "0")
+
+    def test_num_iterations_above_cap_rejected(self):
+        """Cap 32 protects against accidental `-n 9999`."""
+        with pytest.raises(SystemExit):
+            _parse_draw("a samurai", "--num-iterations", "33")
+
+
+# ── v0.7.3: build_draw_iterations (plural) ───────────────────────────
+
+
+class TestBuildDrawIterations:
+    """v0.7.3: plural form of build_draw_iteration; seed ladder +
+    output naming + explicit_output mutex with N>=2."""
+
+    def test_n_equals_1_single_iteration(self, tmp_path):
+        from imgen.backends import BACKENDS
+        from imgen.cmd_helpers import build_draw_iterations
+        out = build_draw_iterations(
+            args=_make_args(),
+            prompt="a samurai",
+            merged_defaults=DEFAULTS,
+            be=BACKENDS["flux-dev"],
+            binary=Path("/fake/mflux-generate"),
+            width=1024,
+            height=1024,
+            explicit_output=None,
+            run_dir=tmp_path,
+            base_seed=42,
+            num_iterations=1,
+        )
+        assert len(out) == 1
+        # N=1 → bare slug.png, no -1 suffix.
+        assert "-1.png" not in out[0].output_path.name
+        assert out[0].output_path.name.endswith("a-samurai.png")
+        # Seed = base_seed.
+        seed_idx = out[0].cmd.index("--seed") + 1
+        assert out[0].cmd[seed_idx] == "42"
+
+    def test_n_equals_3_seed_ladder(self, tmp_path):
+        """Deterministic ladder: base_seed=100, N=3 → seeds 100,101,102."""
+        from imgen.backends import BACKENDS
+        from imgen.cmd_helpers import build_draw_iterations
+        out = build_draw_iterations(
+            args=_make_args(),
+            prompt="a samurai",
+            merged_defaults=DEFAULTS,
+            be=BACKENDS["flux-dev"],
+            binary=Path("/fake/mflux-generate"),
+            width=1024,
+            height=1024,
+            explicit_output=None,
+            run_dir=tmp_path,
+            base_seed=100,
+            num_iterations=3,
+        )
+        assert len(out) == 3
+        # Each iteration's argv carries its slot's seed.
+        seeds = [
+            it.cmd[it.cmd.index("--seed") + 1] for it in out
+        ]
+        assert seeds == ["100", "101", "102"]
+
+    def test_n_equals_3_output_naming(self, tmp_path):
+        """N>=2 → <slug>-1.png ... <slug>-N.png (1-indexed)."""
+        from imgen.backends import BACKENDS
+        from imgen.cmd_helpers import build_draw_iterations
+        out = build_draw_iterations(
+            args=_make_args(),
+            prompt="a samurai",
+            merged_defaults=DEFAULTS,
+            be=BACKENDS["flux-dev"],
+            binary=Path("/fake/mflux-generate"),
+            width=1024,
+            height=1024,
+            explicit_output=None,
+            run_dir=tmp_path,
+            base_seed=42,
+            num_iterations=3,
+        )
+        names = [it.output_path.name for it in out]
+        assert names == [
+            "a-samurai-1.png",
+            "a-samurai-2.png",
+            "a-samurai-3.png",
+        ]
+
+    def test_seed_ladder_wraps_at_2_32(self, tmp_path):
+        """base_seed near the cap: ladder modulo 2^32 keeps every
+        iteration inside mflux's valid seed range."""
+        from imgen.backends import BACKENDS
+        from imgen.cmd_helpers import build_draw_iterations
+        cap = 2**32
+        out = build_draw_iterations(
+            args=_make_args(),
+            prompt="a samurai",
+            merged_defaults=DEFAULTS,
+            be=BACKENDS["flux-dev"],
+            binary=Path("/fake/mflux-generate"),
+            width=1024,
+            height=1024,
+            explicit_output=None,
+            run_dir=tmp_path,
+            base_seed=cap - 1,
+            num_iterations=3,
+        )
+        seeds = [int(it.cmd[it.cmd.index("--seed") + 1]) for it in out]
+        # Ladder: cap-1, (cap-1+1)%cap=0, (cap-1+2)%cap=1.
+        assert seeds == [cap - 1, 0, 1]
+
+    def test_explicit_output_with_n_gt_1_raises(self, tmp_path):
+        """--output PATH single-file is mutex with N>=2 — a single
+        FILE can't fan out to N images."""
+        from imgen.backends import BACKENDS
+        from imgen.cmd_helpers import build_draw_iterations
+        with pytest.raises(ValueError, match="mutex"):
+            build_draw_iterations(
+                args=_make_args(),
+                prompt="a samurai",
+                merged_defaults=DEFAULTS,
+                be=BACKENDS["flux-dev"],
+                binary=Path("/fake/mflux-generate"),
+                width=1024,
+                height=1024,
+                explicit_output=tmp_path / "mypic.png",
+                run_dir=None,
+                base_seed=42,
+                num_iterations=3,
+            )
+
+    def test_num_iterations_zero_raises(self, tmp_path):
+        """Parser caps 1..32 but the helper's own contract rejects <1
+        for any future programmatic caller."""
+        from imgen.backends import BACKENDS
+        from imgen.cmd_helpers import build_draw_iterations
+        with pytest.raises(ValueError):
+            build_draw_iterations(
+                args=_make_args(),
+                prompt="a samurai",
+                merged_defaults=DEFAULTS,
+                be=BACKENDS["flux-dev"],
+                binary=Path("/fake/mflux-generate"),
+                width=1024,
+                height=1024,
+                explicit_output=None,
+                run_dir=tmp_path,
+                base_seed=42,
+                num_iterations=0,
+            )
+
+    def test_all_iterations_share_compatible_loras(self, tmp_path):
+        """LoRA resolution runs ONCE outside the loop (same prompt →
+        same triggers → same compat-filtered stack); lock the
+        invariant that all N Iteration objects carry the same loras
+        tuple by reference."""
+        from imgen.backends import BACKENDS
+        from imgen.cmd_helpers import build_draw_iterations
+        out = build_draw_iterations(
+            args=_make_args(),
+            prompt="a samurai",
+            merged_defaults=DEFAULTS,
+            be=BACKENDS["flux-dev"],
+            binary=Path("/fake/mflux-generate"),
+            width=1024,
+            height=1024,
+            explicit_output=None,
+            run_dir=tmp_path,
+            base_seed=42,
+            num_iterations=3,
+        )
+        assert all(it.loras == out[0].loras for it in out)
+
+
+# ── v0.7.3: cmd_draw enhancer-once optimisation ─────────────────────
+
+
+class TestCmdDrawEnhancerOnce:
+    """v0.7.3 critical optimisation: `--num-iterations N --enhance-prompt`
+    fires the LLM ONCE on the unique prompt, then broadcasts the result
+    across N iterations. Without this, --num-iterations 5 --enhance
+    would pay 5× the LLM cost for 5 identical prompts."""
+
+    def test_enhancer_fires_once_for_n_iterations(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        from imgen.backends import BACKENDS
+        from imgen.enhance import EnhanceResult
+
+        def fake_load(args):
+            return ("flux-dev", BACKENDS["flux-dev"], "tok",
+                    Path("/fake/mflux-generate"), None)
+        monkeypatch.setattr(
+            "imgen.commands.draw.load_backend_and_token", fake_load,
+        )
+
+        call_count = {"n": 0, "prompts": []}
+
+        def fake_orchestrator(
+            *, iteration_prompts, system_prompt, invariants,
+            model, temperature, max_tokens, timeout_s,
+        ):
+            call_count["n"] += 1
+            call_count["prompts"].append(list(iteration_prompts))
+            return [
+                EnhanceResult(
+                    final_prompt=f"ENH: {p}",
+                    original_prompt=p,
+                    was_enhanced=True,
+                    fallback_reason=None,
+                    was_truncated=False,
+                    raw_llm_output=f"ENH: {p}",
+                )
+                for p in iteration_prompts
+            ]
+
+        monkeypatch.setattr(
+            "imgen.cmd_helpers.enhance_iteration_prompts", fake_orchestrator,
+        )
+
+        args = _make_args(
+            prompt="a samurai",
+            enhance=True,
+            num_iterations=5,
+            dry_run=True,
+            output_dir=str(tmp_path),
+        )
+        rc = cmd_draw(args)
+        assert rc == 0
+        # CRITICAL: orchestrator was called ONCE with a list of 1
+        # prompt (the unique one), not 5 times or once with 5 copies.
+        assert call_count["n"] == 1
+        assert call_count["prompts"] == [["a samurai"]]
+        # Each of the 5 dry-run commands shows the SAME enhanced prompt.
+        out = capsys.readouterr().out
+        assert out.count("ENH: a samurai") == 5
+
 
 # ── build_draw_iteration ─────────────────────────────────────────────
 
@@ -178,6 +430,7 @@ def _make_args(**overrides):
         preview=False,
         width=1024,
         height=1024,
+        num_iterations=1,  # v0.7.3 default
         no_open=True,
         yes=True,
         dry_run=False,

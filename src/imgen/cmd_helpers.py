@@ -97,6 +97,7 @@ __all__ = [
     "apply_enhance_results_to_groups",
     "apply_enhance_results_to_iterations",
     "build_draw_iteration",
+    "build_draw_iterations",
     "build_iterations",
     "emit_gated_repo_hint_if_failed",
     "check_prompt_style_compat",
@@ -105,6 +106,7 @@ __all__ = [
     "format_duration",
     "load_backend_and_token",
     "maybe_enhance_for_command",
+    "maybe_enhance_prompts",
     "open_results",
     "preflight_resources",
     "prepend_trigger_words",
@@ -443,6 +445,82 @@ def resolve_enhance_config(
     )
 
 
+def maybe_enhance_prompts(
+    *,
+    eff_enhance: dict,
+    backend_obj: Backend,
+    prompts: list[str],
+) -> tuple[list[EnhanceResult], str | None]:
+    """v0.7.3: lower-level helper underlying
+    :func:`maybe_enhance_for_command`. Operates on raw prompt strings
+    instead of :class:`Iteration` objects so cmd_draw's
+    ``--num-iterations`` path can enhance ONE unique prompt and then
+    broadcast the result to N seed-variant iterations, instead of
+    paying N LLM calls for N identical prompts.
+
+    Same return contract as :func:`maybe_enhance_for_command`:
+    ``(enhance_results, enhance_model)`` aligned with ``prompts``.
+
+    Pure-ish: prints a step / ok / warn line to stdout (same UX as
+    the iteration-flavoured wrapper). No subprocess unless the LLM
+    actually runs.
+    """
+    eff = eff_enhance
+
+    if not eff["enabled"]:
+        results = [
+            EnhanceResult(
+                final_prompt=p,
+                original_prompt=p,
+                was_enhanced=False,
+                fallback_reason="user_opt_out",
+                was_truncated=False,
+                raw_llm_output=None,
+            )
+            for p in prompts
+        ]
+        return results, None
+
+    step(f"Enhancing {len(prompts)} prompt(s) via {eff['model']} "
+         f"(temp={eff['temperature']}, max_tokens={eff['max_tokens']})...")
+    results = enhance_iteration_prompts(
+        iteration_prompts=prompts,
+        system_prompt=backend_obj.enhance_system_prompt,
+        invariants=backend_obj.enhance_invariants,
+        model=eff["model"],
+        temperature=eff["temperature"],
+        max_tokens=eff["max_tokens"],
+        timeout_s=eff["timeout_s"],
+    )
+    return _summarise_enhance_results_and_pack(results, eff)
+
+
+def _summarise_enhance_results_and_pack(
+    results: list[EnhanceResult],
+    eff: dict,
+) -> tuple[list[EnhanceResult], str | None]:
+    """Shared post-LLM-call summary path: prints the one-line outcome
+    and returns ``(results, model_name_or_None)``. Extracted v0.7.3 so
+    both ``maybe_enhance_prompts`` and ``maybe_enhance_for_command``
+    share the exact same surface UX.
+    """
+    enhanced_n = sum(1 for r in results if r.was_enhanced)
+    if enhanced_n == len(results):
+        ok(f"Enhanced all {enhanced_n} prompt(s).")
+    elif enhanced_n == 0:
+        reasons = {r.fallback_reason for r in results}
+        if reasons == {"runner_error"}:
+            warn("Enhance runner failed; running with original prompts. "
+                 f"Reason: {results[0].fallback_detail!r}")
+        else:
+            warn(f"No prompts enhanced. Reasons: {sorted(reasons)}")
+    else:
+        warn(f"Enhanced {enhanced_n}/{len(results)} prompt(s); "
+             f"fallback reasons: "
+             f"{sorted({r.fallback_reason for r in results if r.fallback_reason})}")
+    return results, eff["model"]
+
+
 def maybe_enhance_for_command(
     *,
     eff_enhance: dict,
@@ -470,75 +548,19 @@ def maybe_enhance_for_command(
     without spelunking through an ``args`` shape. v0.6.4 split per
     v0.5 architect IMP #3.
 
+    v0.7.3: delegates to :func:`maybe_enhance_prompts` so the two
+    cmd-layer entry points (i2i iterations vs t2i raw prompts) share
+    the same UX surface + LLM-call discipline.
+
     Tests bypass this wrapper and call the underlying orchestrator
     :func:`enhance.enhance_iteration_prompts` directly with a mocked
     LLM callable.
     """
-    eff = eff_enhance
-
-    if not eff["enabled"]:
-        # Build aligned skip-results so the run loop has something to
-        # splice into history. ``user_opt_out`` covers both "user passed
-        # --no-enhance" and "no flag, config default is false" — both
-        # are user-controlled non-activation.
-        results = [
-            EnhanceResult(
-                final_prompt=it.prompt,
-                original_prompt=it.prompt,
-                was_enhanced=False,
-                fallback_reason="user_opt_out",
-                was_truncated=False,
-                raw_llm_output=None,
-            )
-            for it in iterations
-        ]
-        return results, None
-
-    step(f"Enhancing {len(iterations)} prompt(s) via {eff['model']} "
-         f"(temp={eff['temperature']}, max_tokens={eff['max_tokens']})...")
-    results = enhance_iteration_prompts(
-        iteration_prompts=[it.prompt for it in iterations],
-        system_prompt=backend_obj.enhance_system_prompt,
-        invariants=backend_obj.enhance_invariants,
-        model=eff["model"],
-        temperature=eff["temperature"],
-        max_tokens=eff["max_tokens"],
-        timeout_s=eff["timeout_s"],
+    return maybe_enhance_prompts(
+        eff_enhance=eff_enhance,
+        backend_obj=backend_obj,
+        prompts=[it.prompt for it in iterations],
     )
-
-    # Surface a one-line summary so the user knows what happened —
-    # especially the fallback paths.
-    enhanced_n = sum(1 for r in results if r.was_enhanced)
-    if enhanced_n == len(results):
-        ok(f"Enhanced all {enhanced_n} prompt(s).")
-    elif enhanced_n == 0:
-        # Distinguish the all-runner-error case from per-prompt fallbacks
-        # — those signal mlx_lm load failure / timeout / crash and are
-        # the "your enhancer is broken, fix it" kind of feedback.
-        reasons = {r.fallback_reason for r in results}
-        if reasons == {"runner_error"}:
-            # !r-format the runner-error message: fallback_detail here is
-            # the str(RunnerError) which may contain ANSI escape bytes
-            # bubbled up from mlx_lm / huggingface_hub error tracebacks.
-            # Mirrors v0.4 security-reviewer IMP-2 pattern for any
-            # user-supplied / library-supplied string reaching the
-            # terminal — escapes become literal \x1b instead of clearing
-            # the user's screen or setting their terminal title.
-            #
-            # v0.6.5 moved the message from raw_llm_output to
-            # fallback_detail (see EnhanceResult docstring). Producer
-            # and this consumer change together; no in-flight
-            # EnhanceResult shape carries the old field for this path.
-            warn("Enhance runner failed; running with original prompts. "
-                 f"Reason: {results[0].fallback_detail!r}")
-        else:
-            warn(f"No prompts enhanced. Reasons: {sorted(reasons)}")
-    else:
-        warn(f"Enhanced {enhanced_n}/{len(results)} prompt(s); "
-             f"fallback reasons: "
-             f"{sorted({r.fallback_reason for r in results if r.fallback_reason})}")
-
-    return results, eff["model"]
 
 
 def apply_enhance_results_to_iterations(
@@ -1236,6 +1258,163 @@ def prompt_slug(
     return slugged or "draw"
 
 
+def _draw_output_path_for_index(
+    *,
+    run_dir: Path,
+    slug: str,
+    idx: int,
+    num_iterations: int,
+) -> Path:
+    """v0.7.3: pick the per-iteration output path inside ``run_dir``.
+
+    * N=1: ``<slug>.png`` (preserves v0.7.0 single-shot naming).
+    * N>=2: ``<slug>-<idx>.png`` with ``idx`` 1-based — explicit index
+      reads "1 of 5" naturally vs the next_available_path collision
+      style (which would put the first one bare and start numbering at
+      ``-2``).
+
+    Collision still possible if the same run_dir already has the
+    target name (rare but possible when --output-dir points at a
+    reused tree). Fall back to ``next_available_path`` to suffix-
+    insert ``-2``/``-3`` AFTER the explicit ``-<idx>`` part.
+
+    Pure: probes the filesystem read-only.
+    """
+    if num_iterations == 1:
+        return next_available_path(run_dir, slug, suffix=".png")
+    indexed = f"{slug}-{idx}"
+    return next_available_path(run_dir, indexed, suffix=".png")
+
+
+def build_draw_iterations(
+    *,
+    args,
+    prompt: str,
+    merged_defaults: dict,
+    be,
+    binary: Path,
+    width: int,
+    height: int,
+    explicit_output: Path | None,
+    run_dir: Path | None,
+    base_seed: int,
+    num_iterations: int = 1,
+) -> list[Iteration]:
+    """Build N :class:`Iteration` objects for `imgen draw` (t2i).
+
+    v0.7.0 shipped this as singular ``build_draw_iteration``; v0.7.3
+    promoted to plural to unlock ``--num-iterations N`` (explore-mode
+    randomness ladder). Same workflow logic, looped N times with a
+    deterministic seed ladder:
+
+      * ``base_seed=X`` + ``num_iterations=5`` → seeds
+        ``[X, X+1, X+2, X+3, X+4]``. Reproducible — re-running with
+        the same ``--seed`` reproduces the same N images bit-for-bit.
+      * If caller passed a random ``base_seed``, the ladder still
+        applies but the run isn't reproducible without recording
+        ``base_seed`` (cmd_draw records it in history.jsonl for replay).
+
+    The N argv invocations share everything except ``--seed`` and
+    ``--output`` — so the enhancer runs ONCE on the prompt at the
+    cmd_draw layer (enhanced text is identical for all N seeds), then
+    the same enhanced prompt threads through every Iteration here.
+
+    Output naming: see :func:`_draw_output_path_for_index`. N=1 keeps
+    ``<slug>.png``; N>=2 emits ``<slug>-1.png`` … ``<slug>-N.png``.
+
+    ``explicit_output`` (``--output PATH``) is mutex with N>=2 — the
+    parser layer rejects that combination because --output FILE
+    can't fan out to N files. This helper still HONORS it when N=1
+    (single-shot --output path) for backward compat with v0.7.0.
+
+    Pure: no subprocess, no I/O beyond the ``next_available_path``
+    probes. Caller (cmd_draw) does dry-run / preflight / confirm /
+    run_one_iteration over the returned list.
+    """
+    if num_iterations < 1:
+        raise ValueError(f"num_iterations must be >= 1, got {num_iterations}")
+    if explicit_output is not None and num_iterations > 1:
+        raise ValueError(
+            "explicit_output is mutex with num_iterations > 1 "
+            "(single --output FILE can't fan out to N files)"
+        )
+
+    preset = Style()  # empty preset — no prompt/negative/guidance/
+    #                   strength/scene_suffix/loras default into the
+    #                   merged_defaults precedence branches.
+    params = _resolve_iteration_params(
+        args=args, preset=preset, merged_defaults=merged_defaults,
+    )
+    negative = ""
+
+    # LoRA stack resolution is identical across the N iterations (same
+    # prompt → same triggers → same compat-filtered stack). Compute
+    # ONCE outside the loop.
+    lora_resolution = _resolve_iteration_loras(
+        preset=preset, args=args, be=be, prompt=prompt,
+    )
+    prompt_with_triggers = lora_resolution.prompt_with_triggers
+
+    slug = prompt_slug(prompt)
+    iterations: list[Iteration] = []
+    for i in range(num_iterations):
+        # Seed ladder. Wrap at 2**32 to stay within mflux's seed range
+        # (the parser guards 0..2**32-1; base_seed+(N-1) might overflow
+        # if base_seed was near the cap. Modulo keeps every iteration
+        # inside the valid range without crashing the ladder.)
+        iter_seed = (base_seed + i) % (2**32)
+
+        # Output path: explicit --output PATH wins (N=1 only, asserted
+        # above); otherwise prompt-slug inside the run-dir.
+        if explicit_output is not None:
+            output_path = explicit_output
+        else:
+            assert run_dir is not None, (
+                "build_draw_iterations: either explicit_output or run_dir "
+                "must be provided"
+            )
+            output_path = _draw_output_path_for_index(
+                run_dir=run_dir,
+                slug=slug,
+                idx=i + 1,
+                num_iterations=num_iterations,
+            )
+
+        cmd = build_mflux_cmd(
+            binary=binary,
+            backend=be,
+            input_path=None,  # t2i: no input photo
+            output_path=output_path,
+            prompt=prompt_with_triggers,
+            negative=negative,
+            quantize=params.final_quantize,
+            steps=params.final_steps,
+            guidance=params.final_guidance,
+            strength=params.final_strength,
+            seed=iter_seed,
+            width=width,
+            height=height,
+            mlx_cache_gb=merged_defaults["mlx_cache_gb"],
+            battery_stop=merged_defaults["battery_stop"],
+            loras=lora_resolution.effective_loras,
+        )
+
+        iterations.append(Iteration(
+            style_name="draw",
+            prompt=prompt_with_triggers,
+            negative=negative,
+            final_steps=params.final_steps,
+            final_quantize=params.final_quantize,
+            final_guidance=params.final_guidance,
+            final_strength=params.final_strength,
+            output_path=output_path,
+            cmd=cmd,
+            loras=lora_resolution.compatible_loras,
+        ))
+
+    return iterations
+
+
 def build_draw_iteration(
     *,
     args,
@@ -1249,89 +1428,27 @@ def build_draw_iteration(
     run_dir: Path | None,
     seed: int,
 ) -> Iteration:
-    """Build a single :class:`Iteration` for `imgen draw` (t2i).
+    """v0.7.0 singular helper — kept as a backward-compat wrapper over
+    :func:`build_draw_iterations` (N=1). cmd_draw uses the plural
+    form directly since v0.7.3; this thin wrapper remains for any
+    external programmatic caller (notebook code, tests) that built
+    against v0.7.0–v0.7.2.
 
-    v0.7.0 (architect §F): t2i sibling of :func:`build_iterations`.
-    Differences from the i2i build path:
-
-      * No styles_list loop — draw is single-shot in v0.7.0.
-      * No effective_custom_prompt / scope / augmentation —
-        ``prompt`` is the user's text verbatim (post-enhance if the
-        enhancer ran).
-      * ``input_path=None`` flows through :func:`build_mflux_cmd` —
-        the ``--image-path`` argv pair is omitted (v0.7.0 step 4).
-      * Output naming: ``explicit_output`` (--output PATH) wins;
-        otherwise ``<run_dir>/<prompt-slug>.png`` with collision
-        suffix.
-
-    Reuses :func:`_resolve_iteration_params` (with a stub empty Style
-    so the preset-precedence branches fall through to merged_defaults)
-    and :func:`_resolve_iteration_loras` (same stub; CLI LoRAs apply,
-    no preset LoRAs to layer under). Returns one frozen Iteration.
-
-    Pure: no subprocess, no I/O beyond the next_available_path
-    filesystem probe. Caller (cmd_draw) does the dry-run / preflight /
-    confirm / run_one_iteration dance with the returned Iteration.
+    See :func:`build_draw_iterations` for the contract.
     """
-    preset = Style()  # empty preset — no prompt/negative/guidance/
-    #                   strength/scene_suffix/loras default into the
-    #                   merged_defaults precedence branches.
-    params = _resolve_iteration_params(
-        args=args, preset=preset, merged_defaults=merged_defaults,
-    )
-    negative = ""
-
-    # Output path: explicit --output PATH wins; otherwise prompt-slug
-    # inside the run-dir (folder-per-invocation layout).
-    if explicit_output is not None:
-        output_path = explicit_output
-    else:
-        assert run_dir is not None, (
-            "build_draw_iteration: either explicit_output or run_dir must "
-            "be provided"
-        )
-        output_path = next_available_path(
-            run_dir, prompt_slug(prompt), suffix=".png",
-        )
-
-    # LoRA stack: no preset LoRAs (Style() default empty tuple); CLI
-    # LoRAs apply per the --lora/--no-lora flags.
-    lora_resolution = _resolve_iteration_loras(
-        preset=preset, args=args, be=be, prompt=prompt,
-    )
-    prompt_with_triggers = lora_resolution.prompt_with_triggers
-
-    cmd = build_mflux_cmd(
+    return build_draw_iterations(
+        args=args,
+        prompt=prompt,
+        merged_defaults=merged_defaults,
+        be=be,
         binary=binary,
-        backend=be,
-        input_path=None,  # t2i: no input photo
-        output_path=output_path,
-        prompt=prompt_with_triggers,
-        negative=negative,
-        quantize=params.final_quantize,
-        steps=params.final_steps,
-        guidance=params.final_guidance,
-        strength=params.final_strength,
-        seed=seed,
         width=width,
         height=height,
-        mlx_cache_gb=merged_defaults["mlx_cache_gb"],
-        battery_stop=merged_defaults["battery_stop"],
-        loras=lora_resolution.effective_loras,
-    )
-
-    return Iteration(
-        style_name="draw",
-        prompt=prompt_with_triggers,
-        negative=negative,
-        final_steps=params.final_steps,
-        final_quantize=params.final_quantize,
-        final_guidance=params.final_guidance,
-        final_strength=params.final_strength,
-        output_path=output_path,
-        cmd=cmd,
-        loras=lora_resolution.compatible_loras,
-    )
+        explicit_output=explicit_output,
+        run_dir=run_dir,
+        base_seed=seed,
+        num_iterations=1,
+    )[0]
 
 
 def build_iterations(
