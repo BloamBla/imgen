@@ -129,6 +129,14 @@ def main() -> int:
 
         try:
             prompt_str = _build_chat_prompt(tokenizer, system, user)
+            # v0.5 python N-5: ``verbose=False`` is load-bearing — the
+            # runner uses stdout for the JSON response payload, so any
+            # progress prints from mlx_lm.generate would corrupt the
+            # caller's JSON parse. Re-validate on every mflux pin bump
+            # (mlx_lm is transitively pinned via mflux); a future mlx_lm
+            # release that adds a non-verbose-suppressed log channel
+            # (warnings, debug, etc.) would silently mix into our JSON
+            # output and break parse_runner_response.
             output = generate(
                 model, tokenizer,
                 prompt=prompt_str,

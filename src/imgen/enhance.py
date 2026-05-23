@@ -56,6 +56,7 @@ __all__ = [
     "parse_runner_response",
     "replace_prompt_in_cmd",
     "run_with_mlx_lm",
+    "is_enhanceable",
     "should_enhance",
 ]
 
@@ -122,6 +123,36 @@ class EnhanceResult:
 # ── Decision predicates ─────────────────────────────────────────────────
 
 
+def is_enhanceable(
+    prompt: str,
+    *,
+    max_input_bytes: int = DEFAULT_MAX_INPUT_BYTES,
+) -> bool:
+    """Pure content check: does this prompt's text allow enhancement?
+
+    Returns False if the prompt is empty / whitespace-only or exceeds
+    ``max_input_bytes`` after UTF-8 encoding. Says nothing about the
+    feature-enabled flag — call sites that already know enhancement is
+    on can use this directly; everywhere else should use
+    :func:`should_enhance` which also gates on ``enabled``.
+
+    The byte cap (not char cap) matches what tokenisers see — Cyrillic
+    inputs are 2x size, and we want consistent behaviour for users
+    typing in both RU and EN.
+
+    Split out of :func:`should_enhance` in v0.6.4 per the v0.5 architect
+    NIT #1 — the orchestrator's ``should_enhance(p, enabled=True)``
+    hardcoding the ``True`` read oddly. The orchestrator now calls
+    :func:`is_enhanceable` directly; the public ``should_enhance``
+    stays as the high-level "should we enhance this at all?" gate.
+    """
+    if not prompt.strip():
+        return False
+    if len(prompt.encode("utf-8")) > max_input_bytes:
+        return False
+    return True
+
+
 def should_enhance(
     prompt: str,
     *,
@@ -136,17 +167,15 @@ def should_enhance(
       * the prompt exceeds ``max_input_bytes`` after UTF-8 encoding
         (too big for the LLM context window to add value)
 
-    The byte cap (not char cap) matches what tokenisers see — Cyrillic
-    inputs are 2x size, and we want consistent behaviour for users
-    typing in both RU and EN.
+    The empty / too-long checks delegate to :func:`is_enhanceable`
+    (v0.6.4 split). External callers use this function as the high-
+    level "should we enhance this at all?" gate; internal call sites
+    that have already committed to the enhance path use
+    :func:`is_enhanceable` directly.
     """
     if not enabled:
         return False
-    if not prompt.strip():
-        return False
-    if len(prompt.encode("utf-8")) > max_input_bytes:
-        return False
-    return True
+    return is_enhanceable(prompt, max_input_bytes=max_input_bytes)
 
 
 # ── Message formatting ──────────────────────────────────────────────────
@@ -508,6 +537,20 @@ def run_with_mlx_lm(
             f"output. stderr tail: {stderr_tail!r}"
         )
 
+    if result.returncode == 0 and not result.stdout.strip():
+        # Defensive (v0.5 python I-3): clean exit but empty stdout.
+        # Shouldn't be reachable — enhance_runner always emits JSON on
+        # success — but a future bug there would otherwise tumble into
+        # parse_runner_response → JSONDecodeError with a confusing
+        # "Expecting value" trace. Surface a clean RunnerError instead
+        # so the orchestrator can fall back per-item with
+        # ``fallback_reason="runner_error"``.
+        stderr_tail = (result.stderr or "").strip()[-500:]
+        raise RunnerError(
+            "enhance_runner exited 0 with no stdout — runner contract "
+            "violated. stderr tail: " + repr(stderr_tail)
+        )
+
     return parse_runner_response(result.stdout, expected_count=len(items))
 
 
@@ -601,11 +644,14 @@ def enhance_iteration_prompts(
             for p in iteration_prompts
         ]
 
-    # Decide per-prompt whether it's enhancement-eligible.
+    # Decide per-prompt whether it's enhancement-eligible. We're
+    # already inside the "enhance is on" code path so the high-level
+    # should_enhance gate is redundant — use is_enhanceable directly
+    # for the per-prompt content check. (v0.5 architect NIT #1.)
     enhanceable: list[int] = []  # indices of prompts to pass to LLM
     pre_results: list[EnhanceResult | None] = [None] * n
     for i, p in enumerate(iteration_prompts):
-        if not should_enhance(p, enabled=True):
+        if not is_enhanceable(p):
             # Stamp the right reason based on which gate tripped.
             if not p.strip():
                 reason = "empty_input"

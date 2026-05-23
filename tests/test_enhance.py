@@ -26,8 +26,44 @@ from imgen.enhance import (
     check_invariants,
     decide_final_prompt,
     extract_enhanced_text,
+    is_enhanceable,
     should_enhance,
 )
+
+
+# ── is_enhanceable (v0.6.4 split out of should_enhance) ────────────────
+
+
+class TestIsEnhanceable:
+    """Pure content check — empty / too-long. No ``enabled`` flag.
+    Split from should_enhance per v0.5 architect NIT #1 so the
+    orchestrator inside the enhance code path can drop the
+    ``enabled=True`` hardcoded tautology.
+    """
+
+    def test_normal_prompt_returns_true(self):
+        assert is_enhanceable("Restyle this person as anime") is True
+
+    def test_empty_returns_false(self):
+        assert is_enhanceable("") is False
+
+    def test_whitespace_only_returns_false(self):
+        assert is_enhanceable("   \n\t  ") is False
+
+    def test_at_max_input_passes(self):
+        assert is_enhanceable("a" * 2048) is True
+
+    def test_above_max_input_returns_false(self):
+        assert is_enhanceable("a" * 2049) is False
+
+    def test_custom_max_input_bytes(self):
+        assert is_enhanceable("a" * 50, max_input_bytes=49) is False
+        assert is_enhanceable("a" * 50, max_input_bytes=50) is True
+
+    def test_byte_cap_handles_multibyte(self):
+        # Cyrillic 'я' = 2 bytes UTF-8; 10 chars = 20 bytes.
+        assert is_enhanceable("я" * 10, max_input_bytes=20) is True
+        assert is_enhanceable("я" * 10, max_input_bytes=19) is False
 
 
 # ── should_enhance ──────────────────────────────────────────────────────
