@@ -320,6 +320,99 @@ class TestBuildRefineIteration:
         assert it.seed == 12345
 
 
+class TestAssembleNakedIteration:
+    """v0.7.8 refactor: `_assemble_iteration_no_style` is the shared
+    core invoked by both `build_draw_iterations` (with input_path=None)
+    and `build_refine_iteration` (with input_path set). Lock-in
+    tests verify the helper handles both modes symmetrically and
+    that the Iteration field shape doesn't drift when called
+    directly vs through the wrappers."""
+
+    def test_draw_mode_omits_image_path_in_cmd(self, tmp_path):
+        from imgen.backends import BACKENDS
+        from imgen.cmd_helpers import _assemble_iteration_no_style
+        it = _assemble_iteration_no_style(
+            args=_make_args(),
+            prompt="a samurai",
+            merged_defaults=DEFAULTS,
+            be=BACKENDS["flux-dev"],
+            binary=Path("/fake/mflux-generate"),
+            input_path=None,
+            output_path=tmp_path / "out.png",
+            width=1024, height=1024,
+            seed=42,
+            style_name="draw",
+        )
+        assert it.style_name == "draw"
+        # t2i: --image-path / --image-paths argv pair omitted
+        assert "--image-path" not in it.cmd
+        assert "--image-paths" not in it.cmd
+
+    def test_refine_mode_emits_image_paths_in_cmd(self, tmp_path):
+        from imgen.backends import BACKENDS
+        from imgen.cmd_helpers import _assemble_iteration_no_style
+        input_path = tmp_path / "in.png"
+        it = _assemble_iteration_no_style(
+            args=_make_args(),
+            prompt="refine",
+            merged_defaults=DEFAULTS,
+            be=BACKENDS["flux2-klein-edit-9b"],
+            binary=Path("/fake/mflux-generate-flux2-edit"),
+            input_path=input_path,
+            output_path=tmp_path / "out.png",
+            width=1536, height=1536,
+            seed=42,
+            style_name="refine",
+        )
+        assert it.style_name == "refine"
+        # i2i: --image-paths flag pair carries the input path
+        assert "--image-paths" in it.cmd
+        idx = it.cmd.index("--image-paths")
+        assert it.cmd[idx + 1] == str(input_path)
+
+    def test_empty_negative_no_style_inherited(self, tmp_path):
+        """Naked = empty Style preset → negative=""; locks the
+        intentional drop of style-inherited negative prompts."""
+        from imgen.backends import BACKENDS
+        from imgen.cmd_helpers import _assemble_iteration_no_style
+        it = _assemble_iteration_no_style(
+            args=_make_args(),
+            prompt="refine",
+            merged_defaults=DEFAULTS,
+            be=BACKENDS["flux2-klein-edit-9b"],
+            binary=Path("/fake/mflux"),
+            input_path=tmp_path / "in.png",
+            output_path=tmp_path / "out.png",
+            width=1536, height=1536,
+            seed=42,
+            style_name="refine",
+        )
+        assert it.negative == ""
+        # mflux argv must NOT include --negative-prompt for empty case
+        # (build_mflux_cmd gates emission on non-empty negative)
+        assert "--negative-prompt" not in it.cmd
+
+    def test_style_name_passes_through(self, tmp_path):
+        """Caller controls the style_name label; helper doesn't
+        hard-code it. Future video orchestrator can pass e.g.
+        'video-frame' through the same helper."""
+        from imgen.backends import BACKENDS
+        from imgen.cmd_helpers import _assemble_iteration_no_style
+        it = _assemble_iteration_no_style(
+            args=_make_args(),
+            prompt="x",
+            merged_defaults=DEFAULTS,
+            be=BACKENDS["flux2-klein-edit-9b"],
+            binary=Path("/fake/mflux"),
+            input_path=tmp_path / "in.png",
+            output_path=tmp_path / "out.png",
+            width=1024, height=1024,
+            seed=42,
+            style_name="arbitrary-label",
+        )
+        assert it.style_name == "arbitrary-label"
+
+
 # ── cmd_refine integration (dry-run) ─────────────────────────────────
 
 

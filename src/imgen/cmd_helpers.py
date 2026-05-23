@@ -1304,6 +1304,102 @@ def _draw_output_path_for_index(
     return next_available_path(run_dir, indexed, suffix=".png")
 
 
+def _assemble_iteration_no_style(
+    *,
+    args,
+    prompt: str,
+    merged_defaults: dict,
+    be,
+    binary: Path,
+    input_path: Path | None,
+    output_path: Path,
+    width: int,
+    height: int,
+    seed: int,
+    style_name: str,
+) -> Iteration:
+    """Shared core for `build_draw_iterations` + `build_refine_iteration`
+    (v0.7.8 refactor — closes python NIT #5 + architect NIT #F from
+    the v0.7.5 review trail; the 3rd-instance-becomes-pattern threshold
+    was crossed when `imgen refine` shipped).
+
+    Contract: ``style_name`` is a FREE-FORM LABEL recorded on the
+    returned :class:`Iteration` for history.jsonl + UI display
+    purposes ONLY. The helper does NOT load a :class:`Style` preset
+    by this name — preset is always an empty :class:`Style` (no
+    prompt, no negative, no scope_suffix, no LoRAs). Pass
+    ``style_name="draw"`` / ``"refine"`` / ``"video-frame"`` etc.;
+    if you need real style preset loading, route through
+    :func:`build_iterations` instead.
+
+    "No-style" = empty :class:`Style` preset, no scope-substitution
+    prompt rewrite, no cross-style incompat-LoRA accumulator. These
+    are the distinguishing concerns of :func:`build_iterations` (i2i
+    with real style presets) — which is intentionally NOT reduced
+    through this helper because its per-style loop owns prompt
+    augmentation + accumulation logic that doesn't generalise to
+    the empty-preset callers.
+
+    Pure: no I/O, no subprocess, no mutation. Caller (cmd_draw /
+    cmd_refine) owns the output-path naming choice (slug-with-index
+    vs ``<stem>-refined.png``) and the iteration count (N vs 1).
+
+    Trade-off note: collapses two callers' independent
+    `_resolve_iteration_params` + `_resolve_iteration_loras` calls
+    into the helper, so `build_draw_iterations` with N>=2 now
+    resolves LoRAs N times (was 1× pre-refactor — micro-optimisation
+    dropped). Both helpers are pure-string-filter pure-function;
+    cost is measured-negligible on N up to the 32 cap.
+    """
+    preset = Style()
+    params = _resolve_iteration_params(
+        args=args, preset=preset, merged_defaults=merged_defaults,
+    )
+    negative = ""  # empty preset has no negative; refine intentionally
+    #                drops style-inherited negatives that would fight
+    #                the Hires-Fix goal of preserving input.
+    lora_resolution = _resolve_iteration_loras(
+        preset=preset, args=args, be=be, prompt=prompt,
+    )
+    # Note: ``lora_resolution.incompat_loras`` is intentionally
+    # dropped on the floor here — naked callers have no cross-style
+    # accumulator like :func:`build_iterations`' per-style loop. A
+    # user --lora pointing at a backend-incompat LoRA gets silently
+    # filtered (warn is on the build_iterations path only). Matches
+    # pre-v0.7.8 behaviour of both draw + refine.
+    cmd = build_mflux_cmd(
+        binary=binary,
+        backend=be,
+        input_path=input_path,
+        output_path=output_path,
+        prompt=lora_resolution.prompt_with_triggers,
+        negative=negative,
+        quantize=params.final_quantize,
+        steps=params.final_steps,
+        guidance=params.final_guidance,
+        strength=params.final_strength,
+        seed=seed,
+        width=width,
+        height=height,
+        mlx_cache_gb=merged_defaults["mlx_cache_gb"],
+        battery_stop=merged_defaults["battery_stop"],
+        loras=lora_resolution.effective_loras,
+    )
+    return Iteration(
+        style_name=style_name,
+        prompt=lora_resolution.prompt_with_triggers,
+        negative=negative,
+        final_steps=params.final_steps,
+        final_quantize=params.final_quantize,
+        final_guidance=params.final_guidance,
+        final_strength=params.final_strength,
+        output_path=output_path,
+        cmd=cmd,
+        loras=lora_resolution.compatible_loras,
+        seed=seed,
+    )
+
+
 def build_draw_iterations(
     *,
     args,
@@ -1357,22 +1453,6 @@ def build_draw_iterations(
             "(single --output FILE can't fan out to N files)"
         )
 
-    preset = Style()  # empty preset — no prompt/negative/guidance/
-    #                   strength/scene_suffix/loras default into the
-    #                   merged_defaults precedence branches.
-    params = _resolve_iteration_params(
-        args=args, preset=preset, merged_defaults=merged_defaults,
-    )
-    negative = ""
-
-    # LoRA stack resolution is identical across the N iterations (same
-    # prompt → same triggers → same compat-filtered stack). Compute
-    # ONCE outside the loop.
-    lora_resolution = _resolve_iteration_loras(
-        preset=preset, args=args, be=be, prompt=prompt,
-    )
-    prompt_with_triggers = lora_resolution.prompt_with_triggers
-
     slug = prompt_slug(prompt)
     iterations: list[Iteration] = []
     for i in range(num_iterations):
@@ -1387,10 +1467,11 @@ def build_draw_iterations(
         if explicit_output is not None:
             output_path = explicit_output
         else:
-            assert run_dir is not None, (
-                "build_draw_iterations: either explicit_output or run_dir "
-                "must be provided"
-            )
+            if run_dir is None:
+                raise ValueError(
+                    "build_draw_iterations: either explicit_output or "
+                    "run_dir must be provided"
+                )
             output_path = _draw_output_path_for_index(
                 run_dir=run_dir,
                 slug=slug,
@@ -1398,40 +1479,20 @@ def build_draw_iterations(
                 num_iterations=num_iterations,
             )
 
-        cmd = build_mflux_cmd(
+        # v0.7.8: shared core with build_refine_iteration. Naked
+        # iteration (empty Style preset, no incompat accumulator).
+        iterations.append(_assemble_iteration_no_style(
+            args=args,
+            prompt=prompt,
+            merged_defaults=merged_defaults,
+            be=be,
             binary=binary,
-            backend=be,
             input_path=None,  # t2i: no input photo
             output_path=output_path,
-            prompt=prompt_with_triggers,
-            negative=negative,
-            quantize=params.final_quantize,
-            steps=params.final_steps,
-            guidance=params.final_guidance,
-            strength=params.final_strength,
-            seed=iter_seed,
             width=width,
             height=height,
-            mlx_cache_gb=merged_defaults["mlx_cache_gb"],
-            battery_stop=merged_defaults["battery_stop"],
-            loras=lora_resolution.effective_loras,
-        )
-
-        iterations.append(Iteration(
-            style_name="draw",
-            prompt=prompt_with_triggers,
-            negative=negative,
-            final_steps=params.final_steps,
-            final_quantize=params.final_quantize,
-            final_guidance=params.final_guidance,
-            final_strength=params.final_strength,
-            output_path=output_path,
-            cmd=cmd,
-            loras=lora_resolution.compatible_loras,
-            # v0.7.3 fix: per-iteration seed lives on the Iteration
-            # itself so run_one_iteration's history serialiser writes
-            # the correct ladder-step seed (not ctx.seed = base).
             seed=iter_seed,
+            style_name="draw",
         ))
 
     return iterations
@@ -1514,12 +1575,6 @@ def build_refine_iteration(
     Pure: no subprocess, no I/O beyond the next_available_path
     probe.
     """
-    preset = Style()
-    params = _resolve_iteration_params(
-        args=args, preset=preset, merged_defaults=merged_defaults,
-    )
-    negative = ""  # Refine: no style-inherited negative prompt.
-
     if explicit_output is not None:
         output_path = explicit_output
     else:
@@ -1534,42 +1589,20 @@ def build_refine_iteration(
             run_dir, f"{input_path.stem}-refined", suffix=".png",
         )
 
-    lora_resolution = _resolve_iteration_loras(
-        preset=preset, args=args, be=be, prompt=prompt,
-    )
-    prompt_with_triggers = lora_resolution.prompt_with_triggers
-
-    cmd = build_mflux_cmd(
+    # v0.7.8: shared core with build_draw_iterations. Naked iteration
+    # (empty Style preset, no incompat accumulator).
+    return _assemble_iteration_no_style(
+        args=args,
+        prompt=prompt,
+        merged_defaults=merged_defaults,
+        be=be,
         binary=binary,
-        backend=be,
         input_path=input_path,
         output_path=output_path,
-        prompt=prompt_with_triggers,
-        negative=negative,
-        quantize=params.final_quantize,
-        steps=params.final_steps,
-        guidance=params.final_guidance,
-        strength=params.final_strength,
-        seed=seed,
         width=width,
         height=height,
-        mlx_cache_gb=merged_defaults["mlx_cache_gb"],
-        battery_stop=merged_defaults["battery_stop"],
-        loras=lora_resolution.effective_loras,
-    )
-
-    return Iteration(
-        style_name="refine",
-        prompt=prompt_with_triggers,
-        negative=negative,
-        final_steps=params.final_steps,
-        final_quantize=params.final_quantize,
-        final_guidance=params.final_guidance,
-        final_strength=params.final_strength,
-        output_path=output_path,
-        cmd=cmd,
-        loras=lora_resolution.compatible_loras,
         seed=seed,
+        style_name="refine",
     )
 
 
