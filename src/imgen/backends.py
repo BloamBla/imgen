@@ -273,6 +273,41 @@ BUILTIN_BACKENDS: dict[str, Backend] = {
         # user at the right gate.
         hf_gated_repo="black-forest-labs/FLUX.1-dev",
     ),
+    # v0.7.5: FLUX.2-klein-9B (distilled, image-conditioned editing variant)
+    # via `mflux-generate-flux2-edit`. The primary use case is Hires-Fix
+    # refine pass (input 1024² → output 1536²/2048² with low strength to
+    # preserve composition + sharpen detail). FLUX.2-klein natively
+    # supports up to 4 MP (2048×2048); FLUX.1 stretched past 1.5K showed
+    # tiling artifacts, this fixes the ceiling for high-res refine.
+    #
+    # Memory math on M2 Pro 32GB: klein-9B Q4 weights ~4.5 GB +
+    # text encoders ~2-3 GB + 2K² activations ~4-6 GB ≈ 12-14 GB. Q4
+    # is the safe default. Q8 would be ~9 GB weights + same overhead
+    # = ~16-18 GB — tight but feasible.
+    #
+    # supports_strength=False: FLUX.2-klein-edit doesn't take
+    # `--image-strength` (the Kontext-specific flag); it uses
+    # cross-attention image conditioning instead. cmd_generate /
+    # cmd_refine still resolve a strength value into history for
+    # record-keeping, just not emitted to argv.
+    #
+    # LoRA: --lora-paths supported by mflux 0.17.5's flux2-edit
+    # binary. lora_compat_group "flux2-klein-9b" is unique — FLUX.1
+    # LoRAs won't load (different architecture). Per-LoRA flux2
+    # verification round is v0.7.x candidate ([[feedback-kontext-lora-
+    # compat]] discipline). enhance not wired (v0.7.6+ candidate).
+    "flux2-klein-edit-9b": Backend(
+        binary="mflux-generate-flux2-edit",
+        needs_token=True,
+        image_flag="--image-paths",
+        supports_strength=False,
+        supports_negative=True,
+        extra_args=("-m", "flux2-klein-9b"),
+        enhance_system_prompt=None,
+        enhance_invariants=(),
+        lora_compat_group="flux2-klein-9b",
+        hf_gated_repo="black-forest-labs/FLUX.2-klein-9B",
+    ),
 }
 
 # Backwards-compatible alias. Points at the built-in dict only — DO NOT

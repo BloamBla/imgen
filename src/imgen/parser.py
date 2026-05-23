@@ -348,6 +348,20 @@ def build_parser(
     )
     _add_draw_args(d, defaults)
 
+    # refine — v0.7.5 Hires-Fix path: take an existing 1024² image and
+    # produce a higher-res (--scale 1.5 → 1536, --scale 2 → 2048)
+    # version with low-strength i2i refine for sharper detail. Closes
+    # the canonical explore→refine pipeline: `imgen draw "..." -n 5
+    # --preview` → pick winner → `imgen refine <winner.png>`. Default
+    # backend = flux2-klein-edit-9b (FLUX.2-klein-9B distilled edit
+    # variant — native ~4 MP support, sweet spot for 1.5-2K refine).
+    r = sub.add_parser(
+        "refine",
+        help="Hires-Fix: upscale + refine an existing image to ~1.5K/2K. "
+             "v0.7.5+ — uses FLUX.2-klein-9B via mflux-generate-flux2-edit.",
+    )
+    _add_refine_args(r, defaults)
+
     return p
 
 
@@ -637,6 +651,113 @@ def _add_draw_args(
              "try anyway. Use at your own risk.",
     )
     _add_enhance_args(p)
+    _add_lora_args(p)
+
+
+_DEFAULT_REFINE_PROMPT = (
+    "Same scene and composition. Refine with sharper detail, "
+    "ultra-detailed textures, professional photography quality, "
+    "preserve subject identity, no artifacts, 8K clarity."
+)
+
+
+def _add_refine_args(
+    p: argparse.ArgumentParser,
+    defaults: dict[str, Any],
+) -> None:
+    """Argparse stanza for `imgen refine <input>` — v0.7.5 Hires-Fix path.
+
+    Positional <input> = existing image (typically 1024² from a prior
+    ``imgen draw`` or any source). --scale OR --width/--height (mutex)
+    sets target resolution. Default backend FLUX.2-klein-edit-9b.
+    """
+    p.add_argument(
+        "input", help="Path to existing image to refine (PNG/JPG/etc).",
+    )
+    # --scale OR --width/--height. Mutex enforced in cmd_refine; argparse
+    # mutex groups don't play cleanly with three flags.
+    p.add_argument(
+        "--scale", type=_float_range(1.0, 4.0), default=None,
+        help="Multiply input dimensions by N (rounded to multiple of 16). "
+             "Default 1.5 (1024² → 1536²). 2.0 → 2048² (native FLUX.2-klein "
+             "cap of 4 MP). Mutex with --width/--height.",
+    )
+    p.add_argument(
+        "--width", type=_int_range(64, 4096), default=None,
+        help="Explicit output width (64..4096). Mutex with --scale.",
+    )
+    p.add_argument(
+        "--height", type=_int_range(64, 4096), default=None,
+        help="Explicit output height. Mutex with --scale.",
+    )
+    p.add_argument(
+        "--prompt", default=None,
+        help=f"Refine prompt override. Default focuses on detail/sharpness "
+             f"while preserving composition (see imgen --help-refine-prompt).",
+    )
+    output_group = p.add_mutually_exclusive_group()
+    output_group.add_argument(
+        "-o", "--output", type=_safe_output_path,
+        help=f"Output path with .png/.jpg suffix (bypasses run-folder layout; "
+             f"default: {DEFAULT_OUTPUT_DIR}/<start-ts>/<input-stem>-refined.png)",
+    )
+    output_group.add_argument(
+        "--output-dir", type=str, default=None,
+        help="Parent directory for the auto-named run folder.",
+    )
+    p.add_argument(
+        "--steps", type=_int_range(1, 200), default=None,
+        help=f"Inference steps (default {defaults['steps']}). FLUX.2-klein "
+             f"distilled converges fast; 20-25 is typical for refine.",
+    )
+    p.add_argument(
+        "-g", "--guidance", type=_float_range(0.5, 15.0), default=None,
+        help=f"Guidance scale (default {defaults['guidance']}).",
+    )
+    p.add_argument(
+        "--strength", type=_float_range(0.0, 1.0), default=0.3,
+        help="Refine strength (default 0.3 — low so input composition is "
+             "preserved; raise to 0.5+ for more aggressive restyling). "
+             "FLUX.2-klein-edit doesn't directly consume this — currently "
+             "recorded in history for metadata only.",
+    )
+    p.add_argument(
+        "--seed", type=_int_range(0, 2**32 - 1), default=None,
+        help="Seed (default: random)",
+    )
+    p.add_argument(
+        "--backend", choices=list_backends(),
+        default="flux2-klein-edit-9b",
+        help="Backend (default flux2-klein-edit-9b — FLUX.2-klein-9B distilled "
+             "edit variant). Override with --backend flux to use FLUX.1-Kontext-"
+             "dev (faster, already cached, lower native res ceiling).",
+    )
+    p.add_argument(
+        "-q", "--quantize", type=int, choices=[3, 4, 5, 6, 8],
+        default=4,
+        help="Quantization (default 4 — safe for 2K² activations on 32GB "
+             "Mac with klein-9B). Use 8 for max quality if you have headroom.",
+    )
+    p.add_argument(
+        "-p", "--preview", action="store_true",
+        help="Fast preview mode (smaller resolution + steps).",
+    )
+    p.add_argument(
+        "--no-open", action="store_true",
+        help="Don't open the result in Preview",
+    )
+    p.add_argument(
+        "-y", "--yes", action="store_true",
+        help="Skip the [y/N] confirm gate",
+    )
+    p.add_argument(
+        "--dry-run", action="store_true",
+        help="Show mflux command without running",
+    )
+    p.add_argument(
+        "--force", action="store_true",
+        help="Skip resource checks (RAM, parallel mflux, etc.)",
+    )
     _add_lora_args(p)
 
 

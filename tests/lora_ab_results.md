@@ -183,6 +183,29 @@ Known anime/pixar gap: HF Kontext-tagged anime LoRAs are sparse (only `SakikoLab
 4. If `WIN`: separate commit to `src/imgen/styles.py` adds the LoRA to `BUILTIN_STYLES[<style>]["loras"]`. Reference the row in the commit message.
 5. Never delete rows — losers are documentation. Future researchers (including future-you) need to know which candidates were already disqualified.
 
+## 🎯 v0.7.4 flux-dev (t2i) A/B round (2026-05-23)
+
+The [[feedback-kontext-lora-compat]] lesson EXTENDS to FLUX.1-dev t2i: not all "FLUX.1-dev base_model"-labelled LoRAs on HuggingFace actually load at inference time. **n=3 confirmation at runtime: 3 of 5 LoRAs crash with the same `(1,4608,16) × (64,3072)` shape signature** as the v0.6.0 / v0.6.3 Kontext crashes. Verify-by-inference discipline is mandatory across the entire FLUX family, not just Kontext.
+
+Reference image: user-supplied baseline. Prompt: `"a samurai on a misty mountain at dawn"`. Seed: `1088118853` across all rows (pinned for apples-to-apples A/B on the LoRA dimension). Backend: `flux-dev` (FLUX.1-dev t2i). Quant Q8, 20 steps, 1024×1024, guidance 3.5.
+
+Outputs in `~/Desktop/imgen/lora-ab-2026-05-23/`.
+
+| # | LoRA | Trigger | Phase 1 | Notes |
+|---|---|---|---|---|
+| 00 | (baseline, no LoRA) | — | ✅ | Anchor for the A/B visual comparison |
+| 01 | `Shakker-Labs/FLUX.1-dev-LoRA-add-details` | none | ✅ WORKS | Detail boost without trigger; same Shakker `flux-1-dev-non-commercial-license` |
+| 02 | `XLabs-AI/flux-RealismLora` | none | ✅ WORKS | Pushes toward photo-realism; 15.6k DL/mo |
+| 03 | `strangerzonehf/Flux-Super-Realism-LoRA` | `Super Realism` | ❌ **CRASH** | Same `(1,4608,16) × (64,3072)` shape signature. MIT license but irrelevant — doesn't load. |
+| 04 | `prithivMLmods/Flux.1-Dev-LoRA-HDR-Realism` | `HDR` | ❌ **CRASH** | Same signature. Experimental repo (195 DL/mo) — author probably didn't test against latest mflux. |
+| 05 | `Shakker-Labs/FLUX.1-dev-LoRA-blended-realistic-illustration` | none | ❌ **CRASH** | Same signature. Important data point: even same-author (Shakker) LoRAs have different rank/projection — `add-details` works, `blended-illustration` crashes. The compat fault isn't the publisher, it's the per-LoRA training shape. |
+
+**Phase 2 verdict**: pending user A/B between 00 / 01 / 02. Two real winners survived shape-mismatch; pick is between "pure detail boost" (01) and "realism shift" (02). Outcome will be documented here + the README "recommended `--lora` for `imgen draw`" line will land in v0.7.5+ once user decides.
+
+**Lesson cross-link**: [[feedback-kontext-lora-compat]] originally said "HF Kontext-tag ≠ Kontext compat". Now generalised: **HF FLUX.1-dev-base label ≠ flux-dev t2i compat either.** The shape-mismatch class of bug spans the entire FLUX family; rank/projection compat is per-LoRA, not per-base-model.
+
+---
+
 ## Why this file exists
 
 Per the v0.6 design memo: A/B-gated promotion was a pre-ship requirement that v0.6.0 skipped under "ship first, A/B after" pressure. The skip caused the v0.6.0→v0.6.1 burn. This file is the discipline gate that prevents that pattern from repeating: nothing enters `BUILTIN_STYLES["loras"]` without a row here showing `WIN`.

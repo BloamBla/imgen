@@ -97,6 +97,7 @@ __all__ = [
     "build_draw_iteration",
     "build_draw_iterations",
     "build_iterations",
+    "build_refine_iteration",
     "emit_gated_repo_hint_if_failed",
     "check_prompt_style_compat",
     "estimate_one_seconds",
@@ -1470,6 +1471,105 @@ def build_draw_iteration(
         base_seed=seed,
         num_iterations=1,
     )[0]
+
+
+def build_refine_iteration(
+    *,
+    args,
+    input_path: Path,
+    prompt: str,
+    merged_defaults: dict,
+    be,
+    binary: Path,
+    width: int,
+    height: int,
+    explicit_output: Path | None,
+    run_dir: Path | None,
+    seed: int,
+) -> Iteration:
+    """Build a single :class:`Iteration` for `imgen refine` (v0.7.5).
+
+    Refine is a Hires-Fix i2i pass — input image at any resolution →
+    output at scaled resolution (typically 1.5× / 2× / fixed
+    --width/--height). NO style machinery (refine has a fixed prompt
+    or user override), NO scope substitution, NO trigger-word
+    prepending against built-in style LoRAs.
+
+    Differences from :func:`build_draw_iteration` (t2i):
+      * Has an input photo (``input_path``) — flows through
+        ``--image-paths`` (or ``--image-path``) argv via
+        :func:`build_mflux_cmd`.
+      * Single iteration always (no ladder; --num-iterations is
+        a draw-only concept for now).
+      * Output naming: ``<run_dir>/<input.stem>-refined.png`` to
+        mark the file as the refined variant (vs the bare
+        ``<slug>.png`` for draw).
+
+    Reuses :func:`_resolve_iteration_params` and
+    :func:`_resolve_iteration_loras` with a stub empty
+    :class:`Style` — same pattern as build_draw_iterations. CLI
+    ``--lora REF`` flows through; preset LoRAs are intentionally
+    not in play.
+
+    Pure: no subprocess, no I/O beyond the next_available_path
+    probe.
+    """
+    preset = Style()
+    params = _resolve_iteration_params(
+        args=args, preset=preset, merged_defaults=merged_defaults,
+    )
+    negative = ""  # Refine: no style-inherited negative prompt.
+
+    if explicit_output is not None:
+        output_path = explicit_output
+    else:
+        assert run_dir is not None, (
+            "build_refine_iteration: either explicit_output or run_dir "
+            "must be provided"
+        )
+        # `<input.stem>-refined.png`. next_available_path handles
+        # collisions if the user re-refines into the same run-dir.
+        output_path = next_available_path(
+            run_dir, f"{input_path.stem}-refined", suffix=".png",
+        )
+
+    lora_resolution = _resolve_iteration_loras(
+        preset=preset, args=args, be=be, prompt=prompt,
+    )
+    prompt_with_triggers = lora_resolution.prompt_with_triggers
+
+    cmd = build_mflux_cmd(
+        binary=binary,
+        backend=be,
+        input_path=input_path,
+        output_path=output_path,
+        prompt=prompt_with_triggers,
+        negative=negative,
+        quantize=params.final_quantize,
+        steps=params.final_steps,
+        guidance=params.final_guidance,
+        strength=params.final_strength,
+        seed=seed,
+        width=width,
+        height=height,
+        mlx_cache_gb=merged_defaults["mlx_cache_gb"],
+        battery_stop=merged_defaults["battery_stop"],
+        loras=lora_resolution.effective_loras,
+    )
+
+    return Iteration(
+        style_name="refine",
+        prompt=prompt_with_triggers,
+        negative=negative,
+        final_steps=params.final_steps,
+        final_quantize=params.final_quantize,
+        final_guidance=params.final_guidance,
+        final_strength=params.final_strength,
+        output_path=output_path,
+        cmd=cmd,
+        loras=lora_resolution.compatible_loras,
+        seed=seed,
+    )
 
 
 def build_iterations(

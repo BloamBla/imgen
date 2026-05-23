@@ -99,7 +99,7 @@ class BatchContext:
     args: Any
     batch_id: str | None
     env: dict[str, str]
-    command: Literal["generate", "batch", "draw"] = "generate"
+    command: Literal["generate", "batch", "draw", "refine"] = "generate"
 
     # Opt out of hashing — dict/Namespace fields make the auto-generated
     # __hash__ blow up on any caller that tries to use BatchContext as

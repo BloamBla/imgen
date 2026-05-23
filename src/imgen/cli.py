@@ -46,6 +46,7 @@ from .commands import (
     cmd_generate,
     cmd_history,
     cmd_last,
+    cmd_refine,
     cmd_replay,
     cmd_setup,
     cmd_upgrade,
@@ -57,7 +58,7 @@ from .paths import CONFIG_FILE
 
 _KNOWN_SUBCOMMANDS = {
     "setup", "doctor", "upgrade", "clean",
-    "history", "last", "replay", "generate", "batch", "draw",
+    "history", "last", "replay", "generate", "batch", "draw", "refine",
 }
 
 _HANDLERS = {
@@ -71,6 +72,7 @@ _HANDLERS = {
     "generate": cmd_generate,
     "batch": cmd_batch,
     "draw": cmd_draw,
+    "refine": cmd_refine,
 }
 
 
