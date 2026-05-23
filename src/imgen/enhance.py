@@ -104,8 +104,18 @@ class EnhanceResult:
     when the LLM's expansion survived all checks and is in
     ``final_prompt``; False means we fell back to original.
     ``fallback_reason`` explains why fallback happened (or is None if
-    no fallback). ``raw_llm_output`` is kept for history / debug —
-    None when the LLM was never invoked (disabled / too-long input).
+    no fallback) — a coarse token (``"empty_input"`` / ``"input_too
+    _long"`` / ``"empty_llm_output"`` / ``"invariant_violated"`` /
+    ``"runner_error"`` / ``"user_opt_out"`` / ``"not_supported_by_
+    backend"``). ``fallback_detail`` (v0.6.4) carries the verbose
+    diagnostic string when the coarse token doesn't capture the full
+    why — currently populated only for ``invariant_violated`` (the
+    ``check_invariants`` reason naming the dropped clause(s)). None
+    elsewhere. v0.5 python I-4: the coarse token alone was useful for
+    aggregation but lost the actual violation detail, making the
+    history hard to debug after the fact.
+    ``raw_llm_output`` is kept for history / debug — None when the LLM
+    was never invoked (disabled / too-long input).
     """
     final_prompt: str
     original_prompt: str
@@ -113,6 +123,7 @@ class EnhanceResult:
     fallback_reason: str | None
     was_truncated: bool
     raw_llm_output: str | None
+    fallback_detail: str | None = None
 
     # Match v0.2.5 review precedent (Iteration, BatchContext): explicit
     # ``__hash__ = None`` to opt frozen-slots dataclasses out of set/
@@ -348,6 +359,11 @@ def decide_final_prompt(
             fallback_reason="invariant_violated",
             was_truncated=False,
             raw_llm_output=raw,
+            # v0.5 python I-4: pass the verbose check_invariants reason
+            # (which named clause(s) the LLM dropped) so history /
+            # debug surfaces have more than just the "invariant_
+            # violated" coarse token to work with.
+            fallback_detail=reason,
         )
 
     # Path 5: Valid enhancement — return it (possibly truncated).

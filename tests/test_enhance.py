@@ -331,6 +331,38 @@ class TestDecideFinalPrompt:
         assert result.final_prompt == "Restyle while preserving identity"
         assert result.was_enhanced is False
         assert result.fallback_reason == "invariant_violated"
+        # v0.6.4 python I-4: fallback_detail carries the verbose
+        # check_invariants reason naming the dropped clause, so the
+        # coarse "invariant_violated" token isn't all the history has
+        # to debug post-fact.
+        assert result.fallback_detail is not None
+        assert "preserving" in result.fallback_detail
+
+    def test_non_invariant_fallback_paths_leave_detail_none(self):
+        """v0.6.4 python I-4: fallback_detail is only populated for
+        the invariant_violated path today. Other coarse tokens are
+        self-explanatory; their detail stays None until a future
+        path also benefits from the verbose form."""
+        # empty_llm_output path
+        empty = decide_final_prompt(
+            original="Restyle anime",
+            enhanced_or_none="",
+            invariants=("anime",),
+            max_output_bytes=60_000,
+        )
+        assert empty.fallback_reason == "empty_llm_output"
+        assert empty.fallback_detail is None
+
+        # disabled_reason path
+        disabled = decide_final_prompt(
+            original="Restyle anime",
+            enhanced_or_none=None,
+            invariants=(),
+            max_output_bytes=60_000,
+            disabled_reason="user_opt_out",
+        )
+        assert disabled.fallback_reason == "user_opt_out"
+        assert disabled.fallback_detail is None
 
     def test_valid_enhancement_returned(self):
         result = decide_final_prompt(

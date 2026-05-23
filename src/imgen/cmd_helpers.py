@@ -643,6 +643,13 @@ def run_one_iteration(
             enhance_model if enhance_result.was_enhanced else None
         )
         history_entry["enhance_fallback_reason"] = enhance_result.fallback_reason
+        # v0.5 python I-4 (shipped v0.6.4): verbose diagnostic string
+        # for fallback paths whose coarse token loses detail (currently
+        # only "invariant_violated" — names which clause(s) the LLM
+        # dropped). None for paths where the coarse token IS the full
+        # story. Read-compatible additive field; v=2 readers using
+        # ``entry.get`` won't see it on older entries.
+        history_entry["enhance_fallback_detail"] = enhance_result.fallback_detail
 
     if logger is not None:
         logger.iteration_start(idx, total, style_name, started)

@@ -81,6 +81,16 @@ MFLUX_PIN = "mflux==0.17.5"
 #                          / "empty_input" / "empty_llm_output"
 #                          / "invariant_violated" / "runner_error"
 #                          / "not_supported_by_backend"
+#   enhance_fallback_detail (str|null, v0.6.4+): verbose diagnostic
+#                          string when the coarse fallback_reason
+#                          token loses detail. Currently populated
+#                          only for "invariant_violated" — the
+#                          check_invariants reason names which
+#                          clause(s) the LLM dropped. None for paths
+#                          where the coarse token IS the full story.
+#                          Read-compatible additive field; v=2/v=3
+#                          readers using ``entry.get`` see it as
+#                          missing on entries written before v0.6.4.
 #
 # v=3 (v0.6): added optional ``loras`` field recording the LoRA stack
 # mflux actually saw for the iteration. Architect-CRITICAL #1 from the
