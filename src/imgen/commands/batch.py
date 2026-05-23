@@ -61,6 +61,7 @@ from ..runs import (
 )
 from ..cmd_helpers import (
     apply_enhance_results_to_iterations,
+    apply_enhance_results_to_per_input,
     build_iterations,
     check_prompt_style_compat,
     estimate_one_seconds,
@@ -289,25 +290,18 @@ def cmd_batch(args) -> int:
             backend_obj=be,
             iterations=all_iters,
         )
-        # Splice enhanced prompts back into all_iters AND re-bucket per
-        # input. Sliding cursor preserves per-input group lengths
-        # without assuming uniform M-per-input (future-proof against
-        # per-style skip logic).
-        all_iters = apply_enhance_results_to_iterations(
-            all_iters, enhance_results,
+        # Splice enhanced prompts back into the per-input shape via a
+        # single call (v0.6.4 v0.5 architect IMP #2 — used to be a
+        # sliding-cursor block inline here; the cursor moved into
+        # apply_enhance_results_to_per_input where it's encapsulated +
+        # alignment-asserted). all_iters stays flat for downstream
+        # dry-run / preflight / confirm gate consumption.
+        per_input_iters = apply_enhance_results_to_per_input(
+            per_input_iters, enhance_results,
         )
-        new_per_input_iters: list[
-            tuple[Path, Path, int, int, list[Iteration]]
-        ] = []
-        cursor = 0
-        for input_path, mflux_input, width, height, iters in per_input_iters:
-            group_len = len(iters)
-            new_iters = all_iters[cursor:cursor + group_len]
-            new_per_input_iters.append(
-                (input_path, mflux_input, width, height, new_iters)
-            )
-            cursor += group_len
-        per_input_iters = new_per_input_iters
+        all_iters = [
+            it for _, _, _, _, group in per_input_iters for it in group
+        ]
 
         # `imgen batch` always treats itself as a batch (even N=M=1) so
         # the per-batch log + Finder-open + summary UX is consistent.

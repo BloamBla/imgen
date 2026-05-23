@@ -443,3 +443,125 @@ def test_dry_run_with_enhance_shows_enhanced_prompts(
     assert stub_mflux["calls"] == []
     from imgen.history import load_history
     assert load_history() == []
+
+
+# ── apply_enhance_results_to_per_input — pure (v0.6.4 IMP #2) ──────────
+
+
+class TestApplyEnhanceResultsToPerInput:
+    """v0.6.4 v0.5 architect IMP #2: the cmd_batch sliding-cursor block
+    that re-bucketed a flat enhance_results list back into the per-
+    input-tuple shape moved into a dedicated helper. These tests cover
+    the pure function in isolation (no cmd_batch / no subprocess)."""
+
+    def _make_iter(self, prompt: str, style: str = "anime") -> "Iteration":
+        from imgen.runs import Iteration
+        return Iteration(
+            style_name=style,
+            prompt=prompt,
+            negative="",
+            final_steps=20,
+            final_quantize=4,
+            final_guidance=4.0,
+            final_strength=0.6,
+            output_path=Path(f"/tmp/out-{style}.png"),
+            cmd=["fake-mflux", "--prompt", prompt],
+        )
+
+    def _make_result(self, original: str, enhanced: str | None = None) -> EnhanceResult:
+        if enhanced is None:
+            return EnhanceResult(
+                final_prompt=original,
+                original_prompt=original,
+                was_enhanced=False,
+                fallback_reason="user_opt_out",
+                was_truncated=False,
+                raw_llm_output=None,
+            )
+        return EnhanceResult(
+            final_prompt=enhanced,
+            original_prompt=original,
+            was_enhanced=True,
+            fallback_reason=None,
+            was_truncated=False,
+            raw_llm_output=enhanced,
+        )
+
+    def test_round_trips_uniform_2x3(self):
+        """2 inputs × 3 styles = 6 flat results. Result re-buckets to
+        per-input shape with 3 iterations each. Prompts spliced in."""
+        from imgen.cmd_helpers import apply_enhance_results_to_per_input
+        per_input = [
+            (Path("/tmp/in1.jpg"), Path("/tmp/conv1.jpg"), 640, 896, [
+                self._make_iter("p1-anime", "anime"),
+                self._make_iter("p1-ghibli", "ghibli"),
+                self._make_iter("p1-pixar", "pixar"),
+            ]),
+            (Path("/tmp/in2.jpg"), Path("/tmp/conv2.jpg"), 640, 896, [
+                self._make_iter("p2-anime", "anime"),
+                self._make_iter("p2-ghibli", "ghibli"),
+                self._make_iter("p2-pixar", "pixar"),
+            ]),
+        ]
+        results = [
+            self._make_result("p1-anime", "ENH p1-anime"),
+            self._make_result("p1-ghibli", "ENH p1-ghibli"),
+            self._make_result("p1-pixar", "ENH p1-pixar"),
+            self._make_result("p2-anime"),  # fallback, no enhancement
+            self._make_result("p2-ghibli", "ENH p2-ghibli"),
+            self._make_result("p2-pixar", "ENH p2-pixar"),
+        ]
+        out = apply_enhance_results_to_per_input(per_input, results)
+        assert len(out) == 2
+        # Each tuple preserved at positions 0-3 (paths + dims).
+        assert out[0][:4] == per_input[0][:4]
+        assert out[1][:4] == per_input[1][:4]
+        # Iteration groups have the right length.
+        assert [len(t[4]) for t in out] == [3, 3]
+        # Enhanced prompts spliced through; fallback iteration unchanged.
+        assert out[0][4][0].prompt == "ENH p1-anime"
+        assert out[0][4][1].prompt == "ENH p1-ghibli"
+        assert out[0][4][2].prompt == "ENH p1-pixar"
+        assert out[1][4][0].prompt == "p2-anime"  # fallback original
+        assert out[1][4][1].prompt == "ENH p2-ghibli"
+        assert out[1][4][2].prompt == "ENH p2-pixar"
+
+    def test_ragged_groups_preserved(self):
+        """Future per-style skip logic could produce ragged group
+        lengths (input #1 has 3 iters, input #2 only 1). The cursor
+        inside the helper handles this transparently."""
+        from imgen.cmd_helpers import apply_enhance_results_to_per_input
+        per_input = [
+            (Path("/tmp/in1.jpg"), Path("/tmp/conv1.jpg"), 640, 896, [
+                self._make_iter("p1-a"), self._make_iter("p1-b"),
+                self._make_iter("p1-c"),
+            ]),
+            (Path("/tmp/in2.jpg"), Path("/tmp/conv2.jpg"), 640, 896, [
+                self._make_iter("p2-a"),
+            ]),
+        ]
+        results = [
+            self._make_result("p1-a", "ENH p1-a"),
+            self._make_result("p1-b", "ENH p1-b"),
+            self._make_result("p1-c", "ENH p1-c"),
+            self._make_result("p2-a", "ENH p2-a"),
+        ]
+        out = apply_enhance_results_to_per_input(per_input, results)
+        assert [len(t[4]) for t in out] == [3, 1]
+        assert out[1][4][0].prompt == "ENH p2-a"
+
+    def test_count_mismatch_raises(self):
+        """Misalignment between sum-of-group-lengths and flat results
+        is loud, not silent — silent miswire would assign wrong
+        prompts to wrong iterations."""
+        from imgen.cmd_helpers import apply_enhance_results_to_per_input
+        per_input = [
+            (Path("/tmp/in.jpg"), Path("/tmp/conv.jpg"), 640, 896, [
+                self._make_iter("a"), self._make_iter("b"),
+            ]),
+        ]
+        # Only 1 result for 2 iterations.
+        with pytest.raises(ValueError, match="enhance-result count mismatch"):
+            apply_enhance_results_to_per_input(
+                per_input, [self._make_result("a")],
+            )

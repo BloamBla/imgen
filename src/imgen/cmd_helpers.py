@@ -91,6 +91,7 @@ from .tokens import load_token
 
 __all__ = [
     "apply_enhance_results_to_iterations",
+    "apply_enhance_results_to_per_input",
     "build_iterations",
     "check_prompt_style_compat",
     "estimate_one_seconds",
@@ -524,6 +525,47 @@ def apply_enhance_results_to_iterations(
             out.append(_dataclass_replace(it, prompt=r.final_prompt, cmd=new_cmd))
         else:
             out.append(it)
+    return out
+
+
+def apply_enhance_results_to_per_input(
+    per_input_iters: list[tuple[Path, Path, int, int, list[Iteration]]],
+    enhance_results: list[EnhanceResult],
+) -> list[tuple[Path, Path, int, int, list[Iteration]]]:
+    """v0.6.4 wrapper around :func:`apply_enhance_results_to_iterations`
+    for ``cmd_batch``'s per-input-tuple shape — eliminates the sliding-
+    cursor block that used to live inline in batch.py (v0.5 architect
+    IMP #2).
+
+    ``per_input_iters`` is the cmd_batch shape:
+    ``[(input_path, mflux_input, width, height, [iter1, iter2, ...]),
+       ...]`` — one tuple per input photo, each carrying its M-style
+    iteration list. ``enhance_results`` is the FLAT list returned by
+    :func:`enhance_iteration_prompts` aligned to ``[it for _, _, _, _,
+    iters in per_input_iters for it in iters]``.
+
+    Returns the same shape with enhanced prompts spliced in. Per-input
+    group lengths preserved (the helper doesn't assume uniform M; any
+    future per-style skip logic that produces ragged groups stays
+    intact).
+
+    Pure: no I/O. Asserts the flat-shape count matches sum of group
+    lengths — misalignment would silently miswire prompts.
+    """
+    expected_flat = sum(len(iters) for _, _, _, _, iters in per_input_iters)
+    if expected_flat != len(enhance_results):
+        raise ValueError(
+            f"enhance-result count mismatch: per-input groups sum to "
+            f"{expected_flat} iterations vs {len(enhance_results)} results"
+        )
+    out: list[tuple[Path, Path, int, int, list[Iteration]]] = []
+    cursor = 0
+    for input_path, mflux_input, width, height, iters in per_input_iters:
+        group_len = len(iters)
+        group_results = enhance_results[cursor:cursor + group_len]
+        cursor += group_len
+        new_iters = apply_enhance_results_to_iterations(iters, group_results)
+        out.append((input_path, mflux_input, width, height, new_iters))
     return out
 
 
