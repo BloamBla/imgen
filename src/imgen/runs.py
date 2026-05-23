@@ -198,8 +198,6 @@ class PerInputBatch:
     __hash__ = None  # type: ignore[assignment]
 
 
-
-
 # Per-batch logs (v0.2.3+) — one .log file per multi-style invocation,
 # named after batch_id. Single-style generations don't write here.
 # Retention is enforced by `imgen clean` (30 days).

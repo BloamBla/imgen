@@ -490,6 +490,17 @@ def test_dry_run_with_enhance_shows_enhanced_prompts(
 # ── apply_enhance_results_to_groups — pure (v0.6.4 IMP #2) ──────────
 
 
+def test_old_alias_removed():
+    """v0.7.1 dropped the temporary `apply_enhance_results_to_per_input`
+    backward-compat alias; v0.7.4 lost the lock-in test when the
+    test_iteration_group.py file was deleted alongside the Protocol/
+    DrawIterationGroup retirement. Re-establish here so a future
+    copy-paste from a pre-v0.7.1 doc doesn't silently resurrect the
+    legacy name."""
+    import imgen.cmd_helpers as ch
+    assert not hasattr(ch, "apply_enhance_results_to_per_input")
+
+
 class TestApplyEnhanceResultsToPerInput:
     """v0.6.4 v0.5 architect IMP #2: the cmd_batch sliding-cursor block
     that re-bucketed a flat enhance_results list back into the per-
