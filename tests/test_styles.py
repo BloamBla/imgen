@@ -298,3 +298,104 @@ def test_built_in_loras_target_flux_1_only():
     can attach Qwen LoRAs ad-hoc via CLI --lora)."""
     for lora in STYLES["ghibli"].get("loras", ()):
         assert "flux-1" in lora.compatible_with
+
+
+def test_style_contains_returns_false_for_none_fields():
+    """v0.6.2 python IMP-1 regression: a Style with ``guidance=None``
+    (unset Optional field) must report ``"guidance" not in style`` so
+    cmd_helpers.build_iterations's ``"guidance" in preset → preset
+    ["guidance"]`` gate cleanly falls through to merged_defaults.
+
+    Without this, the slotted dataclass would always report every
+    declared field as "in" — landing ``None`` in mflux's --guidance
+    argv after the fallback chain incorrectly stopped early.
+    """
+    from imgen.styles import Style
+    style = Style(prompt="x")
+    assert "prompt" in style
+    # None-valued Optional fields look "absent" — mirrors the v0.5 dict
+    # behaviour where a TOML omitting `guidance` produced a dict without
+    # that key at all.
+    assert "guidance" not in style
+    assert "strength" not in style
+    assert "scene_suffix" not in style
+    # Fields with non-None empty defaults stay "in" (callers read them
+    # unconditionally).
+    assert "negative" in style
+    assert "loras" in style
+    # And a fully populated style has every field "in".
+    full = Style(
+        prompt="x", negative="y", guidance=3.5, strength=0.5,
+        scene_suffix="z",
+    )
+    for f in ("prompt", "negative", "guidance", "strength", "scene_suffix"):
+        assert f in full
+    # Private / non-string keys are never "in".
+    assert "__class__" not in full
+    assert 42 not in full  # type: ignore[operator]
+
+
+def test_style_get_filters_private_attributes():
+    """v0.6.2 python NIT-1: ``Style.get("__class__")`` must return the
+    default, not the class object — match ``__contains__`` semantics.
+    """
+    from imgen.styles import Style
+    style = Style(prompt="x")
+    assert style.get("__class__", "sentinel") == "sentinel"
+    assert style.get("__init__", "sentinel") == "sentinel"
+    # Real fields still work.
+    assert style.get("prompt") == "x"
+    assert style.get("negative") == ""
+
+
+def test_repo_from_cache_dir_asserts_on_missing_prefix():
+    """v0.6.2 python NIT-2: passing a non-``models--`` name to
+    repo_from_cache_dir is a caller bug that historically corrupted
+    repo ids with embedded ``--``. Assertion fails fast."""
+    from imgen.hf_cache import repo_from_cache_dir
+    assert repo_from_cache_dir("models--openfree--flux-chatgpt-ghibli-lora") == \
+        "openfree/flux-chatgpt-ghibli-lora"
+    with pytest.raises(AssertionError, match="repo_from_cache_dir expects"):
+        repo_from_cache_dir("not-a-cache-dir")
+
+
+def test_builtin_loras_roundtrip_through_parse_lora_refs():
+    """v0.6.x backlog python NIT-7: every BUILTIN_STYLES.loras entry
+    must round-trip through :func:`parse_lora_refs` (the same validator
+    user TOMLs go through). Catches a future hand-written pick that
+    bypasses the schema — e.g. a typo'd compat group, a weight out of
+    bounds, control bytes in a trigger.
+
+    Moved here from import-time invariant in styles.py (architect
+    v0.6.2 NIT-1): pytest-level surfaces this as a normal test failure,
+    not an ImportError raised during ``import imgen.styles``.
+    """
+    from imgen.styles import BUILTIN_STYLES, UserStyleError, parse_lora_refs
+    for name, style in BUILTIN_STYLES.items():
+        loras = style.loras
+        if not loras:
+            continue
+        as_dicts = [
+            {
+                "ref": lora.ref,
+                "weight": lora.weight,
+                "compatible_with": list(lora.compatible_with),
+                **(
+                    {"trigger": lora.trigger}
+                    if lora.trigger is not None else {}
+                ),
+            }
+            for lora in loras
+        ]
+        try:
+            roundtrip = parse_lora_refs(as_dicts, f"BUILTIN_STYLES[{name!r}]")
+        except UserStyleError as e:
+            pytest.fail(
+                f"BUILTIN_STYLES[{name!r}].loras failed parse_lora_refs "
+                f"validation: {e}"
+            )
+        assert roundtrip == loras, (
+            f"BUILTIN_STYLES[{name!r}].loras did not round-trip through "
+            f"parse_lora_refs (schema drift?): "
+            f"input={loras} roundtrip={roundtrip}"
+        )

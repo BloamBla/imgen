@@ -113,7 +113,7 @@ __all__ = [
 
 
 def resolve_effective_loras(
-    preset: dict,
+    preset,  # Style | dict — Style in prod since v0.6.2; replay shim may pass dict
     cli_lora: list | None,
     no_lora: bool,
 ) -> tuple[LoraRef, ...]:

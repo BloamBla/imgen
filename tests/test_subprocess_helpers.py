@@ -353,6 +353,57 @@ def test_format_cmd_does_not_rewrite_when_home_is_root(monkeypatch):
     assert "/abs/foo.safetensors" in out
 
 
+def test_format_cmd_does_not_rewrite_when_home_is_relative(monkeypatch):
+    """v0.6.2 security IMP-1: a relative ``HOME`` (e.g. ``HOME=tmp``
+    in a stripped container env) would naïvely cause
+    ``bytes.replace(b"tmp", b"~")`` on every chunk, corrupting unrelated
+    substrings like ``tmpdir=/var/tmp`` → ``~dir=/var/~``. The guard
+    rejects non-absolute HOME explicitly."""
+    monkeypatch.setenv("HOME", "tmp")
+    out = format_cmd(["mflux", "--prompt", "tmpdir=/var/tmp/foo"])
+    # No corruption of the unrelated "tmp" substring.
+    assert "tmpdir=/var/tmp/foo" in out
+    assert "~" not in out
+
+
+def test_format_cmd_does_not_rewrite_prefix_collisions(monkeypatch):
+    """v0.6.2 security IMP-2: HOME=/Users/stan must NOT rewrite paths
+    under /Users/stanislav (different user, same prefix). The needle
+    includes a trailing ``/`` so the rewrite only fires on full home-
+    component boundaries."""
+    monkeypatch.setenv("HOME", "/Users/stan")
+    out = format_cmd([
+        "mflux", "--lora-paths",
+        "/Users/stanislav/loras/foo.safetensors",
+    ])
+    # /Users/stanislav stays intact — different user with the same prefix.
+    assert "/Users/stanislav/loras/foo.safetensors" in out
+    assert "~islav" not in out
+    # But HOME itself with the trailing slash is still rewritten.
+    out_own = format_cmd([
+        "mflux", "--lora-paths", "/Users/stan/loras/own.safetensors",
+    ])
+    assert "~/loras/own.safetensors" in out_own
+    assert "/Users/stan/" not in out_own
+
+
+def test_stderr_redaction_does_not_rewrite_prefix_collisions(monkeypatch, capfdbinary):
+    """v0.6.2 security IMP-2 regression on the stderr stream side: a
+    `/Users/stanislav` path passing through stderr while HOME=/Users/stan
+    must NOT corrupt to `~islav`."""
+    monkeypatch.setenv("HOME", "/Users/stan")
+    leak_line = b"loading /Users/stanislav/loras/x.safetensors\n"
+    run_with_stderr_redaction(
+        ["python3", "-c",
+         f"import sys; sys.stderr.buffer.write({leak_line!r}); "
+         "sys.stderr.buffer.flush()"],
+        env={"HOME": "/Users/stan"},
+    )
+    err = capfdbinary.readouterr().err
+    assert b"/Users/stanislav/loras/x.safetensors" in err
+    assert b"~islav" not in err
+
+
 def test_stderr_redaction_rewrites_home_to_tilde(monkeypatch, capfdbinary):
     """When mflux happens to log a local-path lora.ref to stderr,
     ``$HOME`` is rewritten to ``~`` in both the terminal output and the

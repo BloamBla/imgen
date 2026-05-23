@@ -359,6 +359,8 @@ Style-declared LoRAs come first in argv, your CLI additions are appended after �
 `REF` is either a HuggingFace repo id (`author/name`) or an absolute path to a local `.safetensors` file. mflux accepts both. Optional `:WEIGHT` is a float; 1.0 is full strength. The colon split is rightmost-only so paths with embedded colons (e.g. macOS Time Machine snapshot paths) parse correctly.
 
 > **A note on shared logs.** Local `.safetensors` paths can disclose your `$HOME` layout to anyone you share batch logs / dry-run output with. `imgen` rewrites `$HOME` → `~` in its own rendered command output (dry-run + confirm-gate transcripts) and in `mflux`'s captured stderr — so a `/Users/me/loras/foo.safetensors` shows up as `~/loras/foo.safetensors` in logs. The subprocess itself still receives the real absolute path. If you redirect output through other tools or post-process logs externally, that rewrite doesn't follow — verify before sharing.
+>
+> The rewrite means a `~/foo` in a shared transcript is **your** `~`, not the reader's — recipients should treat `~` as a placeholder for the original author's home directory, not literally expand to their own `$HOME`. Same trade-off as token redaction: shared output prioritises "don't disclose" over "literally re-runnable on another machine".
 
 ### Trigger words
 

@@ -73,8 +73,22 @@ class Style:
     and ``preset["prompt"]`` keep working alongside attribute access
     (``preset.prompt``). The hybrid surface lets legacy test code and
     legacy ``cmd_helpers.build_iterations`` call sites carry on
-    unchanged while new code prefers attribute access. Future cleanup
-    can shed the dict API once all consumers move to attributes.
+    unchanged while new code prefers attribute access. **Removal
+    target: v0.7** — the t2i (``imgen draw``) work will already touch
+    every call site to add t2i-aware fields, so the dict-compat shedding
+    rides along in the same cut. Until then ``preset["..."]`` is the
+    deprecated surface; new code should use ``preset.<field>`` directly.
+    (architect v0.6.2 IMP-1.)
+
+    On ``enhance_invariants``: NOT promoted into Style. The invariants
+    (``("facial identity", "exact facial features", ...)``) are
+    per-BACKEND (Kontext vs Qwen-Edit have different preservation
+    conventions), not per-STYLE — Pixar and Anime share Kontext's
+    invariants because both go through the same FLUX-Kontext text
+    encoder. Style-level invariants would be redundant. The architect
+    IMP #5 phrasing ("absorb into Style") was reconsidered in v0.6.2
+    after weighing the per-backend grouping. enhance_invariants stays
+    on Backend. (architect v0.6.2 NIT-4.)
 
     Frozen + slots matches the project's other config dataclasses
     (Iteration, BatchContext, EnhanceResult, LoraRef, Backend) — cheap
@@ -86,7 +100,7 @@ class Style:
     guidance: float | None = None
     strength: float | None = None
     scene_suffix: str | None = None
-    loras: tuple = ()  # tuple[LoraRef, ...] — forward ref dodges class-body ref
+    loras: "tuple[LoraRef, ...]" = ()
 
     # Dict-compat read surface. Read-only by virtue of frozen=True; the
     # underlying fields cannot be set, so __setitem__ would always raise.
@@ -97,11 +111,28 @@ class Style:
             raise KeyError(key) from e
 
     def __contains__(self, key: object) -> bool:
-        if not isinstance(key, str):
+        # v0.6.2 python IMP-1: a slotted dataclass ALWAYS has every
+        # declared field as an attribute (default ``None``/``""``/``()``
+        # if not set). Naive ``hasattr`` would make ``"guidance" in
+        # style`` always True — which breaks ``build_iterations``'s
+        # ``"guidance" in preset → preset["guidance"]`` gate (it would
+        # land ``None`` in the mflux argv). Treat a None-valued field
+        # as "not in" — matches the v0.5 dict behaviour where an
+        # absent TOML key meant the key WASN'T in the dict at all.
+        # Fields that legitimately default to a non-None empty value
+        # (``negative=""``, ``loras=()``) keep the "in" semantics since
+        # callers read them unconditionally regardless of the gate.
+        if not isinstance(key, str) or key.startswith("_"):
             return False
-        return hasattr(self, key) and not key.startswith("_")
+        return getattr(self, key, None) is not None
 
     def get(self, key: str, default=None):
+        # v0.6.2 python NIT-1: ``style.get("__class__")`` would
+        # otherwise return the Style class object via getattr — match
+        # __contains__'s ``_``-prefix and non-string guards so reads
+        # are symmetric.
+        if not isinstance(key, str) or key.startswith("_"):
+            return default
         return getattr(self, key, default)
 
 
@@ -765,47 +796,14 @@ def get_style(name: str) -> "Style":
     return merged[name]
 
 
-# ── Import-time invariant: every built-in style's LoRA stack must round-
-# trip through the same validation user styles go through (v0.6.x backlog
-# python NIT-7). Catches future hand-written BUILTIN_STYLES picks that
-# bypass parse_lora_refs (e.g. a typo'd compat group or weight out of
-# range). Runs exactly once per process at import time — cheap.
-
-def _validate_builtin_loras() -> None:
-    """Walk every BUILTIN_STYLES preset's loras tuple back through
-    :func:`parse_lora_refs` to verify the same constraints user TOMLs
-    must satisfy. Raises AssertionError on any violation so the test
-    suite surfaces the regression at collection time, not via an
-    obscure runtime crash inside cmd_helpers.build_iterations.
-    """
-    for name, style in BUILTIN_STYLES.items():
-        loras = style.loras
-        if not loras:
-            continue
-        as_dicts = [
-            {
-                "ref": lora.ref,
-                "weight": lora.weight,
-                "compatible_with": list(lora.compatible_with),
-                **({"trigger": lora.trigger} if lora.trigger is not None else {}),
-            }
-            for lora in loras
-        ]
-        try:
-            roundtrip = parse_lora_refs(as_dicts, f"BUILTIN_STYLES[{name!r}]")
-        except UserStyleError as e:  # pragma: no cover — import-time invariant
-            raise AssertionError(
-                f"BUILTIN_STYLES[{name!r}].loras failed parse_lora_refs "
-                f"validation: {e}"
-            ) from e
-        assert roundtrip == loras, (
-            f"BUILTIN_STYLES[{name!r}].loras did not round-trip through "
-            f"parse_lora_refs (schema drift?): "
-            f"input={loras} roundtrip={roundtrip}"
-        )
-
-
-_validate_builtin_loras()
+# v0.6.x backlog python NIT-7: a pytest-level lock-in test in
+# tests/test_styles.py walks every BUILTIN_STYLES.loras entry back
+# through parse_lora_refs so a future hand-written pick that bypasses
+# the user-schema fails noisily at test collection time, not at runtime
+# inside cmd_helpers.build_iterations. The invariant lives in tests/
+# rather than as an import-time side effect so `python -c "import
+# imgen.styles"` stays side-effect-free + the failure surfaces as a
+# normal pytest failure, not an ImportError. (architect v0.6.2 NIT-1.)
 
 
 def parse_style_list(value: str) -> list[str]:

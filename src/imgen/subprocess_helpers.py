@@ -128,22 +128,36 @@ _TOKEN_LEAK_RE = re.compile(rb"hf_[A-Za-z0-9_\-]{36,}")
 
 
 def _home_path_replacer() -> tuple[bytes, bytes] | None:
-    """Return ``(home_bytes, tilde_bytes)`` for $HOME → ~ rewriting, or
-    None if $HOME is unset / empty / not absolute.
+    """Return ``(needle_bytes, replacement_bytes)`` for $HOME → ~
+    rewriting, or None when $HOME is unsuitable.
 
-    Captured at module-import time would freeze $HOME — we re-read it
-    per redaction call so tests can monkeypatch ``HOME`` cleanly. Returns
+    We re-read ``HOME`` per call so tests can monkeypatch it cleanly;
+    module-import-time capture would freeze the value. Returns
     bytes pre-encoded so the inner loop can use plain ``bytes.replace``
     on UTF-8 stderr without per-call utf-8 encoding.
 
-    Skipped when ``$HOME = /`` (would rewrite every absolute path to
-    ``~``) or empty (nothing to rewrite). (v0.6.x backlog security
-    NIT-3 defence-in-depth.)
+    Skipped when:
+      * ``$HOME`` unset or empty (nothing to rewrite);
+      * ``$HOME = "/"`` (every absolute path would collapse to ``~``);
+      * ``$HOME`` is NOT absolute (e.g. ``HOME=tmp`` in a stripped
+        container env — naive ``bytes.replace(b"tmp", b"~")`` would
+        corrupt every chunk containing the substring ``tmp``, e.g.
+        ``tmpdir=/var/tmp`` → ``~dir=/var/~``). (v0.6.2 security IMP-1.)
+
+    Prefix safety: needle includes a trailing ``/`` (and replacement
+    is ``~/``) so HOME=``/Users/stan`` does NOT rewrite paths under
+    ``/Users/stanislav`` (which would otherwise corrupt to ``~islav``).
+    Real macOS / Linux home dirs are always followed by ``/`` before
+    the next path component, so the trailing-slash needle still hits
+    every realistic case while avoiding the prefix collision.
+    (v0.6.2 security IMP-2.)
     """
     home = os.environ.get("HOME", "")
-    if not home or home == "/":
+    if not home or home == "/" or not os.path.isabs(home):
         return None
-    return home.encode("utf-8"), b"~"
+    # Append trailing slash to both needle and replacement so we only
+    # match path components that fully end at the home boundary.
+    return (home.rstrip("/") + "/").encode("utf-8"), b"~/"
 
 
 def _redact_chunk(buf: bytes, home_pair: tuple[bytes, bytes] | None) -> bytes:
@@ -254,9 +268,18 @@ def format_cmd(cmd: list[str]) -> str:
     A local-path ``--lora /Users/me/loras/foo.safetensors`` renders as
     ``~/loras/foo.safetensors`` so dry-run output + confirm-gate
     transcripts don't disclose the user's home layout when shared.
-    Output remains a valid shell command — most shells expand ``~`` to
-    ``$HOME`` so paste-and-run still works. (v0.6.x backlog security
-    NIT-3.)
+
+    Privacy-vs-discoverability trade-off (architect v0.6.2 NIT-3): the
+    rewrite means a recipient of a shared dry-run transcript sees
+    ``~/loras/foo.safetensors`` and may expand ``~`` to their own
+    ``$HOME``, leading to "file not found" if they try to literally
+    re-run the command. The rewrite optimises for "don't disclose
+    paths" over "command is literally re-runnable on another machine".
+    Tokens use the same trade-off (``hf_***REDACTED***`` is not
+    re-runnable either) and that's the right side of the curve when
+    the alternative is leaking secrets / paths into a chat transcript.
+    The README LoRA section spells this out for users sharing logs.
+    (v0.6.x backlog security NIT-3.)
     """
     parts = []
     i = 0
@@ -271,7 +294,12 @@ def format_cmd(cmd: list[str]) -> str:
             parts.append(shlex.quote(token))
             i += 1
     rendered = " \\\n  ".join(parts)
+    # v0.6.2 security IMP-1+IMP-2: mirror _home_path_replacer's
+    # guards (absolute-path required + trailing-slash needle to avoid
+    # prefix collisions like HOME=/Users/stan rewriting /Users/stanislav).
     home = os.environ.get("HOME", "")
-    if home and home != "/" and home in rendered:
-        rendered = rendered.replace(home, "~")
+    if home and home != "/" and os.path.isabs(home):
+        needle = home.rstrip("/") + "/"
+        if needle in rendered:
+            rendered = rendered.replace(needle, "~/")
     return rendered

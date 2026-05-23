@@ -50,10 +50,16 @@ def repo_from_cache_dir(name: str) -> str:
     and ``imgen clean --all`` to render cached-model names back into
     the form the user typed.
 
-    Caller is responsible for passing only a name with the
-    ``models--`` prefix; an arbitrary string is returned with both
-    leading prefix and ``--`` substrings rewritten anyway (preserving
-    the v0.1.x behaviour) — but the function's contract is only
-    well-defined for the cached-model directory layout.
+    Pre-condition: ``name`` MUST start with ``models--``. Inputs lacking
+    the prefix would silently collapse any ``--`` substrings in a
+    legitimate repo name (e.g. ``my--repo--name`` → ``my/repo/name``),
+    producing a meaningless string. Assertion is cheap (called once
+    per cached model when rendering doctor / clean output) and surfaces
+    a caller bug immediately. (v0.6.2 python NIT-2.)
     """
-    return name.replace("models--", "").replace("--", "/")
+    assert name.startswith("models--"), (
+        f"repo_from_cache_dir expects a 'models--<author>--<name>' input; "
+        f"got {name!r}. Caller must filter HF_CACHE.glob('models--*') "
+        f"output, not arbitrary directory names."
+    )
+    return name.replace("models--", "", 1).replace("--", "/")
