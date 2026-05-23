@@ -571,6 +571,81 @@ def test_replay_entry_routes_draw_to_cmd_draw(tmp_state_dir, monkeypatch):
     assert args.height == 1024
 
 
+def test_replay_entry_routes_refine_to_cmd_refine(
+    tmp_state_dir, monkeypatch,
+):
+    """v0.7.5 (architect IMPORTANT #A): replay_entry must route
+    command="refine" entries to cmd_refine, not cmd_generate. Without
+    this dispatch the entry's non-null input + custom_prompt would
+    pass the i2i guard and mis-replay as a Kontext restyle."""
+    import imgen.commands.history as history_cmd
+    captured = {}
+
+    def fake_cmd_refine(args):
+        captured["args"] = args
+        captured["ran"] = "refine"
+        return 0
+
+    monkeypatch.setattr(history_cmd, "cmd_refine", fake_cmd_refine)
+    monkeypatch.setattr(
+        history_cmd, "cmd_generate",
+        lambda args: captured.setdefault("ran", "generate") or 0,
+    )
+    monkeypatch.setattr(
+        history_cmd, "cmd_draw",
+        lambda args: captured.setdefault("ran", "draw") or 0,
+    )
+
+    entry = {
+        "id": 77,
+        "v": HISTORY_SCHEMA_VERSION,
+        "input": "/some/winner.png",
+        "command": "refine",
+        "custom_prompt": "Same scene. Refine sharper detail.",
+        "style": None,
+        "prompt": "Same scene. Refine sharper detail.",
+        "backend": "flux2-klein-edit-9b",
+        "quantize": 4,
+        "steps": 20,
+        "guidance": 3.5,
+        "strength": 0.3,
+        "width": 1536,
+        "height": 1536,
+    }
+    rc = history_cmd.replay_entry(entry)
+    assert rc == 0
+    assert captured["ran"] == "refine"
+    args = captured["args"]
+    assert args.input == "/some/winner.png"
+    assert args.backend == "flux2-klein-edit-9b"
+    assert args.width == 1536
+    assert args.height == 1536
+    assert args.quantize == 4
+    assert args.strength == 0.3
+    assert args.prompt == "Same scene. Refine sharper detail."
+    # --scale is None when --width/--height carry the dims (mutex
+    # enforced by _resolve_target_dimensions, and replay always uses
+    # explicit dims for bit-stable round-trip).
+    assert args.scale is None
+    # New random seed each replay (not the stored one).
+    assert args.seed is None
+
+
+def test_replay_entry_refine_missing_input_fails_cleanly(tmp_state_dir):
+    """A malformed refine entry with command="refine" but no input dies
+    with exit 1 and a clear message — same loud-fail discipline as
+    the i2i "no input path" guard."""
+    from imgen.commands.history import replay_entry
+    entry = {
+        "id": 78, "v": HISTORY_SCHEMA_VERSION,
+        "command": "refine",
+        "input": None,
+    }
+    with pytest.raises(SystemExit) as exc_info:
+        replay_entry(entry)
+    assert exc_info.value.code == 1
+
+
 def test_replay_entry_generate_command_uses_cmd_generate(
     tmp_state_dir, monkeypatch,
 ):

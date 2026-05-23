@@ -29,7 +29,6 @@ from pathlib import Path
 from ..colors import C, die, info, warn
 from ..defaults import DEFAULTS
 from ..history import load_history
-from ..parser import _DEFAULT_REFINE_PROMPT
 from ..runs import BatchContext
 from ..cmd_helpers import (
     build_refine_iteration,
@@ -49,6 +48,15 @@ from ..subprocess_helpers import build_mflux_env, format_cmd
 __all__ = ["cmd_refine"]
 
 
+# v0.7.5 NIT #4: lives here (runtime constant private to refine) instead
+# of parser.py, where it forced a cross-module private-name import.
+_DEFAULT_REFINE_PROMPT = (
+    "Same scene and composition. Refine with sharper detail, "
+    "ultra-detailed textures, professional photography quality, "
+    "preserve subject identity, no artifacts, 8K clarity."
+)
+
+
 def _round_to_multiple_of_16(n: int) -> int:
     """FLUX architectures require width/height to be multiples of 16.
     Round to the NEAREST multiple — input 1024 stays 1024, input 1500
@@ -66,23 +74,55 @@ def _read_image_dimensions(path: Path) -> tuple[int, int]:
 
     EXIF orientation is honoured so a portrait-shot photo returns
     its rendered dimensions rather than the camera-sensor orientation.
+
+    Errors:
+    - Pillow missing → die(code=2). Bootstrap should have installed
+      it; surface a clear hint rather than a bare ImportError.
+    - File unreadable / not a recognised image → die(code=2). Narrow
+      to ``(OSError, UnidentifiedImageError)`` so unrelated
+      programmer errors (AttributeError on a PIL version mismatch,
+      KeyboardInterrupt, etc.) propagate rather than being silently
+      reformatted as "couldn't read".
     """
     try:
-        from PIL import Image, ImageOps
+        from PIL import Image, ImageOps, UnidentifiedImageError
+    except ImportError as e:
+        die(
+            f"refine: Pillow (PIL) not installed — required to read "
+            f"image dimensions. Run bootstrap.sh to install: {e}",
+            code=2,
+        )
+    try:
         with Image.open(path) as im:
-            im = ImageOps.exif_transpose(im)
-            return im.size[0], im.size[1]
-    except Exception as e:
-        die(f"refine: couldn't read image dimensions for {path}: {e}",
-            code=2)
+            # Sec #S1: read .size BEFORE the with-block exits. After
+            # exif_transpose, `im` may be a new Image OR the same
+            # one (when no EXIF orientation tag is present) — and
+            # PIL doesn't guarantee .size on a closed Image. Snap
+            # the tuple now while the underlying file handle is
+            # still open.
+            transposed = ImageOps.exif_transpose(im)
+            w, h = transposed.size
+            return w, h
+    except (OSError, UnidentifiedImageError) as e:
+        die(
+            f"refine: couldn't read image dimensions for {path}: {e}",
+            code=2,
+        )
 
 
-def _resolve_target_dimensions(args, input_path: Path) -> tuple[int, int]:
+def _resolve_target_dimensions(
+    args, in_w: int, in_h: int,
+) -> tuple[int, int]:
     """Compute (output_w, output_h) from --scale OR --width/--height.
 
     Mutex: --scale + --width/--height rejected. Both --width and
     --height required together when used as explicit dims. Default
     (neither passed) = --scale 1.5.
+
+    Pure: dims come in via ``(in_w, in_h)`` so the function does NO
+    PIL I/O. cmd_refine reads dims ONCE upfront and threads them
+    here AND into _confirm_refine, killing the v0.7.5 double-open
+    (TOCTOU smell flagged by python-reviewer IMPORTANT #2).
     """
     scale_set = args.scale is not None
     dims_set = args.width is not None or args.height is not None
@@ -108,7 +148,6 @@ def _resolve_target_dimensions(args, input_path: Path) -> tuple[int, int]:
         )
 
     scale = args.scale if scale_set else 1.5
-    in_w, in_h = _read_image_dimensions(input_path)
     return (
         _round_to_multiple_of_16(int(in_w * scale)),
         _round_to_multiple_of_16(int(in_h * scale)),
@@ -118,14 +157,16 @@ def _resolve_target_dimensions(args, input_path: Path) -> tuple[int, int]:
 def _confirm_refine(
     *,
     input_path: Path,
+    in_w: int,
+    in_h: int,
     target_w: int,
     target_h: int,
     output: Path,
     eta_seconds: int | None,
 ) -> bool:
     """Confirm gate for `imgen refine`. Shows input → output dims,
-    output path, and optional ETA."""
-    in_w, in_h = _read_image_dimensions(input_path)
+    output path, and optional ETA. Input dims threaded in by
+    cmd_refine — no second PIL open here."""
     info("About to refine 1 image:")
     print(f"   {C.DIM}input: {C.END} {input_path.name} ({in_w}×{in_h})")
     print(f"   {C.DIM}output:{C.END} {output.name} ({target_w}×{target_h})")
@@ -169,8 +210,12 @@ def cmd_refine(args) -> int:
     if not input_path.is_file():
         die(f"refine: input is not a file: {input_path}", code=2)
 
-    # 2) Target dimensions
-    target_w, target_h = _resolve_target_dimensions(args, input_path)
+    # 2) Read input dims ONCE — threaded into both
+    # _resolve_target_dimensions (scale path) and _confirm_refine
+    # (display). Single PIL open per invocation, no TOCTOU window
+    # between target-resolve and confirm.
+    in_w, in_h = _read_image_dimensions(input_path)
+    target_w, target_h = _resolve_target_dimensions(args, in_w, in_h)
 
     # 3) Prompt resolution (refine has a baked-in default; no
     # --prompt-file / stdin path — refine prompts are short and
@@ -227,8 +272,23 @@ def cmd_refine(args) -> int:
         one_eta = estimate_one_seconds(
             load_history(), backend, heaviest_quant, args.preview,
         )
+        # Arch #B: refine is the longest-running subcommand. When the
+        # history has no prior runs for (backend, quant), the confirm
+        # gate would otherwise show NO time estimate at all. For the
+        # default flux2-klein-edit-9b first-run case in particular,
+        # users also pay a ~15 GB FLUX.2-klein-9B download before any
+        # generation starts — surface that explicitly so the [y/N]
+        # isn't a blind agreement.
+        if one_eta is None and backend == "flux2-klein-edit-9b":
+            info(
+                "First run on flux2-klein-edit-9b — expect ~15-25 min "
+                "of generation plus a one-time ~15 GB model download "
+                "if FLUX.2-klein-9B isn't cached yet."
+            )
         proceed = _confirm_refine(
             input_path=input_path,
+            in_w=in_w,
+            in_h=in_h,
             target_w=target_w,
             target_h=target_h,
             output=iteration.output_path,

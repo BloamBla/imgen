@@ -84,67 +84,86 @@ class TestRoundToMultipleOf16:
 
 
 class TestResolveTargetDimensions:
-    def _input(self, tmp_path, width=1024, height=1024):
-        """Create a fake input PNG with detectable dimensions."""
-        from PIL import Image
-        p = tmp_path / "in.png"
-        Image.new("RGB", (width, height), "white").save(p)
-        return p
+    """v0.7.5: pure function — dims threaded in by cmd_refine, no
+    PIL I/O inside _resolve_target_dimensions itself."""
 
-    def test_default_scale_1_5(self, tmp_path):
+    def test_default_scale_1_5(self):
         from imgen.commands.refine import _resolve_target_dimensions
-        input_path = self._input(tmp_path, 1024, 1024)
         args = SimpleNamespace(scale=None, width=None, height=None)
-        w, h = _resolve_target_dimensions(args, input_path)
+        w, h = _resolve_target_dimensions(args, 1024, 1024)
         assert w == 1536
         assert h == 1536
 
-    def test_scale_2(self, tmp_path):
+    def test_scale_2(self):
         from imgen.commands.refine import _resolve_target_dimensions
-        input_path = self._input(tmp_path, 1024, 1024)
         args = SimpleNamespace(scale=2.0, width=None, height=None)
-        w, h = _resolve_target_dimensions(args, input_path)
+        w, h = _resolve_target_dimensions(args, 1024, 1024)
         assert w == 2048
         assert h == 2048
 
-    def test_explicit_dims(self, tmp_path):
+    def test_explicit_dims(self):
         from imgen.commands.refine import _resolve_target_dimensions
-        input_path = self._input(tmp_path, 1024, 1024)
         args = SimpleNamespace(scale=None, width=1280, height=720)
-        w, h = _resolve_target_dimensions(args, input_path)
+        w, h = _resolve_target_dimensions(args, 1024, 1024)
         assert w == 1280
         assert h == 720
 
-    def test_explicit_dims_rounded_to_16(self, tmp_path):
+    def test_explicit_dims_rounded_to_16(self):
         from imgen.commands.refine import _resolve_target_dimensions
-        input_path = self._input(tmp_path, 1024, 1024)
         args = SimpleNamespace(scale=None, width=1500, height=1500)
-        w, h = _resolve_target_dimensions(args, input_path)
+        w, h = _resolve_target_dimensions(args, 1024, 1024)
         assert w == 1504
         assert h == 1504
 
-    def test_scale_and_dims_mutex(self, tmp_path):
+    def test_scale_and_dims_mutex(self):
         from imgen.commands.refine import _resolve_target_dimensions
-        input_path = self._input(tmp_path, 1024, 1024)
         args = SimpleNamespace(scale=2.0, width=1280, height=720)
         with pytest.raises(SystemExit):
-            _resolve_target_dimensions(args, input_path)
+            _resolve_target_dimensions(args, 1024, 1024)
 
-    def test_dims_require_both(self, tmp_path):
+    def test_dims_require_both(self):
         from imgen.commands.refine import _resolve_target_dimensions
-        input_path = self._input(tmp_path, 1024, 1024)
         args = SimpleNamespace(scale=None, width=1280, height=None)
         with pytest.raises(SystemExit):
-            _resolve_target_dimensions(args, input_path)
+            _resolve_target_dimensions(args, 1024, 1024)
 
-    def test_rectangular_input_scales_both_dims(self, tmp_path):
+    def test_rectangular_input_scales_both_dims(self):
         from imgen.commands.refine import _resolve_target_dimensions
-        input_path = self._input(tmp_path, 1024, 768)
         args = SimpleNamespace(scale=1.5, width=None, height=None)
-        w, h = _resolve_target_dimensions(args, input_path)
+        w, h = _resolve_target_dimensions(args, 1024, 768)
         assert w == 1536
         # 768 * 1.5 = 1152, multiple of 16
         assert h == 1152
+
+
+class TestReadImageDimensions:
+    """v0.7.5 IMPORTANT #1: narrow except (OSError | UnidentifiedImageError)
+    + Pillow-missing diagnostic. Lock-in tests for the structural fix."""
+
+    def test_reads_png_dims(self, tmp_path):
+        from PIL import Image
+        from imgen.commands.refine import _read_image_dimensions
+        p = tmp_path / "in.png"
+        Image.new("RGB", (1280, 720), "white").save(p)
+        assert _read_image_dimensions(p) == (1280, 720)
+
+    def test_non_image_file_dies(self, tmp_path):
+        """Garbage bytes → UnidentifiedImageError → die(code=2),
+        NOT a swallowed AttributeError/KeyError from a downstream
+        consumer."""
+        from imgen.commands.refine import _read_image_dimensions
+        p = tmp_path / "garbage.png"
+        p.write_bytes(b"this is not a PNG file")
+        with pytest.raises(SystemExit) as exc_info:
+            _read_image_dimensions(p)
+        assert exc_info.value.code == 2
+
+    def test_missing_file_dies(self, tmp_path):
+        """Missing file → OSError (FileNotFoundError) → die(code=2)."""
+        from imgen.commands.refine import _read_image_dimensions
+        with pytest.raises(SystemExit) as exc_info:
+            _read_image_dimensions(tmp_path / "nonexistent.png")
+        assert exc_info.value.code == 2
 
 
 # ── build_refine_iteration ───────────────────────────────────────────

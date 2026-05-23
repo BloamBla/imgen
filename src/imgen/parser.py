@@ -654,13 +654,6 @@ def _add_draw_args(
     _add_lora_args(p)
 
 
-_DEFAULT_REFINE_PROMPT = (
-    "Same scene and composition. Refine with sharper detail, "
-    "ultra-detailed textures, professional photography quality, "
-    "preserve subject identity, no artifacts, 8K clarity."
-)
-
-
 def _add_refine_args(
     p: argparse.ArgumentParser,
     defaults: dict[str, Any],
@@ -692,8 +685,8 @@ def _add_refine_args(
     )
     p.add_argument(
         "--prompt", default=None,
-        help=f"Refine prompt override. Default focuses on detail/sharpness "
-             f"while preserving composition (see imgen --help-refine-prompt).",
+        help="Refine prompt override. Default focuses on detail/sharpness "
+             "while preserving composition; print it with --dry-run.",
     )
     output_group = p.add_mutually_exclusive_group()
     output_group.add_argument(

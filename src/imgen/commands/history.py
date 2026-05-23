@@ -14,6 +14,7 @@ from ..history import load_history
 from ..styles import LoraRef
 from .draw import cmd_draw
 from .generate import cmd_generate
+from .refine import cmd_refine
 
 # Fields the replay Namespace must carry so cmd_generate doesn't have to
 # rely on getattr-with-default. Each is what cmd_generate reads for a
@@ -187,6 +188,59 @@ def _replay_draw_entry(entry: dict) -> int:
     return cmd_draw(args)
 
 
+def _replay_refine_entry(entry: dict) -> int:
+    """v0.7.5 (architect IMPORTANT #A): replay a ``command="refine"``
+    history entry through :func:`cmd_refine`.
+
+    Refine entries have a non-null ``input`` (the original image that
+    was refined) and carry the refine prompt under ``custom_prompt``
+    (mirror of how generate-with-no-style records the user prompt).
+    Width/height fields hold the TARGET dims; replay uses them as
+    explicit ``--width/--height`` since storing ``--scale`` would not
+    round-trip to identical pixel dims if the original input was
+    resaved at different dims between runs.
+
+    LoRA rehydration reuses :func:`_rehydrate_loras_from_entry` —
+    same v=3 contract as i2i / draw entries. Whatever mflux saw on
+    the original run is what replay reproduces, modulo a fresh seed.
+    """
+    image = entry.get("input")
+    if not image:
+        die(f"History entry #{entry.get('id', '?')} (command=refine) has "
+            f"no input path — cannot replay.", code=1)
+    prompt = entry.get("custom_prompt")
+    info(f"Replaying #{entry.get('id')}: refine on {Path(image).name}")
+    cli_lora, no_lora = _rehydrate_loras_from_entry(entry)
+    # Mirror of cmd_refine's parser shape (_add_refine_args). NO
+    # --scope, --style, --custom-prompt, --enhance-* — refine
+    # has no such concepts. --scale set to None; --width/--height
+    # carry the stored target dims (already 16-multiple-rounded
+    # at original-run time, so the round-trip is bit-stable for
+    # the resolution pipeline).
+    args = argparse.Namespace(
+        input=image,
+        scale=None,
+        width=entry.get("width"),
+        height=entry.get("height"),
+        prompt=prompt,
+        output=None,
+        steps=entry.get("steps", DEFAULTS["steps"]),
+        guidance=entry.get("guidance", DEFAULTS["guidance"]),
+        strength=entry.get("strength", 0.3),
+        seed=None,  # new random seed each replay
+        backend=entry.get("backend", "flux2-klein-edit-9b"),
+        quantize=entry.get("quantize", 4),
+        preview=entry.get("preview", False),
+        no_open=False,
+        dry_run=False,
+        force=False,
+        lora=cli_lora,
+        no_lora=no_lora,
+        **_REPLAY_DEFAULTS,
+    )
+    return cmd_refine(args)
+
+
 def replay_entry(entry: dict) -> int:
     entry_v = entry.get("v", 0)
     if entry_v > HISTORY_SCHEMA_VERSION:
@@ -199,9 +253,16 @@ def replay_entry(entry: dict) -> int:
     # ``generate``/``batch`` (no field present); ``.get`` default keeps
     # backward compat. ``draw`` entries take the t2i path and skip the
     # "no input path" guard (input=None is legitimate for t2i).
+    # v0.7.5 (architect IMPORTANT #A): ``refine`` entries route to
+    # cmd_refine — without this dispatch they would mis-replay through
+    # cmd_generate (refine entries have non-null input + custom_prompt,
+    # so the i2i path's guard passes but builds a Kontext-style
+    # restyle invocation instead of the refine pipeline).
     command = entry.get("command", "generate")
     if command == "draw":
         return _replay_draw_entry(entry)
+    if command == "refine":
+        return _replay_refine_entry(entry)
 
     image = entry.get("input")
     if not image:

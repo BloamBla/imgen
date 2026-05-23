@@ -52,6 +52,22 @@ RAM_REQUIRED_GB = {
     ("flux-dev", 5): 12,
     ("flux-dev", 6): 14,
     ("flux-dev", 8): 18,
+    # v0.7.5: FLUX.2-klein-edit-9B (i2i refine backend). 9B params
+    # (smaller than FLUX.1's 12B family), but native ≤4 MP support
+    # means LARGER activation budget than flux-dev's 1.5K ceiling.
+    # Per backends.py comment math on M2 Pro 32GB at 2K²: Q4 weights
+    # ~4.5 GB + text encoders ~2-3 GB + activations ~4-6 GB ≈
+    # 12-14 GB. Q8 ≈ 9 GB weights + same overhead ≈ 16-18 GB.
+    # Conservative upper-bound picks (rounded up) so the gate
+    # protects 16 GB machines on Q8 instead of green-lighting and
+    # OOM-killing late-pass. Without these rows preflight uses the
+    # default 16 GB which would: (a) gate-fail Q4 on tight 16 GB
+    # setups it can actually run, AND (b) green-light Q8 which OOMs.
+    ("flux2-klein-edit-9b", 3): 12,
+    ("flux2-klein-edit-9b", 4): 14,
+    ("flux2-klein-edit-9b", 5): 15,
+    ("flux2-klein-edit-9b", 6): 16,
+    ("flux2-klein-edit-9b", 8): 18,
 }
 
 MIN_DISK_GB = 5             # minimum free disk to attempt

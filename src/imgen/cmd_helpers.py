@@ -1523,10 +1523,11 @@ def build_refine_iteration(
     if explicit_output is not None:
         output_path = explicit_output
     else:
-        assert run_dir is not None, (
-            "build_refine_iteration: either explicit_output or run_dir "
-            "must be provided"
-        )
+        if run_dir is None:
+            raise ValueError(
+                "build_refine_iteration: either explicit_output or "
+                "run_dir must be provided"
+            )
         # `<input.stem>-refined.png`. next_available_path handles
         # collisions if the user re-refines into the same run-dir.
         output_path = next_available_path(

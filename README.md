@@ -1,6 +1,6 @@
 # imgen
 
-Local image generation CLI for Apple Silicon Macs. Two modes today: **`imgen draw`** generates images from text prompts (FLUX.1-dev), **`imgen generate` / `imgen batch`** restyle photos (FLUX.1-Kontext, Qwen-Image-Edit). Wraps [mflux](https://github.com/filipstrand/mflux) under the hood — on-device via MLX, no cloud, no API keys outside HuggingFace's gated-repo token.
+Local image generation CLI for Apple Silicon Macs. Three modes today: **`imgen draw`** generates images from text prompts (FLUX.1-dev), **`imgen refine`** upsamples an existing image at 1.5×/2× via FLUX.2-klein-edit (Hires-Fix pattern), **`imgen generate` / `imgen batch`** restyle photos (FLUX.1-Kontext, Qwen-Image-Edit). Wraps [mflux](https://github.com/filipstrand/mflux) under the hood — on-device via MLX, no cloud, no API keys outside HuggingFace's gated-repo token.
 
 ```bash
 # Text-to-image (v0.7.0+)
@@ -8,6 +8,12 @@ imgen draw "a samurai on a misty mountain at dawn"            # FLUX.1-dev defau
 imgen draw "samurai" --enhance-prompt                         # LLM expands the brief into a rich prompt
 imgen draw "samurai" --lora some/style-lora,other/detail:0.6  # stack LoRAs
 imgen draw "samurai" --width 1280 --height 720                # custom aspect
+
+# Hires-Fix refine (v0.7.5+) — upsample an existing image at 1.5x/2x
+imgen draw "samurai" --num-iterations 5 --preview             # explore: 5 variants at 1024²
+imgen refine ~/Desktop/imgen/<run>/samurai-3.png              # winner → polished 1536² (~10-20 min)
+imgen refine winner.png --scale 2                             # 1024² → 2048² (FLUX.2-klein native cap)
+imgen refine winner.png --width 1920 --height 1080            # explicit dims (16-multiple rounding)
 
 # Photo restyle (v0.1+)
 imgen photo.jpg                              # Pixar style (default)
@@ -153,6 +159,15 @@ imgen <photo> -s anime --no-lora               # A/B against the style's built-i
 imgen <photo> -s pencil --lora REF[:WEIGHT]    # attach an extra LoRA; REF = HF repo or local .safetensors
 imgen <photo> --backend qwen                   # use Qwen Edit (no HF token needed)
 imgen <photo> --force                          # skip resource preflight checks
+
+# Refine — Hires-Fix upsample (v0.7.5+, FLUX.2-klein-edit-9b default backend)
+imgen refine <input>                           # default --scale 1.5 (1024² → 1536²)
+imgen refine <input> --scale 2                 # 2x → 2048² (FLUX.2-klein native ~4 MP cap)
+imgen refine <input> --width 1920 --height 1080  # explicit dims (mutex with --scale)
+imgen refine <input> --prompt "polished, ..."  # override the baked-in refine prompt
+imgen refine <input> --strength 0.5            # higher = more refine, lower = more input-faithful (default 0.3)
+imgen refine <input> --backend flux            # fall back to FLUX.1-Kontext (capped at ~1.5K cleanly)
+imgen refine <input> -o ~/Desktop/refined.png  # explicit output path
 
 # Batch a folder — same flags as generate except no -o/--output (always run-folder layout)
 imgen batch <dir>                              # every photo × default style → one timestamped folder
@@ -448,12 +463,14 @@ Built-in:
   - HF token (any classic Read token)
   - License acceptance at https://huggingface.co/black-forest-labs/FLUX.1-Kontext-dev
 - `qwen` — **Qwen-Image-Edit-2509** — open model, no token required. Lower quality at low quants.
+- `flux-dev` — **FLUX.1-dev** — t2i base for `imgen draw`. Gated, same HF token + license as `flux`.
+- `flux2-klein-edit-9b` — **FLUX.2-klein-9B** distilled edit — default for `imgen refine` (v0.7.5+). Native ~4 MP support (up to 2048²) past FLUX.1's 1.5K clean ceiling. Gated, accept license at https://huggingface.co/black-forest-labs/FLUX.2-klein-9B. Q4 default (~12-14 GB on M2 Pro 32 GB at 2K²); Q8 ~16-18 GB.
 
 `imgen --list-backends` shows the full set including any user-defined backends below.
 
 ### Why these specific model versions?
 
-**FLUX.1 Kontext, not FLUX.2.** FLUX.2 (released Nov 2025; klein distilled variants Jan 2026) is two different model families: `klein-base` is text-to-image (doesn't take an input photo), and `klein-edit` is *instruction-based editing* ("make the sky blue"), not the dense image-conditioning that drives style transfer. FLUX.1 Kontext was purpose-built for "rewrite this image while preserving identity / pose / composition" — exactly the load this CLI carries. mflux 0.17.5 ships `mflux-generate-flux2-edit` so you can try FLUX.2-klein-edit yourself via a `backends.d/*.toml` (see [Adding a custom model](#adding-a-custom-model-via-backendsd)); the six built-in style presets are prompt-tuned for Kontext's verb conventions ([BFL Kontext prompting guide](https://docs.bfl.ai/guides/prompting_guide_kontext_i2i)), so expect to retune prompts if you swap.
+**FLUX.1 Kontext for restyle, FLUX.2-klein for refine.** FLUX.2 (released Nov 2025; klein distilled variants Jan 2026) is two different model families: `klein-base` is text-to-image (doesn't take an input photo), and `klein-edit` is *instruction-based editing* ("make the sky blue") plus low-strength i2i, not the dense image-conditioning that drives style transfer. FLUX.1 Kontext was purpose-built for "rewrite this image while preserving identity / pose / composition" — exactly the load `imgen generate` / `imgen batch` carry, so they stay on Kontext. The six built-in style presets are prompt-tuned for Kontext's verb conventions ([BFL Kontext prompting guide](https://docs.bfl.ai/guides/prompting_guide_kontext_i2i)), so expect to retune prompts if you swap. v0.7.5 added `imgen refine` on **FLUX.2-klein-edit-9b** (via `mflux-generate-flux2-edit`) because the Hires-Fix workload — preserve composition, push detail, upsample past 1.5K — wants exactly the low-strength i2i FLUX.2-klein-edit is good at, AND its native 4 MP support clears FLUX.1's clean 1.5K ceiling without tiling artifacts. You can still swap refine onto `--backend flux` if you want to stay under 1.5K with Kontext.
 
 **Qwen-Image-Edit-2509, not 2511.** Qwen-Image-Edit-2511 (released 2025-12-17) is newer and arguably stronger, but mflux 0.17.5 — the only version this CLI is tested against — hardcodes `Qwen/Qwen-Image-Edit-2509` in its qwen-edit entrypoint. Bumping the pin requires upstream mflux support; tracked as a future release candidate.
 
@@ -550,6 +567,8 @@ For `output_dir` specifically the resolution is **`--output-dir` CLI flag > `$IM
 | FLUX Kontext Q8, 20 steps, 1024px (default) | ~15 min |
 | FLUX Kontext Q4, 8 steps, 768px (`--preview`) | ~3–3.5 min |
 | Qwen Edit Q4, 20 steps, 1024px | ~18 min |
+| FLUX.2-klein-edit Q4, 20 steps, 1536² (`imgen refine` default) | ~10-15 min (+ ~15 GB first-run download) |
+| FLUX.2-klein-edit Q4, 20 steps, 2048² (`imgen refine --scale 2`) | ~15-25 min |
 | `--enhance-prompt` overhead | ~3-5 s per image after warm-up |
 
 Wall-clock figures measured on a quiet machine. First image after launch pays a one-time weight-load cost (~30–60 s of mmap); subsequent images in the same `imgen batch` reuse the loaded weights, so an N-image batch is roughly `30 s + N × 15 min`, not `N × 15.5 min`. With `--enhance-prompt`, the enhancer model loads once per `imgen` invocation and amortises across all prompts in a batch.
@@ -651,4 +670,4 @@ ComfyUI on Mac has well-documented PyTorch/MPS issues with Qwen and FLUX models 
 
 MIT — see [LICENSE](LICENSE).
 
-Third-party model licenses (FLUX Kontext, Qwen Image Edit) apply to generated images. See LICENSE for details.
+Third-party model licenses (FLUX Kontext, FLUX.1-dev, FLUX.2-klein, Qwen Image Edit) apply to generated images. See LICENSE for details.
