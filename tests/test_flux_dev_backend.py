@@ -95,6 +95,20 @@ class TestFluxDevBackendEntry:
         assert BACKENDS["flux"].lora_compat_group == "flux-1"
         assert BACKENDS["qwen"].lora_compat_group == "qwen"
 
+    def test_hf_gated_repo_populated(self):
+        """v0.7.0 post-tag UX-gap: flux-dev declares the HF model URL
+        path so cmd_draw can surface the per-repo license hint on
+        first-run 401 failures. Cold-install colleagues whose token
+        works for Kontext but haven't accepted FLUX.1-dev's separate
+        license hit this gap; the cmd_draw post-failure block reads
+        ``hf_gated_repo`` to point them at the right page."""
+        assert BACKENDS["flux-dev"].hf_gated_repo == "black-forest-labs/FLUX.1-dev"
+        # FLUX-Kontext also declares its gated repo for symmetry —
+        # accepting Kontext's license is the i2i prerequisite.
+        assert BACKENDS["flux"].hf_gated_repo == "black-forest-labs/FLUX.1-Kontext-dev"
+        # qwen is open (needs_token=False), no gated repo to declare.
+        assert BACKENDS["qwen"].hf_gated_repo is None
+
 
 class TestLoraRefArgCompatibleWithWidening:
     """v0.7.0 (architect §A): CLI `--lora` default compatible_with

@@ -97,6 +97,16 @@ class Backend:
     # declare it) means "no LoRA support" — any LoRA reference in a
     # style is silently skipped with a warn for this backend.
     lora_compat_group: str = ""
+    # v0.7.0 (post-tag review UX-gap fix): HuggingFace gated-repo URL
+    # path (e.g. ``"black-forest-labs/FLUX.1-dev"``) for the model
+    # this backend loads. When mflux exits non-zero AND the user's
+    # token is set but the HF API returns 401 / GatedRepoError, the
+    # cmd_draw post-run hint surfaces this URL so the user can accept
+    # the per-repo license (gated-repo licenses are accepted per-model
+    # on HF — sharing a token across two BFL repos doesn't auto-share
+    # the license-grant). None for backends that don't need a gated
+    # repo (qwen) or for user TOMLs that don't declare it.
+    hf_gated_repo: str | None = None
 
 
 # System prompts for built-in backends. Module-level constants so tests
@@ -217,6 +227,7 @@ BUILTIN_BACKENDS: dict[str, Backend] = {
         # FLUX.1-schnell. Most FLUX.1 LoRAs published on HuggingFace
         # are trained against FLUX.1-dev and load cleanly on Kontext.
         lora_compat_group="flux-1",
+        hf_gated_repo="black-forest-labs/FLUX.1-Kontext-dev",
     ),
     "qwen": Backend(
         binary="mflux-generate-qwen-edit",
@@ -254,6 +265,13 @@ BUILTIN_BACKENDS: dict[str, Backend] = {
         enhance_system_prompt=_FLUX_DEV_DRAW_ENHANCE_SYS,
         enhance_invariants=(),  # t2i: no identity anchor, see architect §K
         lora_compat_group="flux-dev",
+        # FLUX.1-dev is a SEPARATE gated repo from Kontext. Sharing a
+        # token across both BFL models doesn't auto-share the per-model
+        # license-grant — first time on a new Mac users hit a 401
+        # GatedRepoError until they visit the model page and accept.
+        # The cmd_draw post-failure hint reads this URL to point the
+        # user at the right gate.
+        hf_gated_repo="black-forest-labs/FLUX.1-dev",
     ),
 }
 

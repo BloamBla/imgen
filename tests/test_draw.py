@@ -421,6 +421,49 @@ class TestCmdDrawEnhancer:
         out = capsys.readouterr().out
         assert "ENH: a samurai" in out
 
+    def test_gated_repo_hint_surfaces_on_mflux_failure(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """v0.7.0 post-tag UX-gap fix: cold-install colleague whose HF
+        token works for Kontext but never accepted FLUX.1-dev's license
+        sees a 401 GatedRepoError buried in mflux's stack trace. cmd_draw
+        appends a friendly hint pointing at the per-model license page
+        — read from ``Backend.hf_gated_repo``."""
+        from imgen.backends import BACKENDS
+
+        def fake_load(args):
+            return ("flux-dev", BACKENDS["flux-dev"], "tok",
+                    Path("/fake/mflux-generate"), None)
+        monkeypatch.setattr(
+            "imgen.commands.draw.load_backend_and_token", fake_load,
+        )
+        # Force mflux subprocess to "fail" (return non-zero rc) so
+        # cmd_draw routes through the failure-summary path with the
+        # hint block.
+        monkeypatch.setattr(
+            "imgen.cmd_helpers.run_with_stderr_redaction",
+            lambda cmd, **kw: 1,  # non-zero rc
+        )
+        monkeypatch.setattr(
+            "imgen.cmd_helpers.preflight_resources",
+            lambda **kw: None,
+        )
+
+        args = _make_args(
+            prompt="a samurai",
+            enhance=False,
+            dry_run=False,
+            yes=True,
+            output_dir=str(tmp_path),
+        )
+        rc = cmd_draw(args)
+        # Non-zero exit propagates from the failed iteration.
+        assert rc != 0
+        out = capsys.readouterr().out
+        # The hint surfaces the HF model URL.
+        assert "huggingface.co/black-forest-labs/FLUX.1-dev" in out
+        assert "GatedRepoError" in out or "401" in out
+
     def test_invariants_empty_means_no_substring_check(
         self, tmp_path, monkeypatch, capsys,
     ):
