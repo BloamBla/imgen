@@ -79,7 +79,9 @@ from .paths import DEFAULT_OUTPUT_DIR, SAFE_OUTPUT_EXTS, VENV_BIN
 from .runs import (
     BatchContext,
     BatchLogger,
+    DrawIterationGroup,
     Iteration,
+    IterationGroup,
     PerInputBatch,
     auto_run_dirname,
     next_available_run_dir,
@@ -89,8 +91,9 @@ from .subprocess_helpers import run_with_stderr_redaction
 from .tokens import load_token
 
 __all__ = [
+    "apply_enhance_results_to_groups",
     "apply_enhance_results_to_iterations",
-    "apply_enhance_results_to_per_input",
+    "apply_enhance_results_to_per_input",  # v0.7.0 backward-compat alias
     "build_iterations",
     "check_prompt_style_compat",
     "estimate_one_seconds",
@@ -568,58 +571,59 @@ def apply_enhance_results_to_iterations(
     return out
 
 
-def apply_enhance_results_to_per_input(
-    per_input_iters: list[PerInputBatch],
+def apply_enhance_results_to_groups(
+    groups: list[IterationGroup],
     enhance_results: list[EnhanceResult],
-) -> list[PerInputBatch]:
+) -> list[IterationGroup]:
     """Wrapper around :func:`apply_enhance_results_to_iterations` for
-    ``cmd_batch``'s per-input shape — eliminates the sliding-cursor
-    block that used to live inline in batch.py (v0.5 architect IMP #2,
-    extracted in v0.6.4; signature promoted from 5-tuple to
-    :class:`PerInputBatch` in v0.6.5 per architect IMP-3).
+    any per-group iteration shape implementing :class:`IterationGroup`
+    — eliminates the sliding-cursor block that used to live inline in
+    batch.py (v0.5 architect IMP #2, extracted in v0.6.4 as
+    ``apply_enhance_results_to_per_input``; signature promoted from
+    5-tuple to :class:`PerInputBatch` in v0.6.5; generalised from i2i-
+    only to Protocol-typed in v0.7.0 per architect FL-2).
 
-    ``per_input_iters`` is the cmd_batch shape: one
-    :class:`~imgen.runs.PerInputBatch` per discovered input photo,
-    each carrying its M-style iteration tuple. ``enhance_results`` is
-    the FLAT list returned by :func:`enhance_iteration_prompts`
-    aligned to ``[it for pib in per_input_iters for it in pib.iters]``.
+    ``groups`` is a list of any concrete :class:`IterationGroup` —
+    :class:`PerInputBatch` (i2i) or :class:`DrawIterationGroup` (t2i)
+    today; future :class:`VideoIterationGroup` plugs in identically.
+    Each group carries its iteration tuple. ``enhance_results`` is the
+    FLAT list returned by :func:`enhance_iteration_prompts` aligned to
+    ``[it for g in groups for it in g.iters]``.
 
-    Returns a new list of :class:`PerInputBatch` instances with
-    enhanced prompts spliced in. Per-input group lengths preserved
-    (the helper doesn't assume uniform M; any future per-style skip
-    logic that produces ragged groups stays intact).
-
-    v0.6.5 (architect IMP-3): the per-input shape was a bare
-    ``tuple[Path, Path, int, int, list[Iteration]]`` through v0.6.4,
-    promoted here to :class:`PerInputBatch` for named-field access at
-    callers.
+    Returns a new list of the same concrete shapes with enhanced
+    prompts spliced in. Per-group lengths preserved (helper doesn't
+    assume uniform group sizes; ragged groups stay intact).
+    Uses :func:`dataclasses.replace` so future field additions to any
+    concrete shape propagate automatically (v0.6.5 architect FL-6).
 
     Pure: no I/O. Asserts the flat-shape count matches sum of group
     lengths — misalignment would silently miswire prompts.
     """
-    expected_flat = sum(len(pib.iters) for pib in per_input_iters)
+    expected_flat = sum(len(g.iters) for g in groups)
     if expected_flat != len(enhance_results):
         raise ValueError(
-            f"enhance-result count mismatch: per-input groups sum to "
+            f"enhance-result count mismatch: groups sum to "
             f"{expected_flat} iterations vs {len(enhance_results)} results"
         )
-    out: list[PerInputBatch] = []
+    out: list[IterationGroup] = []
     cursor = 0
-    for pib in per_input_iters:
-        group_len = len(pib.iters)
+    for g in groups:
+        group_len = len(g.iters)
         group_results = enhance_results[cursor:cursor + group_len]
         cursor += group_len
         new_iters = apply_enhance_results_to_iterations(
-            list(pib.iters), group_results,
+            list(g.iters), group_results,
         )
-        # v0.6.5 architect FL-6: ``replace`` carries every non-overridden
-        # field through unchanged, so a future :class:`PerInputBatch`
-        # field addition (e.g. ``original_dimensions``, draw-marker)
-        # propagates automatically. Manual field-by-field rebuild would
-        # silently drop new fields. Matches the
-        # ``apply_enhance_results_to_iterations`` pattern at line 529.
-        out.append(_dataclass_replace(pib, iters=tuple(new_iters)))
+        out.append(_dataclass_replace(g, iters=tuple(new_iters)))
     return out
+
+
+# v0.7.0 backward-compat alias for the v0.6.4–v0.6.5 i2i-flavoured name.
+# Removed in v0.7.1 alongside the apply-rename architect FL-2 closure.
+# Existing callers (commands/batch.py) keep their import working; the
+# Protocol-typed signature accepts list[PerInputBatch] cleanly because
+# PerInputBatch implements IterationGroup.
+apply_enhance_results_to_per_input = apply_enhance_results_to_groups
 
 
 # ── One iteration: the subprocess workhorse ─────────────────────────────

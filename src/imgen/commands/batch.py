@@ -61,7 +61,7 @@ from ..runs import (
     PerInputBatch,
 )
 from ..cmd_helpers import (
-    apply_enhance_results_to_per_input,
+    apply_enhance_results_to_groups,
     build_iterations,
     check_prompt_style_compat,
     estimate_one_seconds,
@@ -301,10 +301,13 @@ def cmd_batch(args) -> int:
         # Splice enhanced prompts back into the per-input shape via a
         # single call (v0.6.4 v0.5 architect IMP #2 — used to be a
         # sliding-cursor block inline here; the cursor moved into
-        # apply_enhance_results_to_per_input where it's encapsulated +
-        # alignment-asserted). all_iters stays flat for downstream
-        # dry-run / preflight / confirm gate consumption.
-        per_input_iters = apply_enhance_results_to_per_input(
+        # apply_enhance_results_to_groups (renamed from
+        # apply_enhance_results_to_per_input in v0.7.0 per architect
+        # FL-2) where it's encapsulated + alignment-asserted +
+        # Protocol-typed over both PerInputBatch and DrawIterationGroup.
+        # all_iters stays flat for downstream dry-run / preflight /
+        # confirm gate consumption.
+        per_input_iters = apply_enhance_results_to_groups(
             per_input_iters, enhance_results,
         )
         all_iters = [

@@ -36,7 +36,7 @@ import os
 import stat as _stat
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, Protocol, runtime_checkable
 
 from .paths import STATE_DIR, ensure_state_dir
 
@@ -45,7 +45,9 @@ __all__ = [
     "LOGS_DIR",
     "BatchContext",
     "BatchLogger",
+    "DrawIterationGroup",
     "Iteration",
+    "IterationGroup",
     "PerInputBatch",
     "auto_run_dirname",
     "ensure_logs_dir",
@@ -167,6 +169,59 @@ class PerInputBatch:
     """
     input_path: Path
     mflux_input: Path
+    width: int
+    height: int
+    iters: tuple[Iteration, ...]
+
+    __hash__ = None  # type: ignore[assignment]
+
+
+@runtime_checkable
+class IterationGroup(Protocol):
+    """Common shape across i2i (:class:`PerInputBatch`) and t2i
+    (:class:`DrawIterationGroup`) per-group shapes.
+
+    Carries the ``width`` / ``height`` anchors + the ``iters`` tuple
+    that :func:`cmd_helpers.apply_enhance_results_to_groups` splices
+    enhanced prompts into. Shape-specific fields
+    (``input_path`` / ``mflux_input`` on i2i; future fields on video
+    t2v) live on each concrete dataclass; the Protocol mandates only
+    the shared minimum.
+
+    Introduced v0.7.0 alongside ``imgen draw`` (architect FL-1 from
+    the v0.6.5 review). ``runtime_checkable`` so tests can
+    ``isinstance(g, IterationGroup)`` against the concrete classes;
+    the helper itself remains shape-agnostic via
+    :func:`dataclasses.replace`.
+    """
+    width: int
+    height: int
+    iters: tuple[Iteration, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DrawIterationGroup:
+    """The t2i (``imgen draw``) sibling of :class:`PerInputBatch`.
+
+    No ``input_path`` / ``mflux_input`` — draw has no photo input. Same
+    ``width`` / ``height`` / ``iters`` trio that the
+    :class:`IterationGroup` Protocol mandates. Draw is single-iter in
+    v0.7.0 (one prompt → one image); ``iters`` has length 1. A future
+    ``--num-iterations`` flag (v0.7.1+) would extend it without schema
+    change.
+
+    Introduced v0.7.0 (architect FL-1 cash-in). Why a sibling and not
+    a flag on PerInputBatch: the i2i shape carries i2i-specific fields
+    (input_path = original user-typed path; mflux_input =
+    sips-converted-or-passthrough path mflux actually reads). Making
+    them Optional bloats every i2i call site with None-handling for a
+    case that doesn't apply; a sibling class is cleaner and the
+    :class:`IterationGroup` Protocol bridges the two for the shared
+    helpers.
+
+    ``__hash__ = None`` mirroring :class:`PerInputBatch` / :class:`Iteration`
+    — Iteration is itself unhashable (``cmd: list[str]``).
+    """
     width: int
     height: int
     iters: tuple[Iteration, ...]
