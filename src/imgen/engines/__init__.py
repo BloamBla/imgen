@@ -10,5 +10,6 @@ Per [[project-v080-design]] §C. ``Engine`` is the dispatch Protocol;
 from __future__ import annotations
 
 from .base import Engine, GenParams
+from .mflux_engine import MfluxEngine
 
-__all__ = ["Engine", "GenParams"]
+__all__ = ["Engine", "GenParams", "MfluxEngine"]

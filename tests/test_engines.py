@@ -79,3 +79,94 @@ class TestEngineProtocol:
         # Bonus sanity: the class IS a typing.Protocol marker, not abc.ABC.
         # (Implementation detail: Protocols have `_is_protocol = True`.)
         assert getattr(Engine, "_is_protocol", False) is True
+
+
+# ── v0.8.0 commit 2 — MfluxEngine ────────────────────────────────────
+
+
+class TestMfluxEngineConformance:
+    """MfluxEngine implements the Engine Protocol structurally."""
+
+    def test_mflux_engine_satisfies_protocol(self):
+        from imgen.engines.base import Engine
+        from imgen.engines.mflux_engine import MfluxEngine
+        assert isinstance(MfluxEngine(), Engine)
+
+    def test_mflux_engine_name(self):
+        from imgen.engines.mflux_engine import MfluxEngine
+        assert MfluxEngine().name == "mflux"
+
+
+@pytest.mark.parametrize(
+    "backend_name",
+    ["flux", "qwen", "flux-dev", "flux2-klein-edit-9b"],
+)
+class TestMfluxEngineBuildCmdMatchesV07_17:
+    """Argv-stability lock-in (§D, §Q commit 2): MfluxEngine.build_cmd
+    produces bit-identical argv to v0.7.17's `build_mflux_cmd` for
+    every currently-built-in backend. Without this contract, the
+    facade re-exports (§D) would silently produce different argv,
+    breaking colleagues' shell-script reproducibility."""
+
+    def test_build_cmd_argv_identical_to_v07_17(self, backend_name):
+        from pathlib import Path
+        from imgen.backends import BACKENDS, build_mflux_cmd
+        from imgen.engines.base import GenParams
+        from imgen.engines.mflux_engine import MfluxEngine
+        from imgen.models import _model_from_backend
+
+        backend = BACKENDS[backend_name]
+        model = _model_from_backend(backend, backend_name)
+
+        # Pick an input_path only for backends that accept one — flux
+        # and qwen are i2i; flux-dev is t2i (image_flag set for
+        # dataclass shape consistency but the runtime gate is on
+        # input_path is None per backends.py:925-927).
+        input_path = Path("/fake/in.png") if backend_name != "flux-dev" else None
+        common = dict(
+            output_path=Path("/fake/out.png"),
+            prompt="a samurai on a misty mountain at dawn",
+            negative="",
+            quantize=4,
+            steps=20,
+            guidance=3.5,
+            strength=0.55,
+            seed=1088118853,
+            width=1024,
+            height=1024,
+            mlx_cache_gb=12,
+            battery_stop=20,
+            loras=(),
+        )
+
+        legacy_argv = build_mflux_cmd(
+            binary=Path("/fake/mflux-bin"),
+            backend=backend,
+            input_path=input_path,
+            **common,
+        )
+
+        params = GenParams(
+            prompt=common["prompt"],
+            negative=common["negative"],
+            width=common["width"],
+            height=common["height"],
+            steps=common["steps"],
+            guidance=common["guidance"],
+            seed=common["seed"],
+            quantize=common["quantize"],
+            strength=common["strength"],
+            input_path=input_path,
+            output_path=common["output_path"],
+            loras=common["loras"],
+            mlx_cache_gb=common["mlx_cache_gb"],
+            battery_stop=common["battery_stop"],
+        )
+        new_argv = MfluxEngine().build_cmd(
+            model, params, binary=Path("/fake/mflux-bin"),
+        )
+        assert new_argv == legacy_argv, (
+            f"argv drift for {backend_name}:\n"
+            f"  legacy: {legacy_argv}\n"
+            f"  new:    {new_argv}"
+        )

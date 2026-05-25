@@ -171,6 +171,63 @@ class TestParamOverridesImmutability:
             m.param_overrides.append(("another", 1))  # type: ignore[attr-defined]
 
 
+class TestModelFromBackendDerivation:
+    """v0.8.0 commit 2 (§F + §Q): `_model_from_backend(backend, name)`
+    derives a Model from a v0.7 Backend row. BUILTIN_MODELS in commit 2
+    is the dict comprehension `{name: _model_from_backend(b, name) for
+    name, b in BUILTIN_BACKENDS.items()}` — single derivation path.
+
+    The derived Model row preserves every Backend field that maps 1:1
+    (binary, extra_args, image_flag, supports_*, lora_compat_group,
+    hf_gated_repo, enhance_*) AND populates the v0.8-NEW fields
+    (ram_baseline_gb, ram_slope_gb_per_mp, encoder_ram_gb) from a
+    per-backend lookup table that exists ONLY to satisfy __post_init__
+    until commit 4b promotes BUILTIN_MODELS to live-registry status
+    with literal per-model values."""
+
+    def test_derived_model_engine_is_always_mflux(self):
+        from imgen.backends import BACKENDS
+        from imgen.models import _model_from_backend
+        for name, backend in BACKENDS.items():
+            m = _model_from_backend(backend, name)
+            assert m.engine == "mflux", (
+                f"derived Model for {name} has engine={m.engine!r}, "
+                "expected 'mflux'"
+            )
+
+    def test_derived_model_preserves_v07_fields(self):
+        from imgen.backends import BACKENDS
+        from imgen.models import _model_from_backend
+        backend = BACKENDS["flux"]
+        m = _model_from_backend(backend, "flux")
+        assert m.binary == backend.binary
+        assert m.extra_args == backend.extra_args
+        assert m.image_flag == backend.image_flag
+        assert m.supports_strength == backend.supports_strength
+        assert m.supports_negative == backend.supports_negative
+        assert m.needs_token == backend.needs_token
+        assert m.lora_compat_group == backend.lora_compat_group
+        assert m.hf_gated_repo == backend.hf_gated_repo
+        assert m.enhance_system_prompt == backend.enhance_system_prompt
+        assert m.enhance_invariants == backend.enhance_invariants
+
+    def test_builtin_models_dict_is_derived_view(self):
+        """BUILTIN_MODELS keys match BUILTIN_BACKENDS keys 1:1 (registry
+        stays live as BUILTIN_BACKENDS through commits 2-3 per §Q
+        round-2 fix; flip in commit 4b)."""
+        from imgen.backends import BUILTIN_BACKENDS
+        from imgen.models import BUILTIN_MODELS
+        assert set(BUILTIN_MODELS.keys()) == set(BUILTIN_BACKENDS.keys())
+
+    def test_builtin_models_pass_post_init_invariants(self):
+        """Every derived Model must satisfy `__post_init__` — instantiation
+        at module load WOULD have raised otherwise. This test just asserts
+        the dict loaded cleanly (which proves the per-backend RAM lookup
+        table is exhaustive for the current 9 backends)."""
+        from imgen.models import BUILTIN_MODELS
+        assert len(BUILTIN_MODELS) >= 4  # at least flux/flux-dev/qwen/flux2
+
+
 class TestGenParams:
     """GenParams is the pure-data envelope passed between cli and Engine
     per §C. frozen+slots so engines can rely on identity stability."""

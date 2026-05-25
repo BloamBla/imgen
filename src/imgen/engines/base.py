@@ -41,6 +41,13 @@ class GenParams:
     # with styles.py at this layer. Engine implementations re-type at the
     # call boundary.
     loras: tuple
+    # — mflux-engine-specific (default to v0.7 DEFAULTS values so
+    # diffusers_mps callers can omit them safely). These are per-call
+    # values today (user can override via --mlx-cache-limit-gb /
+    # --battery-stop-limit) but defaults match merged_defaults from
+    # config.py to keep MfluxEngine argv bit-identical with v0.7.17. —
+    mlx_cache_gb: int = 12
+    battery_stop: int = 20
 
 
 @runtime_checkable

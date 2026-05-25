@@ -15,7 +15,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-__all__ = ["Model"]
+__all__ = ["BUILTIN_MODELS", "Model", "_model_from_backend"]
+
+
+# v0.8 commit-2 scaffold: RAM defaults per legacy v0.7 backend name.
+# Exists ONLY to satisfy Model.__post_init__ during the derive-from-
+# Backend phase (commits 2-3). Commit 4b promotes BUILTIN_MODELS to
+# the live registry with literal per-model values declared inline (per
+# §G.1), and this table goes away. Values are calibrated from the
+# v0.7.14 RAM_REQUIRED_GB table + v0.7.7 real-mflux measurements +
+# 2026-05-25 Qwen-2512 swap-thrash session, encoded per [[project-v080-
+# design]] §G.1.
+_V07_BACKEND_RAM_DEFAULTS: dict[str, tuple[float, float, float]] = {
+    # name → (ram_baseline_gb, ram_slope_gb_per_mp, encoder_ram_gb)
+    "flux":                 (9.0,  5.0,  0.0),
+    "flux-dev":             (9.0,  5.0,  0.0),
+    "qwen":                 (10.0, 5.0,  7.0),  # Qwen2.5-VL ~7 GB
+    "flux2-klein-edit-9b":  (14.0, 5.5,  0.0),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,3 +118,69 @@ class Model:
                 f"Model row missing ram_slope_gb_per_mp (got {self.ram_slope_gb_per_mp}) "
                 "— registry author must declare."
             )
+
+
+def _model_from_backend(backend, name: str) -> Model:
+    """Derive a v0.8 Model from a v0.7 Backend row.
+
+    Used to populate ``BUILTIN_MODELS`` while the live registry is still
+    ``BUILTIN_BACKENDS`` (commits 2-3 per §Q). Once commit 4b flips the
+    source-of-truth, BUILTIN_MODELS is declared inline per §G.1 and this
+    helper is no longer needed at module load (it stays exported for
+    user TOML migration tests).
+
+    The ``name`` parameter is needed for the per-backend RAM lookup —
+    Backend rows don't carry RAM info (it lived in v0.7.14's separate
+    ``checks.RAM_REQUIRED_GB`` table). The lookup is exhaustive for the
+    4 current built-ins; unknown names raise (forces explicit table
+    update if a new built-in lands during the v0.8 arc).
+    """
+    if name not in _V07_BACKEND_RAM_DEFAULTS:
+        raise KeyError(
+            f"_V07_BACKEND_RAM_DEFAULTS missing entry for {name!r}. "
+            "Add (baseline_gb, slope_per_mp, encoder_gb) row in models.py "
+            "before deriving a Model for this backend."
+        )
+    baseline, slope, encoder = _V07_BACKEND_RAM_DEFAULTS[name]
+    return Model(
+        engine="mflux",
+        binary=backend.binary,
+        extra_args=backend.extra_args,
+        image_flag=backend.image_flag,
+        supports_strength=backend.supports_strength,
+        supports_negative=backend.supports_negative,
+        needs_token=backend.needs_token,
+        lora_compat_group=backend.lora_compat_group,
+        hf_gated_repo=backend.hf_gated_repo,
+        enhance_system_prompt=backend.enhance_system_prompt,
+        enhance_invariants=backend.enhance_invariants,
+        # v0.8 NEW fields — populated from the per-backend lookup
+        # table above. Commit 4b replaces this with inline declarations
+        # per §G.1 and the table is deleted.
+        ram_baseline_gb=baseline,
+        ram_slope_gb_per_mp=slope,
+        encoder_ram_gb=encoder,
+        # default_steps / default_guidance / min_guidance / max_guidance
+        # stay at dataclass defaults for the derived-view phase —
+        # explicit per-model values land alongside the §G.1 inline
+        # declarations in commit 4b.
+    )
+
+
+# Derived registry view. Built from BUILTIN_BACKENDS at module load —
+# single source of derivation, no manual sync between the two dicts.
+# When commit 4b flips source-of-truth, this becomes the live literal
+# declaration and BUILTIN_BACKENDS becomes the derived view going
+# backward (`{name: _backend_from_model(m) for ...}`).
+def _build_builtin_models() -> dict[str, Model]:
+    """Local import to avoid module-load circularity — backends.py
+    imports `Model` from us in its facade (post-§D), but at this commit
+    backends.py only exports legacy `Backend` + `BUILTIN_BACKENDS`."""
+    from .backends import BUILTIN_BACKENDS
+    return {
+        name: _model_from_backend(b, name)
+        for name, b in BUILTIN_BACKENDS.items()
+    }
+
+
+BUILTIN_MODELS: dict[str, Model] = _build_builtin_models()
