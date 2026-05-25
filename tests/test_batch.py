@@ -424,8 +424,14 @@ def test_cmd_batch_partial_failure_returns_exit_5(
     # assignment) so teardown restores the original — otherwise an
     # assertion failure here would clobber run_with_stderr_redaction
     # for the rest of the suite.
+    # v0.8.2 M-1C-prep dual-patch: post-M-1C-flip engine.run resolves
+    # through subprocess_helpers, so we MUST override BOTH names for
+    # the varying-returncode behaviour to fire on every iteration.
     monkeypatch.setattr(
         "imgen.cmd_helpers.run_with_stderr_redaction", varying_run
+    )
+    monkeypatch.setattr(
+        "imgen.subprocess_helpers.run_with_stderr_redaction", varying_run
     )
 
     d = _make_input_dir(tmp_path, "a.jpg", "b.jpg")

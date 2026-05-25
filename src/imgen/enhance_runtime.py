@@ -182,8 +182,25 @@ def run_with_mlx_lm(
     # mflux subprocess calls. build_enhance_env() forwards only PATH,
     # HOME, USER, locale, TMPDIR, and HF cache paths — and explicitly
     # does NOT forward HF_TOKEN.
-    from .subprocess_helpers import build_enhance_env
+    from .subprocess_helpers import (
+        _assert_safe_ram_or_raise,
+        build_enhance_env,
+    )
     runner_env = build_enhance_env()
+
+    # v0.8.2 safety net (M-NEW-A from §R.4 v0.8.2 review): the enhance
+    # subprocess loads Qwen2.5-7B (~4 GB). It's the smaller of the
+    # project's ML children, but loading any 4+ GB model into <4 GB
+    # available RAM still swap-thrashes. Run the same hard-floor check
+    # the mflux + diffusers subprocesses go through via
+    # ``run_with_stderr_redaction`` — we use ``subprocess.run`` here
+    # (synchronous + small payload), so the assert lives at the call
+    # site, NOT inside the run_with_stderr_redaction wrapper.
+    # ``InsufficientRAMError`` propagates up; the orchestrator
+    # (cmd_helpers.maybe_enhance_prompts) wraps it as a RunnerError
+    # via EnhanceResult.fallback_reason="runner_error" so the user
+    # sees the cause + the fallback runs with the original prompt.
+    _assert_safe_ram_or_raise()
 
     try:
         result = subprocess.run(

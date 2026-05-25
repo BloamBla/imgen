@@ -207,3 +207,46 @@ def test_run_one_iteration_catches_ram_safety_failure(
     entries = load_history()
     assert len(entries) == 1
     assert entries[0]["status"] == "failed"
+
+
+# ── M-NEW-A: enhance subprocess also covered by safety net ───────────
+
+
+def test_safety_net_covers_enhance_subprocess(monkeypatch):
+    """v0.8.2 §R.4 M-NEW-A closure: ``enhance_runtime.run_with_mlx_lm``
+    uses ``subprocess.run`` directly (synchronous + small payload), not
+    the ``run_with_stderr_redaction`` wrapper. Pre-fix the safety net
+    missed it — Qwen2.5-7B (~4 GB) could load into <4 GB available RAM
+    and swap-thrash. Fix: call ``_assert_safe_ram_or_raise()`` at the
+    enhance call site, lifting the same hard-floor check into the
+    enhance path.
+
+    Lock-in: with RAM artificially constrained, ``run_with_mlx_lm``
+    raises InsufficientRAMError BEFORE any ``subprocess.run`` call.
+    The orchestrator catches via the existing RunnerError flow
+    (EnhanceResult.fallback_reason="runner_error") so user sees the
+    cause + falls back to original prompt — same UX as a timeout."""
+    import imgen.checks as checks_mod
+    from imgen.enhance_runtime import run_with_mlx_lm
+    import imgen.enhance_runtime as er_mod
+
+    # Force the safety net to trip
+    monkeypatch.setattr(
+        checks_mod, "get_memory_gb", lambda: (32.0, 1.0),
+    )
+
+    # Prevent subprocess.run even if the safety net somehow misses
+    def fake_subprocess_run(*a, **kw):
+        raise AssertionError(
+            "subprocess.run called despite safety net — invariant violated"
+        )
+    monkeypatch.setattr(er_mod.subprocess, "run", fake_subprocess_run)
+
+    with pytest.raises(InsufficientRAMError):
+        run_with_mlx_lm(
+            items=[{"system": "enhance this", "user": "samurai"}],
+            model="mlx-community/Qwen2.5-7B-Instruct-4bit",
+            temperature=0.3,
+            max_tokens=128,
+            timeout=120,
+        )
