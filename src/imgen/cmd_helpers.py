@@ -1129,33 +1129,66 @@ def exit_code(
 
 
 def _model_for_validate(args):
-    """Return the v0.8 Model for ``args.model`` if it's a built-in,
-    or None for user-TOML names (which are Backend, not Model, and
-    don't carry v0.8 NEW fields like ``min_guidance`` at commit 7).
+    """Return the v0.8 Model for ``args.model`` if resolvable, else None.
 
-    v0.8.0 commit 7 (§M): per-Model validation fires only for
-    built-ins; commit 6+ user-TOML schema extensions (to add v0.8
-    fields) will widen this lookup.
+    v0.8.1 HIGH-2 closure: lookup is now two-tier. Built-in Models from
+    ``BUILTIN_MODELS`` win; on miss, user TOMLs from the merged backend
+    registry are converted to Model via ``model_from_backend`` so their
+    declared v0.8 fields (engine, ram_*, default_*, ...) drive
+    Engine.validate. v0.8.0 returned None for user TOMLs, leaving their
+    declared param defaults effectively dead.
+
+    Returns None only when ``args.model`` is unrecognised in either
+    registry (a user passing ``--model bogus`` — error surfaced
+    downstream by the get_backend call site).
     """
     from .models import BUILTIN_MODELS
-    return BUILTIN_MODELS.get(getattr(args, "model", None))
+    name = getattr(args, "model", None)
+    if name is None:
+        return None
+    builtin = BUILTIN_MODELS.get(name)
+    if builtin is not None:
+        return builtin
+    # User-TOML fallback. ``get_backend`` returns None when the name is
+    # unrecognised (a real "unknown model" — let the downstream error
+    # path surface that). When known, ``model_from_backend`` round-
+    # trips the v0.8 fields the user declared (or sensible defaults
+    # for v0.7-shape TOMLs).
+    from .backends import get_backend, model_from_backend
+    backend = get_backend(name)
+    if backend is None:
+        return None
+    try:
+        return model_from_backend(name, backend)
+    except ValueError:
+        # ``Model.__post_init__`` rejected the round-trip (e.g. a
+        # hand-crafted Backend with engine="diffusers_mps" but no
+        # repo=). Return None so the legacy mflux path keeps working
+        # — schema validation at TOML-load time is the primary gate,
+        # this is defence-in-depth.
+        return None
 
 
 def _engine_for_model(model):
     """Return the Engine implementation matching ``model.engine``.
 
-    At commit 7 only ``"mflux"`` is wired through validate;
-    ``"diffusers_mps"`` returns an empty validate list per commit 6
-    (full diffusers validate lands at commit 7+ via the runner's
-    own _validate_payload_shape — see _diffusers_runner.py).
+    v0.8.1 N-3 closure: unknown-engine path now dies with exit 2 (user
+    input class) rather than raising bare ValueError. The unknown
+    branch is theoretically unreachable today — ``Model.__post_init__``
+    enforces ``engine in {'mflux', 'diffusers_mps'}`` at construction
+    — but the v0.8.1 user-TOML schema extension widened the surface
+    area enough that hardening this gate is cheap defence-in-depth.
     """
     from .engines import DiffusersMpsEngine, MfluxEngine
     if model.engine == "mflux":
         return MfluxEngine()
     if model.engine == "diffusers_mps":
         return DiffusersMpsEngine()
-    raise ValueError(
-        f"_engine_for_model: unknown engine {model.engine!r}"
+    die(
+        f"Model {getattr(model, 'binary', None) or getattr(model, 'repo', None)!r}: "
+        f"engine={model.engine!r} not recognised. "
+        "Expected one of {'mflux', 'diffusers_mps'}.",
+        code=2,
     )
 
 

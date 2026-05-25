@@ -40,6 +40,7 @@ __all__ = [
     "load_user_backend_file",
     "load_user_backends_dir",
     "merge_user_backends",
+    "model_from_backend",
     "reset_backends_cache",
     "validate_user_backend_schema",
 ]
@@ -107,6 +108,52 @@ class Backend:
     # the license-grant). None for backends that don't need a gated
     # repo (qwen) or for user TOMLs that don't declare it.
     hf_gated_repo: str | None = None
+    # v0.8.1 HIGH-2 closure: v0.8 Model-shape fields preserved on Backend
+    # so user TOMLs can declare them in ~/.imgen/models.d/*.toml and they
+    # flow through to Engine routing via ``model_from_backend(name, b)``.
+    # Defaults match the v0.7 Backend behaviour, so a TOML that omits
+    # them loads unchanged — additive forward-compat per memo §F's
+    # "user TOMLs' v0.8 schema is a SUPERSET of v0.7" promise.
+    #
+    # ``engine`` — which Engine implementation handles this backend.
+    # ``"mflux"`` is the default; ``"diffusers_mps"`` routes through
+    # DiffusersMpsEngine when the helper ``model_from_backend`` constructs
+    # a Model from this Backend. v0.8.1 schema enforces the binary/repo
+    # invariant (binary required iff engine="mflux"; repo required iff
+    # engine="diffusers_mps") at validation time.
+    engine: str = "mflux"
+    # ``repo`` — HF Hub repo id (e.g. ``"Qwen/Qwen-Image-2512"``). Used
+    # only by diffusers_mps engine; None / ignored on mflux.
+    repo: str | None = None
+    # ``cpu_offload_threshold_mp`` — diffusers_mps activates pipeline
+    # cpu-offload at output >= this many megapixels. Sentinel-ish: a
+    # very high default (999.0) means "never offload" so the field
+    # doesn't accidentally fire on mflux backends.
+    cpu_offload_threshold_mp: float = 999.0
+    # ``ram_baseline_gb`` / ``ram_slope_gb_per_mp`` / ``encoder_ram_gb``
+    # — per-Model RAM math (memo §L). Defaults are flux-class
+    # conservative values so a v0.7-shape user TOML gets a reasonable
+    # preflight estimate without declaring them. Built-in registry rows
+    # in models.py override with calibrated per-model anchors.
+    ram_baseline_gb: float = 13.5
+    ram_slope_gb_per_mp: float = 4.0
+    encoder_ram_gb: float = 0.0
+    # ``default_steps`` / ``default_guidance`` / ``min_guidance`` /
+    # ``max_guidance`` — per-Model param defaults consulted by
+    # cmd_helpers._resolve_iteration_params and Engine.validate.
+    default_steps: int = 20
+    default_guidance: float = 3.5
+    min_guidance: float = 0.0
+    max_guidance: float = 10.0
+    # ``supported_quants`` — quantize ladder. mflux backends usually
+    # support (3, 4, 5, 6, 8); diffusers_mps usually omits quantize
+    # entirely (omit_quantize=True) so the tuple may be empty.
+    supported_quants: tuple[int, ...] = (3, 4, 5, 6, 8)
+    omit_quantize: bool = False
+    # ``param_overrides`` — tuple-of-tuples for frozen-friendly storage;
+    # Engine code converts to dict at call boundary. Allowlist-keyed at
+    # runtime (only diffusers_mps recognises specific keys today).
+    param_overrides: tuple[tuple[str, object], ...] = ()
 
 
 # ── System prompt constants — re-exported from models.py at v0.8.0 ─────
@@ -151,13 +198,15 @@ from .models import (
 
 
 def _backend_from_model(m: Model, v07_name: str) -> Backend:
-    """Convert a v0.8 Model → v0.7 Backend (for backward-derived
+    """Convert a v0.8 Model → Backend (for backward-derived
     BUILTIN_BACKENDS view + back-compat shim test fixtures).
 
-    Drops v0.8-only fields (engine, repo, RAM math, param defaults).
-    ``v07_name`` is passed for diagnostic context only — Backend
-    doesn't carry its own name, the caller embeds it in the registry
-    key.
+    v0.8.1 (HIGH-2 closure): preserves ALL v0.8 Model fields on Backend
+    so a downstream ``model_from_backend(name, b)`` can losslessly
+    reconstruct a Model for Engine routing — used by both the built-in
+    path (Model → Backend → Model round-trip; preserved fields make it
+    pure pass-through) and the user-TOML path (Backend constructed by
+    ``validate_user_backend_schema`` carries the declared fields too).
     """
     return Backend(
         binary=m.binary or "",
@@ -176,6 +225,65 @@ def _backend_from_model(m: Model, v07_name: str) -> Backend:
         enhance_invariants=m.enhance_invariants,
         lora_compat_group=m.lora_compat_group,
         hf_gated_repo=m.hf_gated_repo,
+        # v0.8.1 HIGH-2 closure: preserve v0.8 Model fields on Backend.
+        engine=m.engine,
+        repo=m.repo,
+        cpu_offload_threshold_mp=m.cpu_offload_threshold_mp,
+        ram_baseline_gb=m.ram_baseline_gb,
+        ram_slope_gb_per_mp=m.ram_slope_gb_per_mp,
+        encoder_ram_gb=m.encoder_ram_gb,
+        default_steps=m.default_steps,
+        default_guidance=m.default_guidance,
+        min_guidance=m.min_guidance,
+        max_guidance=m.max_guidance,
+        supported_quants=m.supported_quants,
+        omit_quantize=m.omit_quantize,
+        param_overrides=m.param_overrides,
+    )
+
+
+def model_from_backend(name: str, b: Backend) -> Model:
+    """Convert a Backend → Model for Engine routing (v0.8.1 HIGH-2 closure).
+
+    Pure function — built-ins go Model → Backend at module load (via
+    ``_backend_from_model``) and this is the round-trip; user TOMLs
+    go TOML → Backend via ``validate_user_backend_schema`` and this is
+    the first Model construction for them. ``__post_init__`` invariants
+    (engine in {mflux, diffusers_mps}; binary/repo required per engine;
+    ram fields > 0) fire at every call, so a hand-edited user TOML
+    that escaped one of the schema validators still gets caught at
+    Engine-routing time.
+
+    ``name`` is consumed in the error message ``__post_init__`` raises
+    when invariants fail — no other side-effect.
+
+    Used by ``_model_for_validate`` in cmd_helpers.py to extend Engine
+    routing to user TOMLs after they declare v0.8 fields.
+    """
+    return Model(
+        engine=b.engine,
+        binary=b.binary if b.engine == "mflux" else None,
+        repo=b.repo,
+        extra_args=b.extra_args,
+        image_flag=b.image_flag if b.engine == "mflux" else None,
+        cpu_offload_threshold_mp=b.cpu_offload_threshold_mp,
+        supports_strength=b.supports_strength,
+        supports_negative=b.supports_negative,
+        needs_token=b.needs_token,
+        lora_compat_group=b.lora_compat_group,
+        hf_gated_repo=b.hf_gated_repo,
+        default_steps=b.default_steps,
+        default_guidance=b.default_guidance,
+        min_guidance=b.min_guidance,
+        max_guidance=b.max_guidance,
+        supported_quants=b.supported_quants,
+        omit_quantize=b.omit_quantize,
+        param_overrides=b.param_overrides,
+        ram_baseline_gb=b.ram_baseline_gb,
+        ram_slope_gb_per_mp=b.ram_slope_gb_per_mp,
+        encoder_ram_gb=b.encoder_ram_gb,
+        enhance_system_prompt=b.enhance_system_prompt,
+        enhance_invariants=b.enhance_invariants,
     )
 
 
@@ -311,6 +419,96 @@ _USER_BACKEND_SCHEMA: dict[str, tuple[str, Callable[[Any], bool]]] = {
         "non-empty string (no control bytes)",
         lambda v: isinstance(v, str) and v.strip() != "" and _is_clean_str(v),
     ),
+    # ── v0.8.1 HIGH-2 closure: v0.8 OPTIONAL Model-shape fields ────────
+    # Per [[project-v080-design]] §F line 766: "user TOMLs' v0.8 schema
+    # is a SUPERSET of v0.7". All optional with defaults that match v0.7
+    # behaviour, so an existing v0.7-shape TOML loads unchanged.
+    "engine": (
+        "one of {'mflux', 'diffusers_mps'}",
+        lambda v: isinstance(v, str) and v in {"mflux", "diffusers_mps"},
+    ),
+    "repo": (
+        "non-empty string (HF Hub repo id; no control bytes)",
+        lambda v: isinstance(v, str) and v.strip() != "" and _is_clean_str(v),
+    ),
+    # RAM math: floats, strictly positive. Sentinel 0.0 fails
+    # __post_init__ on Model construction (memo §L), so a user TOML
+    # declaring 0.0 here would crash at engine-routing time — reject
+    # at schema time for a clearer message.
+    "ram_baseline_gb": (
+        "positive float",
+        lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)
+        and float(v) > 0.0,
+    ),
+    "ram_slope_gb_per_mp": (
+        "positive float",
+        lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)
+        and float(v) > 0.0,
+    ),
+    "encoder_ram_gb": (
+        "non-negative float",
+        lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)
+        and float(v) >= 0.0,
+    ),
+    # Param defaults — bounded by the existing CLI ranges so an out-of-
+    # band TOML default doesn't surface as a downstream CLI validation
+    # failure (better diagnostic at schema time).
+    "default_steps": (
+        "int in 1..200",
+        lambda v: isinstance(v, int) and not isinstance(v, bool)
+        and 1 <= v <= 200,
+    ),
+    "default_guidance": (
+        "float in 0.0..15.0",
+        lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)
+        and 0.0 <= float(v) <= 15.0,
+    ),
+    "min_guidance": (
+        "float in 0.0..15.0",
+        lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)
+        and 0.0 <= float(v) <= 15.0,
+    ),
+    "max_guidance": (
+        "float in 0.0..15.0",
+        lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)
+        and 0.0 <= float(v) <= 15.0,
+    ),
+    # supported_quants: list of ints from {3, 4, 5, 6, 8}. Empty allowed
+    # for engines that don't quantize (diffusers_mps). bool sub-check
+    # because Python's bool is an int subtype.
+    "supported_quants": (
+        "list of ints from {3, 4, 5, 6, 8} (may be empty)",
+        lambda v: (
+            isinstance(v, list)
+            and all(
+                isinstance(x, int) and not isinstance(x, bool) and x in {3, 4, 5, 6, 8}
+                for x in v
+            )
+        ),
+    ),
+    "omit_quantize": ("bool", lambda v: isinstance(v, bool)),
+    "cpu_offload_threshold_mp": (
+        "positive float",
+        lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)
+        and float(v) > 0.0,
+    ),
+    # param_overrides: TOML array of [str, value] pairs. Mirrors the
+    # ``tuple[tuple[str, object], ...]`` runtime shape on Model.
+    # Allowlist-keyed at the engine runtime (today: diffusers_mps only
+    # recognises specific keys like "true_cfg_scale"); schema here
+    # validates structure only.
+    "param_overrides": (
+        "list of [key, value] pairs (key: non-empty string, no control bytes)",
+        lambda v: (
+            isinstance(v, list)
+            and all(
+                isinstance(pair, list) and len(pair) == 2
+                and isinstance(pair[0], str) and pair[0].strip() != ""
+                and not _has_control_bytes(pair[0])
+                for pair in v
+            )
+        ),
+    ),
 }
 
 _SECRET_SCHEMA: dict[str, tuple[str, Callable[[Any], bool]]] = {
@@ -428,12 +626,39 @@ def validate_user_backend_schema(data: dict, source: Path) -> Backend:
     """
     from .colors import warn
 
-    # Required fields.
-    for required in ("binary", "image_flag"):
-        if required not in data:
+    # Required fields — engine-conditional per v0.8.1 HIGH-2 closure.
+    # ``engine`` itself is OPTIONAL (defaults to "mflux"); the
+    # required-field set then differs by engine:
+    #   mflux        → binary + image_flag (v0.7 contract, unchanged)
+    #   diffusers_mps → repo (binary/image_flag inapplicable; image_flag
+    #                  defaults to "--image-path" downstream to satisfy
+    #                  the Backend dataclass, but isn't consulted)
+    engine = data.get("engine", "mflux")
+    if engine == "mflux":
+        for required in ("binary", "image_flag"):
+            if required not in data:
+                raise UserBackendError(
+                    f"{source}: required field {required!r} missing "
+                    f"(engine={engine!r} requires it)"
+                )
+    elif engine == "diffusers_mps":
+        if "repo" not in data:
             raise UserBackendError(
-                f"{source}: required field {required!r} missing"
+                f"{source}: required field 'repo' missing "
+                f"(engine='diffusers_mps' loads a HF Hub repo, not a "
+                f"local binary)"
             )
+    else:
+        # Unknown engine string — caught by the per-field validator
+        # in the schema pass below, but raise here for a clearer
+        # message that includes the source path. This branch is
+        # reached only when ``data.get("engine", "mflux")`` returned
+        # a non-string OR an unrecognised string; the schema validator
+        # would also reject it.
+        raise UserBackendError(
+            f"{source}: engine={engine!r} not in "
+            "{'mflux', 'diffusers_mps'}"
+        )
 
     # Reject the plural [[secrets]] form explicitly. v0.4 supports at
     # most one secret per backend ([secret] singular); a colleague
@@ -462,7 +687,11 @@ def validate_user_backend_schema(data: dict, source: Path) -> Backend:
     )
 
     # Extra binary-content checks beyond the schema predicate.
-    _validate_binary_field(validated["binary"], source)
+    # diffusers_mps backends don't carry a binary — skip this check
+    # for them. mflux backends always have binary= per the
+    # engine-conditional required-field gate above.
+    if engine == "mflux":
+        _validate_binary_field(validated["binary"], source)
 
     # [secret] section — optional whole-section opt-in.
     secret_env_var: str | None = None
@@ -523,10 +752,54 @@ def validate_user_backend_schema(data: dict, source: Path) -> Backend:
     # absent value (symmetric with `enhance_system_prompt` above).
     hf_gated_repo = validated.get("hf_gated_repo")
 
+    # v0.8.1 HIGH-2: v0.8 OPTIONAL Model-shape fields. Backend defaults
+    # match v0.7 behaviour; user TOMLs that omit them load unchanged.
+    # The schema validator above already enforced type/range; here we
+    # just pull-with-default and pack into the Backend ctor.
+    v08_engine = validated.get("engine", "mflux")
+    v08_repo = validated.get("repo")
+    # diffusers_mps backends don't ship a binary; downstream code
+    # (build_mflux_cmd, doctor) reads Backend.binary unconditionally,
+    # so fill an empty-string sentinel here. ``model_from_backend``
+    # downstream skips binary for diffusers_mps.
+    binary_value = validated.get("binary", "") if v08_engine == "diffusers_mps" \
+        else validated["binary"]
+    image_flag_value = validated.get("image_flag", "--image-path") \
+        if v08_engine == "diffusers_mps" else validated["image_flag"]
+    v08_cpu_offload_threshold_mp = validated.get(
+        "cpu_offload_threshold_mp", 999.0,
+    )
+    v08_ram_baseline_gb = validated.get("ram_baseline_gb", 13.5)
+    v08_ram_slope_gb_per_mp = validated.get("ram_slope_gb_per_mp", 4.0)
+    v08_encoder_ram_gb = validated.get("encoder_ram_gb", 0.0)
+    v08_default_steps = validated.get("default_steps", 20)
+    v08_default_guidance = validated.get("default_guidance", 3.5)
+    v08_min_guidance = validated.get("min_guidance", 0.0)
+    v08_max_guidance = validated.get("max_guidance", 10.0)
+    # supported_quants: TOML list → tuple. diffusers_mps default empty
+    # tuple (omit_quantize is the typical flag) but mflux default
+    # mirrors the canonical (3,4,5,6,8) ladder.
+    raw_supported_quants = validated.get(
+        "supported_quants",
+        [] if v08_engine == "diffusers_mps" else [3, 4, 5, 6, 8],
+    )
+    v08_supported_quants = tuple(raw_supported_quants)
+    v08_omit_quantize = validated.get(
+        "omit_quantize",
+        v08_engine == "diffusers_mps",  # default True for diffusers_mps
+    )
+    # param_overrides: TOML array-of-pairs → tuple-of-tuples. The schema
+    # validator above already enforced shape (each element is a 2-list
+    # with str key); convert to immutable form here.
+    raw_param_overrides = validated.get("param_overrides", [])
+    v08_param_overrides = tuple(
+        (pair[0], pair[1]) for pair in raw_param_overrides
+    )
+
     return Backend(
-        binary=validated["binary"],
+        binary=binary_value,
         needs_token=False,
-        image_flag=validated["image_flag"],
+        image_flag=image_flag_value,
         supports_strength=validated["supports_strength"],
         supports_negative=validated["supports_negative"],
         extra_args=extra_args,
@@ -536,6 +809,20 @@ def validate_user_backend_schema(data: dict, source: Path) -> Backend:
         enhance_invariants=enhance_invariants,
         lora_compat_group=lora_compat_group,
         hf_gated_repo=hf_gated_repo,
+        # v0.8.1 HIGH-2 fields.
+        engine=v08_engine,
+        repo=v08_repo,
+        cpu_offload_threshold_mp=v08_cpu_offload_threshold_mp,
+        ram_baseline_gb=v08_ram_baseline_gb,
+        ram_slope_gb_per_mp=v08_ram_slope_gb_per_mp,
+        encoder_ram_gb=v08_encoder_ram_gb,
+        default_steps=v08_default_steps,
+        default_guidance=v08_default_guidance,
+        min_guidance=v08_min_guidance,
+        max_guidance=v08_max_guidance,
+        supported_quants=v08_supported_quants,
+        omit_quantize=v08_omit_quantize,
+        param_overrides=v08_param_overrides,
     )
 
 

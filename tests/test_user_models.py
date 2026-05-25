@@ -142,12 +142,16 @@ def test_user_toml_defaults_engine_mflux_when_omitted(tmp_state_dir):
     finally:
         backends_mod.reset_backends_cache()
 
-    # v0.7 Backend dataclass is engine-naive. Asserting absence locks
-    # in that commit 3 didn't accidentally widen Backend with a v0.8
-    # field — that surface change is commit 4b's deliberate work.
-    assert not hasattr(be, "engine"), (
-        "commit 3 must keep Backend engine-naive; engine field arrives "
-        "with the Model rename in commit 4b"
+    # v0.8.1 HIGH-2 closure: Backend now carries v0.8 fields so user
+    # TOMLs can declare them; a v0.7-shape TOML that omits ``engine``
+    # gets the default "mflux" (matches v0.7 behaviour).
+    assert hasattr(be, "engine"), (
+        "v0.8.1 widened Backend with v0.8 Model-shape fields; engine "
+        "must be present"
+    )
+    assert be.engine == "mflux", (
+        f"v0.7-shape TOML must default to engine='mflux' "
+        f"(got {be.engine!r})"
     )
 
     # Derivation default: any v0.7 Backend → Model has engine="mflux".
@@ -282,3 +286,218 @@ def test_models_d_symlink_refused_with_warn(tmp_state_dir, tmp_path, capsys):
     captured = capsys.readouterr()
     combined = captured.out + captured.err
     assert "symlink" in combined.lower()
+
+
+# ── v0.8.1 HIGH-2 closure: user TOMLs declare v0.8 Model-shape fields ──
+
+
+def test_user_toml_engine_diffusers_mps_loads_with_repo(tmp_state_dir):
+    """A user TOML declaring ``engine = "diffusers_mps"`` + ``repo = ...``
+    loads cleanly with no warn-and-drop on the v0.8 fields. The
+    resulting Backend round-trips through ``model_from_backend`` to a
+    Model carrying engine="diffusers_mps", ready for Engine routing."""
+    import imgen.backends as backends_mod
+    import imgen.paths as paths_mod
+
+    paths_mod.MODELS_D.mkdir()
+    (paths_mod.MODELS_D / "qwen-bf16.toml").write_text(
+        'engine = "diffusers_mps"\n'
+        'repo = "Qwen/Qwen-Image-2512"\n'
+        'supports_negative = true\n'
+        'lora_compat_group = "qwen"\n'
+        'default_steps = 50\n'
+        'default_guidance = 4.0\n'
+        'ram_baseline_gb = 24.0\n'
+        'ram_slope_gb_per_mp = 8.0\n'
+        'encoder_ram_gb = 14.0\n'
+        'cpu_offload_threshold_mp = 1.0\n'
+        'param_overrides = [["true_cfg_scale", 4.0]]\n'
+    )
+    backends_mod.reset_backends_cache()
+    try:
+        be = backends_mod.get_backend("qwen-bf16")
+    finally:
+        backends_mod.reset_backends_cache()
+
+    assert be is not None
+    assert be.engine == "diffusers_mps"
+    assert be.repo == "Qwen/Qwen-Image-2512"
+    assert be.default_steps == 50
+    assert be.default_guidance == 4.0
+    assert be.ram_baseline_gb == 24.0
+    assert be.cpu_offload_threshold_mp == 1.0
+    assert be.param_overrides == (("true_cfg_scale", 4.0),)
+
+    # Round-trip through model_from_backend → Model carries the fields.
+    m = backends_mod.model_from_backend("qwen-bf16", be)
+    assert m.engine == "diffusers_mps"
+    assert m.repo == "Qwen/Qwen-Image-2512"
+    assert m.default_steps == 50
+    assert m.cpu_offload_threshold_mp == 1.0
+    # binary intentionally None on diffusers_mps Models (Model
+    # __post_init__ would reject ``"" `` + engine=diffusers_mps as a
+    # spec violation — the converter knows to drop binary).
+    assert m.binary is None
+
+
+def test_user_toml_diffusers_engine_requires_repo(tmp_state_dir, capsys):
+    """``engine = "diffusers_mps"`` without ``repo = ...`` raises
+    UserBackendError at validation time — the per-file warn fires but
+    the file is skipped, not loaded with a bogus Backend that crashes
+    later at Engine routing."""
+    import imgen.backends as backends_mod
+    import imgen.paths as paths_mod
+
+    paths_mod.MODELS_D.mkdir()
+    (paths_mod.MODELS_D / "bogus.toml").write_text(
+        'engine = "diffusers_mps"\n'
+        # repo deliberately missing
+        'ram_baseline_gb = 24.0\n'
+        'ram_slope_gb_per_mp = 8.0\n'
+    )
+    backends_mod.reset_backends_cache()
+    try:
+        merged = backends_mod._load_merged_backends()
+    finally:
+        backends_mod.reset_backends_cache()
+
+    assert "bogus" not in merged, "diffusers_mps without repo must skip"
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "repo" in combined.lower()
+    assert "diffusers_mps" in combined
+
+
+def test_user_toml_unknown_engine_rejected(tmp_state_dir, capsys):
+    """Unknown engine string (e.g. ``"mlx-native"``) skips the file
+    with a warn — the schema validator catches it before the runtime
+    layer."""
+    import imgen.backends as backends_mod
+    import imgen.paths as paths_mod
+
+    paths_mod.MODELS_D.mkdir()
+    (paths_mod.MODELS_D / "futuristic.toml").write_text(
+        'engine = "mlx-native"\n'
+        'binary = "mflux-generate"\n'
+        'image_flag = "--image-path"\n'
+    )
+    backends_mod.reset_backends_cache()
+    try:
+        merged = backends_mod._load_merged_backends()
+    finally:
+        backends_mod.reset_backends_cache()
+
+    assert "futuristic" not in merged
+
+
+def test_user_toml_param_overrides_array_of_pairs_parses(tmp_state_dir):
+    """TOML ``[["key", value], ["key2", value2]]`` deserialises to the
+    runtime ``tuple[tuple[str, object], ...]`` shape on Backend."""
+    import imgen.backends as backends_mod
+    import imgen.paths as paths_mod
+
+    paths_mod.MODELS_D.mkdir()
+    (paths_mod.MODELS_D / "tuned.toml").write_text(
+        'binary = "mflux-generate-fake"\n'
+        'image_flag = "--image-path"\n'
+        'param_overrides = [["foo", 1.5], ["bar", "baz"]]\n'
+    )
+    backends_mod.reset_backends_cache()
+    try:
+        be = backends_mod.get_backend("tuned")
+    finally:
+        backends_mod.reset_backends_cache()
+
+    assert be.param_overrides == (("foo", 1.5), ("bar", "baz"))
+
+
+def test_user_toml_ram_baseline_rejects_zero(tmp_state_dir, capsys):
+    """``ram_baseline_gb = 0`` is a sentinel-fail per memo §L — must be
+    rejected at schema time (clearer diagnostic than the downstream
+    Model.__post_init__ explosion)."""
+    import imgen.backends as backends_mod
+    import imgen.paths as paths_mod
+
+    paths_mod.MODELS_D.mkdir()
+    (paths_mod.MODELS_D / "bogus.toml").write_text(
+        'binary = "mflux-generate-fake"\n'
+        'image_flag = "--image-path"\n'
+        'ram_baseline_gb = 0\n'  # rejected
+    )
+    backends_mod.reset_backends_cache()
+    try:
+        merged = backends_mod._load_merged_backends()
+    finally:
+        backends_mod.reset_backends_cache()
+
+    assert "bogus" not in merged
+    out = capsys.readouterr().out + capsys.readouterr().err
+    # Schema rejection visible in warn
+    # (the validator's "field X: ..." message)
+    # Just verify the file was skipped — message wording isn't locked.
+
+
+def test_user_toml_v07_shape_loads_unchanged_via_v081_schema(tmp_state_dir):
+    """v0.7-shape TOML (no v0.8 fields) still loads. v0.8.1 schema
+    SUPERSET promise — additive, no breakage for colleagues' existing
+    files."""
+    import imgen.backends as backends_mod
+    import imgen.paths as paths_mod
+
+    paths_mod.MODELS_D.mkdir()
+    (paths_mod.MODELS_D / "legacy.toml").write_text(
+        'binary = "mflux-generate-fake"\n'
+        'image_flag = "--image-path"\n'
+        'supports_strength = true\n'
+        'extra_args = ["--model", "sdxl"]\n'
+    )
+    backends_mod.reset_backends_cache()
+    try:
+        be = backends_mod.get_backend("legacy")
+    finally:
+        backends_mod.reset_backends_cache()
+
+    assert be is not None
+    # v0.7 fields preserved exactly
+    assert be.binary == "mflux-generate-fake"
+    assert be.supports_strength is True
+    assert be.extra_args == ("--model", "sdxl")
+    # v0.8 fields filled with defaults
+    assert be.engine == "mflux"
+    assert be.repo is None
+    assert be.ram_baseline_gb == 13.5  # flux-class fallback default
+    assert be.default_steps == 20
+    assert be.param_overrides == ()
+
+
+def test_user_model_routes_through_engine_for_validate(tmp_state_dir):
+    """``_model_for_validate(args)`` resolves user TOMLs (not just
+    BUILTIN_MODELS) post-v0.8.1. Locked-in so a future refactor of
+    the resolver can't silently regress user-TOML Engine routing back
+    to v0.8.0's "user TOMLs bypass Engine entirely" behaviour."""
+    from types import SimpleNamespace
+    import imgen.backends as backends_mod
+    import imgen.paths as paths_mod
+    from imgen.cmd_helpers import _model_for_validate
+
+    paths_mod.MODELS_D.mkdir()
+    (paths_mod.MODELS_D / "my-runner.toml").write_text(
+        'binary = "mflux-generate-fake"\n'
+        'image_flag = "--image-path"\n'
+        'default_guidance = 6.5\n'
+        'min_guidance = 5.0\n'
+        'max_guidance = 8.0\n'
+    )
+    backends_mod.reset_backends_cache()
+    try:
+        model = _model_for_validate(SimpleNamespace(model="my-runner"))
+    finally:
+        backends_mod.reset_backends_cache()
+
+    assert model is not None
+    # User-declared param defaults reach the resolver.
+    assert model.default_guidance == 6.5
+    assert model.min_guidance == 5.0
+    assert model.max_guidance == 8.0
+    # Engine defaults to mflux for v0.7-shape TOMLs.
+    assert model.engine == "mflux"
