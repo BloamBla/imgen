@@ -126,7 +126,7 @@ def _args(*, directory: Path, output_dir: Path, **overrides) -> SimpleNamespace:
         strength=None,
         seed=42,
         preview=False,
-        backend="flux",
+        model="flux",
         scope=None,
         width=None, height=None,
         force=True,            # skip resource preflight (no real RAM check)

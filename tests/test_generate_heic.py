@@ -101,7 +101,7 @@ def _gen_args(*, image: Path, **overrides) -> SimpleNamespace:
         strength=None,
         seed=42,
         preview=False,
-        backend="flux",
+        model="flux",
         scope=None,
         width=None, height=None,
         output=None,

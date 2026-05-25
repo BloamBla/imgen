@@ -251,7 +251,7 @@ def _build_args(**overrides) -> SimpleNamespace:
         custom_prompt=None,
         prompt_file=None,
         steps=None, quantize=None, guidance=None, strength=None,
-        seed=42, preview=False, backend="flux",
+        seed=42, preview=False, model="flux",
         scope=None, width=None, height=None,
         output=None, output_dir=None,
         force=True, yes=True, no_open=True, dry_run=False,

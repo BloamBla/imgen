@@ -22,7 +22,7 @@ from imgen.runs import BatchContext
 
 def _make_ctx(**overrides) -> BatchContext:
     defaults: dict = dict(
-        backend="flux",
+        model="flux",
         seed=42,
         width=1024,
         height=1024,
@@ -38,7 +38,7 @@ def _make_ctx(**overrides) -> BatchContext:
 
 def test_batch_context_constructs_with_all_fields():
     ctx = _make_ctx()
-    assert ctx.backend == "flux"
+    assert ctx.model == "flux"
     assert ctx.seed == 42
     assert ctx.width == 1024 and ctx.height == 1024
     assert ctx.input_path == Path("/tmp/in.jpg")
@@ -74,11 +74,11 @@ def test_batch_context_is_frozen():
     mutation would change semantics across iterations. Catch at write."""
     ctx = _make_ctx()
     with pytest.raises((AttributeError, TypeError)):
-        ctx.backend = "qwen"  # type: ignore[misc]
+        ctx.model = "qwen"  # type: ignore[misc]
     # Belt-and-braces: even if frozen=True were dropped, slots would
     # still reject mutation of the named field — verify value didn't
     # silently change.
-    assert ctx.backend == "flux"
+    assert ctx.model == "flux"
 
 
 def test_batch_context_has_slots_no_dict():
@@ -99,7 +99,7 @@ def test_batch_context_field_order_matches_spec():
     import dataclasses
     fields = [f.name for f in dataclasses.fields(BatchContext)]
     assert fields == [
-        "backend",
+        "model",
         "seed",
         "width",
         "height",

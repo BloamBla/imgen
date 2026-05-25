@@ -566,7 +566,7 @@ def test_replay_entry_routes_draw_to_cmd_draw(tmp_state_dir, monkeypatch):
     assert "generate_called" not in captured
     args = captured["args"]
     assert args.prompt == "a samurai on a misty mountain"
-    assert args.backend == "flux-dev"
+    assert args.model == "flux-dev"
     assert args.width == 1024
     assert args.height == 1024
 
@@ -617,7 +617,7 @@ def test_replay_entry_routes_refine_to_cmd_refine(
     assert captured["ran"] == "refine"
     args = captured["args"]
     assert args.input == "/some/winner.png"
-    assert args.backend == "flux2-klein-edit-9b"
+    assert args.model == "flux2-klein-edit-9b"
     assert args.width == 1536
     assert args.height == 1536
     assert args.quantize == 4
@@ -738,7 +738,7 @@ def test_history_entry_carries_command_field_for_draw(
         quantize=None,
         guidance=None,
         seed=42,
-        backend="flux-dev",
+        model="flux-dev",
         preview=False,
         width=1024,
         height=1024,
@@ -811,7 +811,7 @@ def test_history_n_iterations_records_per_row_seed_ladder(
         guidance=None,
         seed=700,           # base seed
         num_iterations=3,   # → ladder seeds 700, 701, 702
-        backend="flux-dev",
+        model="flux-dev",
         preview=False,
         width=1024,
         height=1024,

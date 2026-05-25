@@ -70,7 +70,7 @@ def test_batch_logger_write_header_includes_batch_id(logs_dir):
         input_paths=[Path("/photos/vacation.jpg")],
         styles=["anime", "ghibli"],
         run_dir=Path("/desktop/imgen/2026-05-22-10-00-00"),
-        backend="flux",
+        model="flux",
         quant=8,
         preview=False,
         scope=None,
@@ -87,7 +87,7 @@ def test_batch_logger_write_header_lists_styles(logs_dir):
         input_paths=[Path("/x.jpg")],
         styles=["anime", "ghibli", "pixar"],
         run_dir=Path("/out"),
-        backend="flux",
+        model="flux",
         quant=8,
         preview=False,
         scope=None,
@@ -103,7 +103,7 @@ def test_batch_logger_write_header_includes_backend_quant_seed(logs_dir):
         input_paths=[Path("/x.jpg")],
         styles=["a"],
         run_dir=Path("/out"),
-        backend="qwen",
+        model="qwen",
         quant=4,
         preview=True,
         scope="person",
@@ -123,7 +123,7 @@ def test_batch_logger_write_header_creates_file_0o600(logs_dir):
         input_paths=[Path("/x")],
         styles=["a"],
         run_dir=Path("/o"),
-        backend="qwen",
+        model="qwen",
         quant=4,
         preview=False,
         scope=None,
@@ -150,7 +150,7 @@ def test_batch_logger_write_header_inputs_line_counts_and_names(logs_dir):
         ],
         styles=["anime", "ghibli", "pixar"],
         run_dir=Path("/out"),
-        backend="flux", quant=8, preview=False, scope=None, seed=42,
+        model="flux", quant=8, preview=False, scope=None, seed=42,
     )
     content = _read(logger.path)
     assert "# inputs (3):  IMG_1234.heic, IMG_5678.heic, vacation.jpg" in content
@@ -165,7 +165,7 @@ def test_batch_logger_write_header_inputs_line_single(logs_dir):
         input_paths=[Path("/photos/vacation.jpg")],
         styles=["anime", "ghibli"],
         run_dir=Path("/out"),
-        backend="flux", quant=8, preview=False, scope=None, seed=1,
+        model="flux", quant=8, preview=False, scope=None, seed=1,
     )
     content = _read(logger.path)
     assert "# inputs (1):  vacation.jpg" in content
@@ -178,7 +178,7 @@ def test_batch_logger_write_header_styles_line_counts(logs_dir):
         input_paths=[Path("/x.jpg")],
         styles=["anime", "ghibli", "pixar"],
         run_dir=Path("/out"),
-        backend="flux", quant=8, preview=False, scope=None, seed=1,
+        model="flux", quant=8, preview=False, scope=None, seed=1,
     )
     content = _read(logger.path)
     assert "# styles (3):  anime, ghibli, pixar" in content
@@ -196,7 +196,7 @@ def test_batch_logger_write_header_rejects_empty_input_paths(logs_dir):
             input_paths=[],
             styles=["a"],
             run_dir=Path("/o"),
-            backend="qwen", quant=4, preview=False, scope=None, seed=1,
+            model="qwen", quant=4, preview=False, scope=None, seed=1,
         )
 
 
@@ -278,7 +278,7 @@ def test_batch_logger_full_batch_log_order(logs_dir):
         input_paths=[Path("/p/a.heic"), Path("/p/b.jpg")],
         styles=["anime"],
         run_dir=Path("/o"),
-        backend="flux", quant=8, preview=False, scope=None, seed=1,
+        model="flux", quant=8, preview=False, scope=None, seed=1,
     )
     ts = dt.datetime(2026, 5, 22, 10, 0, 0)
     logger.input_section_start(1, 2, "a.heic")
@@ -356,7 +356,7 @@ def test_batch_logger_markers_append_not_truncate(logs_dir):
     logger = BatchLogger("abc")
     logger.write_header(
         input_paths=[Path("/x")], styles=["a"], run_dir=Path("/o"),
-        backend="qwen", quant=4, preview=False, scope=None, seed=1,
+        model="qwen", quant=4, preview=False, scope=None, seed=1,
     )
     ts = dt.datetime(2026, 5, 22, 10, 0, 0)
     logger.iteration_start(idx=1, total=2, style="a", ts=ts)
@@ -381,7 +381,7 @@ def test_batch_logger_works_as_context_manager(logs_dir):
     with BatchLogger("ctxmgr1") as logger:
         logger.write_header(
             input_paths=[Path("/x")], styles=["a"], run_dir=Path("/o"),
-            backend="qwen", quant=4, preview=False, scope=None, seed=1,
+            model="qwen", quant=4, preview=False, scope=None, seed=1,
         )
         assert "imgen batch" in _read(logger.path)
     # fd should be closed now.
@@ -408,7 +408,7 @@ def test_batch_logger_close_is_idempotent(logs_dir):
     logger = BatchLogger("idem1")
     logger.write_header(
         input_paths=[Path("/x")], styles=["a"], run_dir=Path("/o"),
-        backend="qwen", quant=4, preview=False, scope=None, seed=1,
+        model="qwen", quant=4, preview=False, scope=None, seed=1,
     )
     logger.close()
     logger.close()  # must not raise
@@ -432,7 +432,7 @@ def test_batch_logger_writes_after_close_raise(logs_dir):
     logger = BatchLogger("closedwrite")
     logger.write_header(
         input_paths=[Path("/x")], styles=["a"], run_dir=Path("/o"),
-        backend="qwen", quant=4, preview=False, scope=None, seed=1,
+        model="qwen", quant=4, preview=False, scope=None, seed=1,
     )
     logger.close()
 
@@ -443,7 +443,7 @@ def test_batch_logger_writes_after_close_raise(logs_dir):
     with pytest.raises(ValueError, match="closed"):
         logger.write_header(
             input_paths=[Path("/x")], styles=["a"], run_dir=Path("/o"),
-            backend="qwen", quant=4, preview=False, scope=None, seed=1,
+            model="qwen", quant=4, preview=False, scope=None, seed=1,
         )
     with pytest.raises(ValueError, match="closed"):
         logger.borrow_fd()
@@ -471,7 +471,7 @@ def test_batch_logger_borrowed_fd_writes_interleave_with_markers(logs_dir):
     logger = BatchLogger("interleave1")
     logger.write_header(
         input_paths=[Path("/x")], styles=["a"], run_dir=Path("/o"),
-        backend="qwen", quant=4, preview=False, scope=None, seed=1,
+        model="qwen", quant=4, preview=False, scope=None, seed=1,
     )
     logger.iteration_start(
         idx=1, total=1, style="a",
@@ -521,7 +521,7 @@ def test_batch_logger_marker_writes_reuse_borrowed_fd(logs_dir):
 
     logger.write_header(
         input_paths=[Path("/x")], styles=["a"], run_dir=Path("/o"),
-        backend="qwen", quant=4, preview=False, scope=None, seed=1,
+        model="qwen", quant=4, preview=False, scope=None, seed=1,
     )
     assert logger._fd is fd_at_borrow
 

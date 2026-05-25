@@ -46,7 +46,7 @@ def _cmd(**overrides) -> list[str]:
     """Helper to call build_mflux_cmd with sensible defaults."""
     args = dict(
         binary=_BINARY,
-        backend=_flux_backend(),
+        model=_flux_backend(),
         input_path=Path("/in.png"),
         output_path=Path("/out.png"),
         prompt="anime portrait",
@@ -245,7 +245,7 @@ class TestBuildMfluxCmdWithLora:
         loras = (
             LoraRef(ref="a/flux1", weight=0.8, compatible_with=("flux-1",)),
         )
-        cmd = _cmd(backend=backend, loras=loras)
+        cmd = _cmd(model=backend, loras=loras)
         assert "--lora-paths" not in cmd
         assert "a/flux1" not in cmd
 
@@ -257,7 +257,7 @@ class TestBuildMfluxCmdWithLora:
         loras = (
             LoraRef(ref="x/y", weight=0.8, compatible_with=("flux-1",)),
         )
-        cmd = _cmd(backend=backend, loras=loras)
+        cmd = _cmd(model=backend, loras=loras)
         assert "--lora-paths" not in cmd
 
     def test_lora_argv_weight_as_string(self):

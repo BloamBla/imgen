@@ -109,218 +109,97 @@ class Backend:
     hf_gated_repo: str | None = None
 
 
-# System prompts for built-in backends. Module-level constants so tests
-# can reference the exact text and import-time look at Backend tuples
-# stays terse. Tuned per backend conventions (see
-# project_v050_v060_design.md, "System prompts per backend").
+# ── System prompt constants — re-exported from models.py at v0.8.0 ─────
 #
-# The CRITICAL section in each system prompt is the identity-anchor
-# preservation directive. v0.3.4 BFL Kontext tuning baked three specific
-# preservation phrases into our styles.py (one per style family) — the
-# enhancer must NOT substitute them for synonyms or alternative wording.
-# Phase C-1 smoke (2026-05-22) caught Qwen2.5-7B-4bit silently rewriting
-# "preserving the facial identity, hairstyle, body proportions, and pose"
-# to "preserving the overall composition and the relative position of
-# all subjects" — substring "preserving" survived but the semantic
-# identity-anchor was discarded. The fix is two-layer: (1) tighter
-# system prompt forbidding anchor substitution; (2) multi-substring
-# invariants below that fall back per-style when the specific anchor
-# is missing from the LLM output.
-_FLUX_KONTEXT_ENHANCE_SYS = (
-    "You expand image-editing prompts for FLUX.1 Kontext, an image-"
-    "conditioning model that restyles input photos while preserving "
-    "identity, pose, and composition. Take the user prompt and expand "
-    "it to 40-60 tokens. "
-    "CRITICAL: you MUST preserve the entire 'while preserving …' "
-    "clause from the user prompt VERBATIM. Keep every word inside that "
-    "clause exactly as written — particularly identity anchors such as "
-    "'facial identity', 'exact facial features', or 'recognizable "
-    "expression'. Do NOT replace these anchors with synonyms or "
-    "alternative preservation language (e.g. NEVER substitute 'overall "
-    "composition' or 'relative position of subjects' for the identity "
-    "anchor). "
-    "Add specific stylistic descriptors (lighting, color palette, art "
-    "technique, materials) at the START or END, not inside the "
-    "preserving clause. Do NOT invent objects, scenes, or characters "
-    "not in the user prompt — expand existing details only. NEVER "
-    "describe the input photo's content — Kontext sees it directly. "
-    "Output ONLY the expanded prompt with no preamble, no quotes, "
-    "no explanation."
+# These v0.5+ enhancer system prompts moved to models.py at 4b (canonical
+# location alongside the Model rows that reference them). Imported here
+# for back-compat with any v0.7 caller that still does
+# `from imgen.backends import _FLUX_KONTEXT_ENHANCE_SYS` — internal use
+# only, leading-underscore name signals "do not depend on this". The
+# direct user is tests/test_enhance*.py which should migrate to
+# importing from imgen.models in a follow-up cleanup.
+from .models import (
+    _FLUX_DEV_DRAW_ENHANCE_SYS,
+    _FLUX_KONTEXT_ENHANCE_SYS,
+    _IDENTITY_ANCHOR_INVARIANTS,
+    _QWEN_EDIT_ENHANCE_SYS,
+    BUILTIN_MODELS,
+    Model,
+    _V07_TO_V08_MODEL_RENAMES,
 )
 
-_QWEN_EDIT_ENHANCE_SYS = (
-    "You expand instruction-style edit prompts for Qwen-Image-Edit. "
-    "Use imperative verbs ('transform', 'restyle', 'apply'). Keep the "
-    "output under 40 tokens — Qwen-Edit prefers shorter directives "
-    "than FLUX. "
-    "CRITICAL: preserve the entire 'while preserving …' clause from "
-    "the user prompt VERBATIM, including identity anchors like "
-    "'facial identity', 'exact facial features', or 'recognizable "
-    "expression'. Do NOT swap these for synonyms. "
-    "Do NOT invent objects, scenes, or characters not in the user "
-    "prompt — expand existing details only. NEVER describe the input "
-    "photo's content. Output ONLY the expanded prompt with no preamble, "
-    "no quotes, no explanation."
-)
 
-# Multi-substring invariant: each entry is a per-style-family identity
-# anchor. ``check_invariants`` enforces an invariant ONLY when it
-# appears in the original prompt, so the three anchors don't compete —
-# whichever one the style chose, that one gets enforced.
+# ── BUILTIN_BACKENDS — backward-derived v0.7-keyed view (4b) ──────────
 #
-# Coverage matrix (v0.5 ship, see styles.py):
-#   "facial identity"          → pixar, anime, ghibli
-#   "exact facial features"    → vangogh, pencil
-#   "recognizable expression"  → simpsons
+# Per [[project-v080-design]] §Q commit 4b + architect 4b pre-vet HIGH-1:
+# the canonical registry source-of-truth is now ``models.BUILTIN_MODELS``
+# (v0.8-keyed). ``BUILTIN_BACKENDS`` becomes a DERIVED BACKWARD view
+# keyed by v0.7 names so v0.7.x test fixtures (test_backends.py asserts
+# ``BACKENDS["flux"].binary == "mflux-generate-kontext"``) stay green
+# without churn.
 #
-# User-defined styles in ``~/.imgen/styles.d/*.toml`` that don't use
-# any of these anchors get no enhanced protection — they fall through
-# the invariant gate (no anchor in original = no enforcement). That's
-# a known v0.5 limitation; tightening user-side anchors is a v0.6+
-# extension once we've validated the built-in path.
-_IDENTITY_ANCHOR_INVARIANTS: tuple[str, ...] = (
-    "facial identity",
-    "exact facial features",
-    "recognizable expression",
-)
+# Forward conversion (Model → Backend) drops v0.8-only fields (engine,
+# repo, ram_*, default_*, supported_quants, omit_quantize,
+# param_overrides) — Backend dataclass doesn't have them. v0.4 secret
+# fields (secret_env_var, secret_required) default to None / True since
+# built-in Models don't declare them.
+#
+# Per architect 4b pre-vet N-3: this derivation runs at module load
+# (eager snapshot). If BUILTIN_MODELS were mutated post-load (it's a
+# regular dict, no MappingProxyType), BUILTIN_BACKENDS wouldn't reflect
+# — that's intentional, registry is conceptually constant.
 
 
-# v0.7.0: t2i (`imgen draw`) system prompt for FLUX.1-dev. Different
-# shape from the Kontext/Qwen i2i versions: no input photo to anchor
-# identity to, so the "CRITICAL: preserve the 'while preserving …'
-# clause" directive doesn't apply. The expansion axes are FLUX-canonical
-# (subject / composition / lighting / palette / style / mood). Fidelity
-# guardrails ("don't swap subject", "don't relocate scene") replace the
-# identity-anchor invariants — guidance only, no programmatic check
-# (architect §K: t2i prompt-fidelity contract is weaker than i2i's).
-_FLUX_DEV_DRAW_ENHANCE_SYS = (
-    "You are a prompt engineer for FLUX.1, a text-to-image diffusion "
-    "model. Expand the user's brief description into a richer, "
-    "visually-detailed image prompt suitable for generation from "
-    "scratch (no input photo). "
-    "Add concrete detail to: subject (specific appearance, clothing, "
-    "expression, posture), composition (camera angle, framing, "
-    "subject placement), lighting (source, quality, direction, color "
-    "temperature), color palette (dominant tones, accents, mood), "
-    "and art style (medium, technique, era, named artists or schools "
-    "where the user's prompt implies one). "
-    "Stay faithful to the user's intent — do NOT invent a different "
-    "subject, swap genders, change species, or relocate the scene. "
-    "Expand the existing details; don't replace them. "
-    "Target 40-70 tokens. Output ONLY the expanded prompt with no "
-    "preamble, no quotes, no explanation, no 'Here is the expanded "
-    "prompt:' framing."
-)
+def _backend_from_model(m: Model, v07_name: str) -> Backend:
+    """Convert a v0.8 Model → v0.7 Backend (for backward-derived
+    BUILTIN_BACKENDS view + back-compat shim test fixtures).
+
+    Drops v0.8-only fields (engine, repo, RAM math, param defaults).
+    ``v07_name`` is passed for diagnostic context only — Backend
+    doesn't carry its own name, the caller embeds it in the registry
+    key.
+    """
+    return Backend(
+        binary=m.binary or "",
+        needs_token=m.needs_token,
+        image_flag=m.image_flag or "--image-path",
+        supports_strength=m.supports_strength,
+        supports_negative=m.supports_negative,
+        extra_args=m.extra_args,
+        # Built-in Models never have v0.4 secret-env fields set; user
+        # TOMLs going through validate_user_backend_schema preserve
+        # them directly (this helper is only for the built-in
+        # backward-derivation path).
+        secret_env_var=None,
+        secret_required=True,
+        enhance_system_prompt=m.enhance_system_prompt,
+        enhance_invariants=m.enhance_invariants,
+        lora_compat_group=m.lora_compat_group,
+        hf_gated_repo=m.hf_gated_repo,
+    )
 
 
-BUILTIN_BACKENDS: dict[str, Backend] = {
-    "flux": Backend(
-        binary="mflux-generate-kontext",
-        needs_token=True,
-        image_flag="--image-path",
-        supports_strength=True,
-        supports_negative=True,
-        extra_args=("--model", "dev"),
-        enhance_system_prompt=_FLUX_KONTEXT_ENHANCE_SYS,
-        enhance_invariants=_IDENTITY_ANCHOR_INVARIANTS,
-        # v0.6: FLUX.1-Kontext-dev shares architecture with FLUX.1-dev /
-        # FLUX.1-schnell. Most FLUX.1 LoRAs published on HuggingFace
-        # are trained against FLUX.1-dev and load cleanly on Kontext.
-        lora_compat_group="flux-1",
-        hf_gated_repo="black-forest-labs/FLUX.1-Kontext-dev",
-    ),
-    "qwen": Backend(
-        binary="mflux-generate-qwen-edit",
-        needs_token=False,
-        image_flag="--image-paths",
-        supports_strength=False,
-        supports_negative=False,
-        extra_args=("--model", "qwen"),
-        enhance_system_prompt=_QWEN_EDIT_ENHANCE_SYS,
-        enhance_invariants=_IDENTITY_ANCHOR_INVARIANTS,
-        # Qwen-Image / Qwen-Image-Edit LoRAs are a separate ecosystem
-        # (different transformer architecture, different LoRA shape).
-        # FLUX LoRAs do NOT load on Qwen and vice-versa.
-        lora_compat_group="qwen",
-    ),
-    # v0.7.0: FLUX.1-dev text-to-image. Same HF gated repo class as
-    # Kontext (single `~/.imgen/hf_token` covers both). The user's
-    # `imgen draw` lands on this backend by default; image_flag stays
-    # populated for dataclass-shape consistency but build_mflux_cmd
-    # gates the actual --image-path emission on input_path being not
-    # None (see v0.7.0 step 4). lora_compat_group="flux-dev" is unique
-    # — Kontext-trained LoRAs may not transfer cleanly back to plain
-    # FLUX.1-dev for t2i (mirror of the v0.6.1 Kontext-compat lesson:
-    # don't assume cross-load works until proven by real inference).
-    # The CLI `_lora_ref_arg` default widens to ("flux-1", "flux-dev")
-    # so a user's `--lora foo/bar` works for both backends; user-style
-    # TOMLs declaring `compatible_with = ["flux-1"]` stay restrictive.
-    "flux-dev": Backend(
-        binary="mflux-generate",
-        needs_token=True,
-        image_flag="--image-path",
-        supports_strength=False,
-        supports_negative=True,
-        extra_args=("--model", "dev"),
-        enhance_system_prompt=_FLUX_DEV_DRAW_ENHANCE_SYS,
-        enhance_invariants=(),  # t2i: no identity anchor, see architect §K
-        lora_compat_group="flux-dev",
-        # FLUX.1-dev is a SEPARATE gated repo from Kontext. Sharing a
-        # token across both BFL models doesn't auto-share the per-model
-        # license-grant — first time on a new Mac users hit a 401
-        # GatedRepoError until they visit the model page and accept.
-        # The cmd_draw post-failure hint reads this URL to point the
-        # user at the right gate.
-        hf_gated_repo="black-forest-labs/FLUX.1-dev",
-    ),
-    # v0.7.5: FLUX.2-klein-9B (distilled, image-conditioned editing variant)
-    # via `mflux-generate-flux2-edit`. The primary use case is Hires-Fix
-    # refine pass (input 1024² → output 1536²/2048² with low strength to
-    # preserve composition + sharpen detail). FLUX.2-klein natively
-    # supports up to 4 MP (2048×2048); FLUX.1 stretched past 1.5K showed
-    # tiling artifacts, this fixes the ceiling for high-res refine.
-    #
-    # Memory math on M2 Pro 32GB: klein-9B Q4 weights ~4.5 GB +
-    # text encoders ~2-3 GB + 2K² activations ~4-6 GB ≈ 12-14 GB. Q4
-    # is the safe default. Q8 would be ~9 GB weights + same overhead
-    # = ~16-18 GB — tight but feasible.
-    #
-    # supports_strength=False: FLUX.2-klein-edit doesn't take
-    # `--image-strength` (the Kontext-specific flag); it uses
-    # cross-attention image conditioning instead. cmd_generate /
-    # cmd_refine still resolve a strength value into history for
-    # record-keeping, just not emitted to argv.
-    #
-    # LoRA: --lora-paths supported by mflux 0.17.5's flux2-edit
-    # binary. lora_compat_group "flux2-klein-9b" is unique — FLUX.1
-    # LoRAs won't load (different architecture). Per-LoRA flux2
-    # verification round is v0.7.x candidate ([[feedback-kontext-lora-
-    # compat]] discipline). enhance not wired (v0.7.6+ candidate).
-    "flux2-klein-edit-9b": Backend(
-        binary="mflux-generate-flux2-edit",
-        needs_token=True,
-        image_flag="--image-paths",
-        supports_strength=False,
-        # v0.7.11 (gap 7 fix): FLUX.2 family deliberately removed
-        # CFG/negative-prompt support per BFL docs. mflux-generate-
-        # flux2-edit errors with `--negative-prompt is not supported
-        # for FLUX.2` if argv carries the flag. Pre-v0.7.11 this was
-        # ``True``; every default-style invocation (pixar, etc.) crashed
-        # because the style's ``negative_prompt`` field bled into argv.
-        supports_negative=False,
-        # `-m` (short form of `--model`) is the canonical selector
-        # for bundled models per `mflux-generate-flux2-edit --help`
-        # (v0.7.7 Sec #S4 verification). `--base-model {enum}` is
-        # ONLY for third-party HF repos where mflux needs the
-        # architecture hint on top of an explicit `-m org/model`
-        # — not our case here.
-        extra_args=("-m", "flux2-klein-9b"),
-        enhance_system_prompt=None,
-        enhance_invariants=(),
-        lora_compat_group="flux2-klein-9b",
-        hf_gated_repo="black-forest-labs/FLUX.2-klein-9B",
-    ),
-}
+def _build_v07_compat_backends() -> dict[str, Backend]:
+    """Build the v0.7-keyed BUILTIN_BACKENDS view from BUILTIN_MODELS.
+
+    Inverts ``_V07_TO_V08_MODEL_RENAMES`` to map v0.8 canonical names
+    back to v0.7 keys (``flux-kontext`` → ``flux``,
+    ``qwen-image-edit-v1`` → ``qwen``). Unchanged names (``flux-dev``,
+    ``flux2-klein-edit-9b``) pass through.
+
+    Result: dict[v0.7-key, Backend] suitable for legacy callers and
+    test_backends.py assertions.
+    """
+    v08_to_v07: dict[str, str] = {
+        v08: v07 for v07, v08 in _V07_TO_V08_MODEL_RENAMES.items()
+    }
+    return {
+        v08_to_v07.get(v08_name, v08_name): _backend_from_model(m, v08_name)
+        for v08_name, m in BUILTIN_MODELS.items()
+    }
+
+
+BUILTIN_BACKENDS: dict[str, Backend] = _build_v07_compat_backends()
 
 # Backwards-compatible alias. Points at the built-in dict only — DO NOT
 # read from this in code that needs to see user backends from
@@ -860,14 +739,36 @@ def list_backends() -> list[str]:
 
 
 def get_backend(name: str) -> Backend:
-    """Return Backend by name. Raises KeyError if unknown."""
+    """Return Backend by name. v0.8.0 commit 4b: back-compat shim
+    accepting BOTH v0.7 names (``flux``, ``qwen``) and v0.8 canonical
+    names (``flux-kontext``, ``qwen-image-edit-v1``). The v0.7 →
+    v0.8-key translation lives here so the alias surface is
+    single-source (architect 4b pre-vet M-1): ``models.get_model()``
+    is strict v0.8-only; this shim handles both.
+
+    Internally the merged registry is v0.7-keyed (BUILTIN_BACKENDS
+    derived backward + user TOML stems by filename). A v0.8 input
+    is mapped back to its v0.7 key via the inverse rename map before
+    lookup.
+
+    Raises KeyError if unknown after both translation attempts.
+    """
     merged = _load_merged_backends()
-    if name not in merged:
-        available = ", ".join(sorted(merged.keys()))
-        raise KeyError(
-            f"Unknown backend '{name}'. Available: {available}"
-        )
-    return merged[name]
+    # First try direct lookup — covers v0.7 names + user TOML stems.
+    if name in merged:
+        return merged[name]
+    # Then try v0.8 → v0.7 translation: if user passed `flux-kontext`,
+    # registry has it under `flux`.
+    v08_to_v07: dict[str, str] = {
+        v08: v07 for v07, v08 in _V07_TO_V08_MODEL_RENAMES.items()
+    }
+    canonical = v08_to_v07.get(name)
+    if canonical is not None and canonical in merged:
+        return merged[canonical]
+    available = ", ".join(sorted(merged.keys()))
+    raise KeyError(
+        f"Unknown backend '{name}'. Available: {available}"
+    )
 
 
 def reset_backends_cache() -> None:
@@ -914,7 +815,7 @@ def filter_compatible_loras(
 def build_mflux_cmd(
     *,
     binary: Path,
-    backend: Backend,
+    model: Backend,
     input_path: Path | None,
     output_path: Path,
     prompt: str,
@@ -930,10 +831,16 @@ def build_mflux_cmd(
     battery_stop: int,
     loras: tuple = (),  # tuple[styles.LoraRef, ...]
 ) -> list[str]:
-    """Build the mflux argv for `backend` from already-resolved parameters.
+    """Build the mflux argv for `model` from already-resolved parameters.
 
     Pure: no I/O, no env reads, no subprocess. Keyword-only because 16
     positional args would be a footgun.
+
+    v0.8.0 commit 4b: kwarg renamed ``backend=`` → ``model=`` in
+    lockstep with the registry source-of-truth flip. The function still
+    accepts a ``Backend`` instance (v0.7-shape v0.8-derived view) at
+    that slot; future Engine-layer migration will tighten this to
+    ``Model`` after callers move to the new dispatch path.
 
     Order preserved from v0.1.x: common args first, then strength (if
     supported), then `extra_args` (e.g. `--model dev`), then negative
@@ -943,7 +850,7 @@ def build_mflux_cmd(
     typically write by hand.
 
     ``loras`` is a tuple of :class:`styles.LoraRef`. Only entries whose
-    ``compatible_with`` includes ``backend.lora_compat_group`` are
+    ``compatible_with`` includes ``model.lora_compat_group`` are
     applied; incompatibles emit a warn (visible in ``--dry-run`` output
     + interactive runs) explaining the mismatch. Empty tuple (default)
     → no LoRA argv emitted, identical to v0.5 behaviour.
@@ -970,7 +877,7 @@ def build_mflux_cmd(
         "--quantize", str(quantize),
     ]
     if input_path is not None:
-        cmd += [backend.image_flag, str(input_path)]
+        cmd += [model.image_flag, str(input_path)]
     cmd += [
         "--prompt", prompt,
         "--steps", str(steps),
@@ -982,10 +889,10 @@ def build_mflux_cmd(
         "--battery-percentage-stop-limit", str(battery_stop),
         "--output", str(output_path),
     ]
-    if backend.supports_strength:
+    if model.supports_strength:
         cmd += ["--image-strength", str(strength)]
-    cmd += list(backend.extra_args)
-    if backend.supports_negative and negative:
+    cmd += list(model.extra_args)
+    if model.supports_negative and negative:
         cmd += ["--negative-prompt", negative]
 
     # v0.6: LoRA argv emission. Compatible entries land as parallel
@@ -995,7 +902,7 @@ def build_mflux_cmd(
     # don't spam 150 identical warns on the same incompatible CLI LoRA.
     # (v0.6.x backlog python IMP-3.)
     if loras:
-        compatible, _incompatible = filter_compatible_loras(loras, backend)
+        compatible, _incompatible = filter_compatible_loras(loras, model)
         if compatible:
             cmd += ["--lora-paths", *(lora.ref for lora in compatible)]
             cmd += ["--lora-scales", *(str(lora.weight) for lora in compatible)]

@@ -288,7 +288,7 @@ def cmd_refine(args) -> int:
     heaviest_quant = iteration.final_quantize
     max_megapixels = megapixels_of(target_w, target_h)
     preflight_resources(
-        backend=backend, heaviest_quant=heaviest_quant,
+        model=backend, heaviest_quant=heaviest_quant,
         force=args.force, max_megapixels=max_megapixels,
     )
 
@@ -334,7 +334,7 @@ def cmd_refine(args) -> int:
     # through cmd_refine via the v0.7.0 history command discriminator.
     env = build_mflux_env(token=token, backend_secret=backend_secret)
     ctx = BatchContext(
-        backend=backend,
+        model=backend,
         seed=seed,
         width=target_w,
         height=target_h,

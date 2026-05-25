@@ -160,7 +160,7 @@ def cmd_batch(args) -> int:
 
     # v0.7.0: same flux-dev redirect as cmd_generate. Batch is i2i by
     # construction; t2i prompts don't have a discovery directory.
-    if args.backend == "flux-dev":
+    if args.model == "flux-dev":
         die(
             "--model flux-dev is text-to-image; cmd_batch requires "
             "input photos. Use `imgen draw \"<prompt>\"` for single-shot "
@@ -380,7 +380,7 @@ def cmd_batch(args) -> int:
             megapixels_of(pi.width, pi.height) for pi in per_input_iters
         )
         preflight_resources(
-            backend=backend, heaviest_quant=heaviest_quant,
+            model=backend, heaviest_quant=heaviest_quant,
             force=args.force, max_megapixels=max_megapixels,
         )
 
@@ -418,7 +418,7 @@ def cmd_batch(args) -> int:
                 input_paths=input_paths,
                 styles=styles_list,
                 run_dir=run_dir,
-                backend=backend,
+                model=backend,
                 quant=heaviest_quant,
                 preview=args.preview,
                 # v0.6.5 architect IMP-A: scope is i2i-only — mirror
@@ -461,7 +461,7 @@ def cmd_batch(args) -> int:
                 # converted path via build_iterations(input_path=
                 # mflux_input). (v0.3.0 design)
                 ctx = BatchContext(
-                    backend=backend,
+                    model=backend,
                     seed=seed,
                     width=width,
                     height=height,

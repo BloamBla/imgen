@@ -11,10 +11,31 @@ from pathlib import Path
 from ..colors import C, dim, die, info
 from ..defaults import DEFAULTS, HISTORY_SCHEMA_VERSION
 from ..history import load_history
+from ..models import _V07_TO_V08_MODEL_RENAMES
 from ..styles import LoraRef
 from .draw import cmd_draw
 from .generate import cmd_generate
 from .refine import cmd_refine
+
+
+def _normalize_backend_value(raw: str) -> str:
+    """Translate a v=3 history-entry ``backend`` value to its v0.8
+    canonical name.
+
+    v0.8.0 commit 4b context: the history schema bump (v=3 → v=4 with
+    key rename ``backend`` → ``model``) is commit 9 per §Q. Between 4b
+    and commit 9, entries on disk carry the v=3 ``"backend"`` key but
+    the value may be either a v0.7 name (legacy entries written
+    pre-4b) or a v0.8 canonical name (entries written 4b through
+    pre-9, since 4b stores the v0.8 resolver output).
+
+    This helper is pure: just a rename-map lookup with identity
+    fallback. **It deliberately does NOT call ``get_backend()``** —
+    architect 4b pre-vet M-3: a registry lookup at history-read time
+    would crash ``imgen history --last`` if a referenced user TOML
+    was deleted; display/listing must not require a live registry.
+    """
+    return _V07_TO_V08_MODEL_RENAMES.get(raw, raw)
 
 # Fields the replay Namespace must carry so cmd_generate doesn't have to
 # rely on getattr-with-default. Each is what cmd_generate reads for a
@@ -173,7 +194,9 @@ def _replay_draw_entry(entry: dict) -> int:
         steps=entry.get("steps", DEFAULTS["steps"]),
         guidance=entry.get("guidance", DEFAULTS["guidance"]),
         seed=None,  # new random seed each replay
-        backend=entry.get("backend", "flux-dev"),
+        model=_normalize_backend_value(
+            entry.get("backend", "flux-dev")
+        ),
         quantize=entry.get("quantize", DEFAULTS["quantize"]),
         preview=entry.get("preview", False),
         width=entry.get("width", 1024),
@@ -228,7 +251,9 @@ def _replay_refine_entry(entry: dict) -> int:
         guidance=entry.get("guidance", DEFAULTS["guidance"]),
         strength=entry.get("strength", 0.3),
         seed=None,  # new random seed each replay
-        backend=entry.get("backend", "flux2-klein-edit-9b"),
+        model=_normalize_backend_value(
+            entry.get("backend", "flux2-klein-edit-9b")
+        ),
         quantize=entry.get("quantize", 4),
         preview=entry.get("preview", False),
         no_open=False,
@@ -311,7 +336,9 @@ def replay_entry(entry: dict) -> int:
         guidance=entry.get("guidance", DEFAULTS["guidance"]),
         strength=entry.get("strength", DEFAULTS["strength"]),
         seed=None,  # new random seed
-        backend=entry.get("backend", DEFAULTS["backend"]),
+        model=_normalize_backend_value(
+            entry.get("backend", DEFAULTS["backend"])
+        ),
         quantize=entry.get("quantize", DEFAULTS["quantize"]),
         width=entry.get("width"),
         height=entry.get("height"),

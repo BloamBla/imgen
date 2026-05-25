@@ -498,7 +498,7 @@ def test_load_backend_and_token_flux_with_token(
     )
 
     backend, be, token, binary, backend_secret = load_backend_and_token(
-        SimpleNamespace(backend="flux")
+        SimpleNamespace(model="flux")
     )
 
     assert backend == "flux"
@@ -517,7 +517,7 @@ def test_load_backend_and_token_flux_without_token_exits_3(
     monkeypatch.setattr("imgen.cmd_helpers.load_token", lambda: None)
 
     with pytest.raises(SystemExit) as exc_info:
-        load_backend_and_token(SimpleNamespace(backend="flux"))
+        load_backend_and_token(SimpleNamespace(model="flux"))
 
     assert exc_info.value.code == 3
     err = capsys.readouterr().err
@@ -536,7 +536,7 @@ def test_load_backend_and_token_qwen_no_token_needed(
     )
 
     backend, be, token, binary, backend_secret = load_backend_and_token(
-        SimpleNamespace(backend="qwen")
+        SimpleNamespace(model="qwen")
     )
 
     assert backend == "qwen"
@@ -555,7 +555,7 @@ def test_load_backend_and_token_venv_check_failure_exits_3(
     monkeypatch.setattr("imgen.cmd_helpers.load_token", lambda: "x")
 
     with pytest.raises(SystemExit) as exc_info:
-        load_backend_and_token(SimpleNamespace(backend="qwen"))
+        load_backend_and_token(SimpleNamespace(model="qwen"))
 
     assert exc_info.value.code == 3
     assert "mflux not installed" in capsys.readouterr().err
@@ -569,7 +569,7 @@ def test_load_backend_and_token_mflux_check_failure_exits_3(
     monkeypatch.setattr("imgen.cmd_helpers.load_token", lambda: "x")
 
     with pytest.raises(SystemExit) as exc_info:
-        load_backend_and_token(SimpleNamespace(backend="qwen"))
+        load_backend_and_token(SimpleNamespace(model="qwen"))
 
     assert exc_info.value.code == 3
     assert "mflux not installed" in capsys.readouterr().err
@@ -584,7 +584,7 @@ def test_load_backend_and_token_missing_binary_exits_3(
     monkeypatch.setattr("imgen.cmd_helpers.load_token", lambda: "x")
 
     with pytest.raises(SystemExit) as exc_info:
-        load_backend_and_token(SimpleNamespace(backend="qwen"))
+        load_backend_and_token(SimpleNamespace(model="qwen"))
 
     assert exc_info.value.code == 3
     err = capsys.readouterr().err
@@ -656,7 +656,7 @@ def test_load_custom_backend_forwards_secret_when_env_set(
     monkeypatch.setenv("MYBACK_API_KEY", "secret_value_123")
 
     backend, be, token, binary, backend_secret = load_backend_and_token(
-        SimpleNamespace(backend="myback")
+        SimpleNamespace(model="myback")
     )
 
     assert backend == "myback"
@@ -679,7 +679,7 @@ def test_load_custom_backend_dies_when_required_secret_missing(
     monkeypatch.delenv("MYBACK_API_KEY", raising=False)
 
     with pytest.raises(SystemExit) as exc_info:
-        load_backend_and_token(SimpleNamespace(backend="myback"))
+        load_backend_and_token(SimpleNamespace(model="myback"))
 
     assert exc_info.value.code == 3
     err = capsys.readouterr().err
@@ -706,7 +706,7 @@ def test_load_custom_backend_dies_when_secret_env_var_set_to_empty(
     monkeypatch.setenv("MYBACK_API_KEY", "")  # explicitly empty
 
     with pytest.raises(SystemExit) as exc_info:
-        load_backend_and_token(SimpleNamespace(backend="myback"))
+        load_backend_and_token(SimpleNamespace(model="myback"))
 
     assert exc_info.value.code == 3
     err = capsys.readouterr().err
@@ -729,7 +729,7 @@ def test_load_custom_backend_silent_skip_when_optional_secret_missing(
     monkeypatch.delenv("MYBACK_API_KEY", raising=False)
 
     backend, be, token, binary, backend_secret = load_backend_and_token(
-        SimpleNamespace(backend="myback")
+        SimpleNamespace(model="myback")
     )
 
     assert backend_secret is None
@@ -750,7 +750,7 @@ def test_load_custom_backend_absolute_binary_path_used_as_is(
     )
 
     backend, be, token, binary, backend_secret = load_backend_and_token(
-        SimpleNamespace(backend="weirdo")
+        SimpleNamespace(model="weirdo")
     )
 
     assert binary == abs_binary
@@ -1612,14 +1612,14 @@ def test_preflight_resources_force_skips_check(monkeypatch):
         lambda b, q, mp=1.0: called.append((b, q, mp)) or _clean_res(),
     )
 
-    preflight_resources(backend="flux", heaviest_quant=8, force=True)
+    preflight_resources(model="flux", heaviest_quant=8, force=True)
 
     assert called == [], "force=True must short-circuit before check_resources"
 
 
 def test_preflight_resources_clean_passes(stub_check_resources):
     """All green → returns None (no SystemExit, no warning crash)."""
-    preflight_resources(backend="flux", heaviest_quant=8, force=False)
+    preflight_resources(model="flux", heaviest_quant=8, force=False)
     # Confirms helper passed backend + quant + megapixels through.
     assert stub_check_resources["last_call"] == ("flux", 8, 1.0)
 
@@ -1629,7 +1629,7 @@ def test_preflight_resources_forwards_max_megapixels(stub_check_resources):
     check_resources so dimension-aware RAM estimation actually fires
     in the caller chain. Lock against accidental signature regression."""
     preflight_resources(
-        backend="flux2-klein-edit-9b", heaviest_quant=4,
+        model="flux2-klein-edit-9b", heaviest_quant=4,
         force=False, max_megapixels=4.19,
     )
     assert stub_check_resources["last_call"] == (
@@ -1643,7 +1643,7 @@ def test_preflight_resources_other_mflux_running_exits_4(
     stub_check_resources["res"]["other_mflux_pid"] = 12345
 
     with pytest.raises(SystemExit) as exc_info:
-        preflight_resources(backend="flux", heaviest_quant=8, force=False)
+        preflight_resources(model="flux", heaviest_quant=8, force=False)
 
     assert exc_info.value.code == 4
     err = capsys.readouterr().err
@@ -1657,7 +1657,7 @@ def test_preflight_resources_low_ram_exits_4(stub_check_resources, capsys):
     stub_check_resources["res"]["ram_required_gb"] = 24
 
     with pytest.raises(SystemExit) as exc_info:
-        preflight_resources(backend="flux", heaviest_quant=8, force=False)
+        preflight_resources(model="flux", heaviest_quant=8, force=False)
 
     assert exc_info.value.code == 4
     err = capsys.readouterr().err
@@ -1675,7 +1675,7 @@ def test_preflight_resources_low_disk_warns_not_dies(
     stub_check_resources["res"]["disk_ok"] = False
     stub_check_resources["res"]["disk_free_gb"] = 2.5
 
-    preflight_resources(backend="flux", heaviest_quant=8, force=False)
+    preflight_resources(model="flux", heaviest_quant=8, force=False)
 
     captured = capsys.readouterr()
     combined = captured.out + captured.err
@@ -1690,7 +1690,7 @@ def test_preflight_resources_low_battery_warns_not_dies(
     stub_check_resources["res"]["battery_ok"] = False
     stub_check_resources["res"]["battery_pct"] = 12
 
-    preflight_resources(backend="flux", heaviest_quant=8, force=False)
+    preflight_resources(model="flux", heaviest_quant=8, force=False)
 
     captured = capsys.readouterr()
     combined = captured.out + captured.err
@@ -1926,7 +1926,7 @@ def _run(*, it=None, tmp_path, succeeded, failed, logger=None, **kwargs):
     if it is None:
         it = _full_iter(tmp_path)
     ctx_kwargs = dict(
-        backend="flux",
+        model="flux",
         seed=42,
         width=1024,
         height=1024,

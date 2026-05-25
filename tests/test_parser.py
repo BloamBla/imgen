@@ -205,7 +205,7 @@ def test_parser_loads_user_backends_before_choices(tmp_path, monkeypatch):
         args = parser.parse_args(
             ["generate", "photo.jpg", "--model", "mythical"]
         )
-        assert args.backend == "mythical"
+        assert args.model == "mythical"
     finally:
         backends_mod.reset_backends_cache()
 
@@ -234,13 +234,16 @@ def test_parser_rejects_unknown_model(tmp_path, monkeypatch):
         backends_mod.reset_backends_cache()
 
 
-# ── --list-backends action (v0.4 sibling to --list-styles) ──────────────
+# ── --list-models action (v0.8.0 commit 4b, renamed from --list-backends) ──
 
 
-def test_list_backends_flag_parsed():
+def test_list_models_flag_parsed():
+    """v0.8.0 commit 4b: top-level --list-backends → --list-models.
+    Legacy --list-backends form is caught by the pre-argparse hook in
+    cli.main; the new flag binds to args.list_models."""
     parser = build_parser()
-    args = parser.parse_args(["--list-backends"])
-    assert args.list_backends is True
+    args = parser.parse_args(["--list-models"])
+    assert args.list_models is True
 
 
 def test_print_backends_shows_builtins(tmp_path, monkeypatch, capsys):
@@ -652,6 +655,20 @@ class TestBackendFlagDeprecation:
         # Spot-check: the escape byte itself is absent
         assert "\x1b" not in combined
 
+    def test_list_backends_flag_hard_errors_with_hint(self, capsys):
+        """v0.8.0 commit 4b: legacy ``--list-backends`` top-level
+        flag is detected by a pre-argparse hook (architect 4b pre-vet
+        M-4 — consistency with the ``--backend`` hook). Hint points
+        at ``--list-models``.
+        """
+        from imgen.parser import _check_for_deprecated_list_backends_flag
+        with pytest.raises(SystemExit):
+            _check_for_deprecated_list_backends_flag(["--list-backends"])
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "renamed --list-backends → --list-models" in combined
+        assert "--list-models" in combined
+
     def test_hook_passes_through_when_no_backend_flag(self, capsys):
         """Negative case: argv without --backend → hook returns
         cleanly, no SystemExit, no stderr.
@@ -672,19 +689,23 @@ class TestBackendFlagDeprecation:
 
 
 @pytest.mark.parametrize(
-    "v08_name, expected_v07_registry_key",
+    "v08_name",
     [
-        ("flux-kontext", "flux"),                  # renamed
-        ("qwen-image-edit-v1", "qwen"),            # renamed
-        ("flux-dev", "flux-dev"),                  # unchanged
-        ("flux2-klein-edit-9b", "flux2-klein-edit-9b"),  # unchanged
+        "flux-kontext",            # was "flux" in v0.7
+        "qwen-image-edit-v1",      # was "qwen" in v0.7
+        "flux-dev",                # unchanged
+        "flux2-klein-edit-9b",     # unchanged
     ],
 )
-def test_model_flag_accepts_v0_8_0_names(v08_name, expected_v07_registry_key):
+def test_model_flag_accepts_v0_8_0_names(v08_name):
     """§I lock-in: --model accepts every v0.8 canonical name across
-    every subcommand that has the flag. Resolver translates renamed
-    names to their v0.7 registry key (commit 4a) so get_backend()
-    lookups in cmd_helpers continue to work.
+    every subcommand that has the flag.
+
+    v0.8.0 commit 4b update: registry source-of-truth is now
+    BUILTIN_MODELS (v0.8-keyed), so the resolver returns the v0.8
+    name directly — no v0.8→v0.7 inverse translation anymore (the
+    commit-4a inverse-map branch was deleted per the 4a TODO marker).
+    args.model now holds the v0.8 canonical value.
     """
     from imgen.parser import build_parser
     parser = build_parser()
@@ -692,7 +713,7 @@ def test_model_flag_accepts_v0_8_0_names(v08_name, expected_v07_registry_key):
     args = parser.parse_args(
         ["generate", "photo.jpg", "--model", v08_name]
     )
-    assert args.backend == expected_v07_registry_key
+    assert args.model == v08_name
 
 
 def test_model_flag_rejects_v0_7_name_with_hint(capsys):
@@ -738,23 +759,29 @@ class TestNoModelFlagDefault:
     map, every no-flag invocation would die on the v0.7-name
     rejection branch of `_resolve_v07_alias`. These tests pin the
     fix: `_v07_default_to_v08_for_i2i` translates the i2i default
-    BEFORE argparse sees it, and `_resolve_v07_alias` maps it back
-    to the v0.7 registry key.
+    BEFORE argparse sees it.
+
+    v0.8.0 commit 4b update: dest renamed `backend` → `model` in
+    lockstep with the registry source-of-truth flip; assertions check
+    ``args.model`` (v0.8 canonical value) — the v0.7 inverse-map
+    branch was removed from the resolver at 4b.
     """
 
-    def test_generate_no_model_resolves_to_v07_default(self):
+    def test_generate_no_model_resolves_to_v08_default(self):
         from imgen.parser import build_parser
         parser = build_parser()
         args = parser.parse_args(["generate", "photo.jpg"])
         # DEFAULTS["backend"] = "flux" → pre-translated to
-        # "flux-kontext" → mapped back to "flux" by type=.
-        assert args.backend == "flux"
+        # "flux-kontext" via _v07_default_to_v08_for_i2i, fed as
+        # argparse default → resolver returns it unchanged (v0.8
+        # canonical in registry).
+        assert args.model == "flux-kontext"
 
-    def test_batch_no_model_resolves_to_v07_default(self):
+    def test_batch_no_model_resolves_to_v08_default(self):
         from imgen.parser import build_parser
         parser = build_parser()
         args = parser.parse_args(["batch", "/tmp/dir"])
-        assert args.backend == "flux"
+        assert args.model == "flux-kontext"
 
     def test_draw_no_model_resolves_to_backend_draw_default(self):
         """Architect HIGH-1 lock-in: draw's default is
@@ -769,8 +796,7 @@ class TestNoModelFlagDefault:
         from imgen.parser import build_parser
         parser = build_parser()
         args = parser.parse_args(["draw", "a prompt"])
-        # flux-dev is unchanged by the rename map — passes through.
-        assert args.backend == "flux-dev"
+        assert args.model == "flux-dev"
 
     def test_refine_no_model_resolves_to_literal_default(self):
         """Refine's default is a literal "flux2-klein-edit-9b" (not
@@ -780,7 +806,7 @@ class TestNoModelFlagDefault:
         from imgen.parser import build_parser
         parser = build_parser()
         args = parser.parse_args(["refine", "photo.png"])
-        assert args.backend == "flux2-klein-edit-9b"
+        assert args.model == "flux2-klein-edit-9b"
 
     def test_draw_with_config_override_backend_draw(self):
         """Architect HIGH-1 lock-in (continued): if a colleague sets
@@ -795,4 +821,4 @@ class TestNoModelFlagDefault:
         custom_defaults["backend_draw"] = "flux-dev"  # safe v0.8 name
         parser = build_parser(defaults=custom_defaults)
         args = parser.parse_args(["draw", "a prompt"])
-        assert args.backend == "flux-dev"
+        assert args.model == "flux-dev"

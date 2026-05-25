@@ -763,7 +763,7 @@ def run_one_iteration(
         step(f"Generating [{idx}/{total}] {style_name} → {output_path.name}")
     else:
         step(f"Generating {style_name} → {output_path.name}")
-    print(f"   {C.DIM}backend: {ctx.backend} q{it.final_quantize}  "
+    print(f"   {C.DIM}model: {ctx.model} q{it.final_quantize}  "
           f"steps: {it.final_steps}  guidance: {it.final_guidance}  "
           f"strength: {it.final_strength}  seed: {it.seed}{C.END}")
     # v0.7.0: ctx.input_path is None for t2i (`imgen draw`). The display
@@ -809,7 +809,11 @@ def run_one_iteration(
         "steps": it.final_steps,
         "guidance": it.final_guidance,
         "strength": it.final_strength,
-        "backend": ctx.backend,
+        # v0.8.0 commit 4b: ctx field is now `model` (v0.8 canonical
+        # name). History entry key stays "backend" — schema v=3 → v=4
+        # bump is commit 9 per §Q. Until then, the value shifts from
+        # v0.7 to v0.8 form but the key is unchanged.
+        "backend": ctx.model,
         "quantize": it.final_quantize,
         "width": ctx.width,
         "height": ctx.height,
@@ -990,7 +994,7 @@ def open_results(
 
 def preflight_resources(
     *,
-    backend: str,
+    model: str,
     heaviest_quant: int,
     force: bool,
     max_megapixels: float = 1.0,
@@ -1019,7 +1023,7 @@ def preflight_resources(
     """
     if force:
         return
-    res = check_resources(backend, heaviest_quant, max_megapixels)
+    res = check_resources(model, heaviest_quant, max_megapixels)
 
     if res["other_mflux_pid"] is not None:
         die(f"Another mflux process is already running (PID "
@@ -1037,7 +1041,7 @@ def preflight_resources(
         # output. Matches the existing :.1f formatting on the
         # available/total lines for visual symmetry.
         die(f"Not enough RAM: need ~{res['ram_required_gb']:.1f} GB peak "
-            f"for {backend} q{heaviest_quant}, only "
+            f"for {model} q{heaviest_quant}, only "
             f"{res['ram_available_gb']:.1f} GB available "
             f"(of {res['ram_total_gb']:.0f} GB total).",
             code=4,
@@ -1450,7 +1454,7 @@ def _assemble_iteration_no_style(
     # pre-v0.7.8 behaviour of both draw + refine.
     cmd = build_mflux_cmd(
         binary=binary,
-        backend=be,
+        model=be,
         input_path=input_path,
         output_path=output_path,
         prompt=lora_resolution.prompt_with_triggers,
@@ -1896,7 +1900,7 @@ def build_iterations(
         # 5. Argv assembly for this iteration.
         cmd = build_mflux_cmd(
             binary=binary,
-            backend=be,
+            model=be,
             input_path=input_path,
             output_path=output_path,
             prompt=prompt,
@@ -1993,7 +1997,13 @@ def load_backend_and_token(
         point at a fork or experimental binary outside VENV_BIN.
       Schema validator enforces these two shapes; we trust that here.
     """
-    backend = args.backend
+    # v0.8.0 commit 4b: argparse dest renamed `backend` → `model` in
+    # lockstep with the registry source-of-truth flip. ``get_backend()``
+    # remains a back-compat shim accepting BOTH v0.7 and v0.8 model
+    # names — the value in ``args.model`` is v0.8-canonical post-4b
+    # (resolver-translated), but the shim handles legacy v0.7 values
+    # too (e.g. from Namespace fixtures or history-replay paths).
+    backend = args.model
     be = get_backend(backend)
 
     # ── HF token (FLUX-specific legacy path) ─────────────────────

@@ -36,7 +36,7 @@ class TestRefineParser:
         """v0.7.5 ships FLUX.2-klein-9B as the default refine backend
         (native ~4 MP support past FLUX.1's ~1.5K ceiling)."""
         args = _parse_refine("photo.png")
-        assert args.backend == "flux2-klein-edit-9b"
+        assert args.model == "flux2-klein-edit-9b"
 
     def test_default_quantize_is_4(self):
         """Q4 is the safe default — Q8 + 2K² activations on 32GB Mac
@@ -219,7 +219,7 @@ def _make_args(**overrides):
         guidance=None,
         strength=0.3,
         seed=42,
-        backend="flux2-klein-edit-9b",
+        model="flux2-klein-edit-9b",
         quantize=4,
         preview=False,
         no_open=True,

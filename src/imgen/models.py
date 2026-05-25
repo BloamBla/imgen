@@ -1,38 +1,69 @@
-"""v0.8.0 — Model dataclass replacing the v0.7 Backend.
+"""v0.8.0 — Model dataclass + canonical BUILTIN_MODELS registry.
 
-Per [[project-v080-design]] §F. A `Model` row is the per-recipe property
-surface: which engine routes it, what its default steps/guidance are,
-what RAM it needs, and so on. The Engine (mflux / diffusers_mps) reads
-the Model + GenParams and dispatches.
+Per [[project-v080-design]] §F + §G.1 + §Q commit 4b. A ``Model`` row is
+the per-recipe property surface: which engine routes it, its default
+steps/guidance, RAM math, LoRA compat group, gated-repo URL. The Engine
+(mflux / diffusers_mps) reads ``Model + GenParams`` and dispatches.
 
-Field surface is locked by ``tests/test_models.py::TestModelDataclassShape``.
-Engine-conditional invariants are enforced at every instantiation site
-(BUILTIN_MODELS dict, user TOMLs, test fixtures) via ``__post_init__``,
-so the registry source-of-truth flip in commit 4b can't introduce a
-silently-malformed row.
+This module is the **canonical v0.8 registry source-of-truth**:
+
+* ``BUILTIN_MODELS`` (v0.8.0 commit 4b): literal-declared dict keyed by
+  v0.8 canonical names (``flux-kontext``, ``qwen-image-edit-v1``,
+  ``flux-dev``, ``flux2-klein-edit-9b``). Replaces the commit-2-3
+  derive-from-BUILTIN_BACKENDS path.
+* ``_V07_TO_V08_MODEL_RENAMES``: pure data about v0.7 → v0.8 name
+  renames. Used by parser ``_resolve_v07_alias`` (for CLI input
+  validation) AND by ``backends.get_backend`` (for v0.7-name input
+  translation in the back-compat shim). Lives here as the canonical
+  registry module to avoid circular import (parser → backends →
+  parser). (4b design pre-vet python-reviewer HIGH-1.)
+
+``backends.py`` becomes a thin v0.7-compat facade at 4b: ``BUILTIN_BACKENDS``
+is BACKWARD-DERIVED from ``BUILTIN_MODELS`` (keyed by v0.7 names for
+test-fixture compatibility per memo §Q + architect HIGH-1), and
+``get_backend()`` accepts both v0.7 and v0.8 names. The Model surface
+itself is engine-aware (commit 1) and supports the new diffusers_mps
+engine path (commit 6).
+
+Field surface locked by ``tests/test_models.py::TestModelDataclassShape``.
+Engine-conditional invariants enforced at every instantiation site via
+``__post_init__`` — built-in registry, user TOMLs (commit 6+ when
+user-TOML schema gains v0.8 fields), test fixtures.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Mapping
 
-__all__ = ["BUILTIN_MODELS", "Model", "_model_from_backend"]
+__all__ = [
+    "BUILTIN_MODELS",
+    "Model",
+    "_V07_TO_V08_MODEL_RENAMES",
+    "get_model",
+    "list_models",
+]
 
 
-# v0.8 commit-2 scaffold: RAM defaults per legacy v0.7 backend name.
-# Exists ONLY to satisfy Model.__post_init__ during the derive-from-
-# Backend phase (commits 2-3). Commit 4b promotes BUILTIN_MODELS to
-# the live registry with literal per-model values declared inline (per
-# §G.1), and this table goes away. Values are calibrated from the
-# v0.7.14 RAM_REQUIRED_GB table + v0.7.7 real-mflux measurements +
-# 2026-05-25 Qwen-2512 swap-thrash session, encoded per [[project-v080-
-# design]] §G.1.
-_V07_BACKEND_RAM_DEFAULTS: dict[str, tuple[float, float, float]] = {
-    # name → (ram_baseline_gb, ram_slope_gb_per_mp, encoder_ram_gb)
-    "flux":                 (9.0,  5.0,  0.0),
-    "flux-dev":             (9.0,  5.0,  0.0),
-    "qwen":                 (10.0, 5.0,  7.0),  # Qwen2.5-VL ~7 GB
-    "flux2-klein-edit-9b":  (14.0, 5.5,  0.0),
-}
+# ── v0.7 → v0.8 model name renames (canonical home, 4b moved from parser.py) ──
+#
+# Pure data; no imports of imgen modules — anyone can import this freely.
+# parser.py (CLI `--model` validation) and backends.py (back-compat shim
+# `get_backend()`) both consume this; locating here avoids circular
+# import (4b design pre-vet python-reviewer HIGH-1).
+#
+# Only TWO built-ins moved in v0.8.0: `flux` → `flux-kontext` (honest:
+# it's FLUX.1-Kontext-dev, not generic flux) and `qwen` →
+# `qwen-image-edit-v1` (honest: v1 of Qwen-Image-Edit, distinct from
+# the 2512 family). Other built-ins (`flux-dev`, `flux2-klein-edit-9b`)
+# already had honest v0.8-style names so no rename row needed.
+_V07_TO_V08_MODEL_RENAMES: Mapping[str, str] = MappingProxyType({
+    "flux": "flux-kontext",
+    "qwen": "qwen-image-edit-v1",
+})
+
+
+# ── Model dataclass (commit 1, unchanged at 4b) ────────────────────────
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,67 +151,192 @@ class Model:
             )
 
 
-def _model_from_backend(backend, name: str) -> Model:
-    """Derive a v0.8 Model from a v0.7 Backend row.
+# ── Enhancer system prompts (moved from backends.py at 4b) ─────────────
+#
+# These are FLUX-/Qwen-specific tuning text used by the LLM prompt
+# enhancer (v0.5+). They live with the Model registry now because they
+# are properties of the model, not of the v0.7 "Backend" surface.
+# backends.py continues to re-export them for any v0.7 test that
+# imported them directly.
 
-    Used to populate ``BUILTIN_MODELS`` while the live registry is still
-    ``BUILTIN_BACKENDS`` (commits 2-3 per §Q). Once commit 4b flips the
-    source-of-truth, BUILTIN_MODELS is declared inline per §G.1 and this
-    helper is no longer needed at module load (it stays exported for
-    user TOML migration tests).
+_FLUX_KONTEXT_ENHANCE_SYS = (
+    "You expand image-editing prompts for FLUX.1 Kontext, an image-"
+    "conditioning model that restyles input photos while preserving "
+    "identity, pose, and composition. Take the user prompt and expand "
+    "it to 40-60 tokens. "
+    "CRITICAL: you MUST preserve the entire 'while preserving …' "
+    "clause from the user prompt VERBATIM. Keep every word inside that "
+    "clause exactly as written — particularly identity anchors such as "
+    "'facial identity', 'exact facial features', or 'recognizable "
+    "expression'. Do NOT replace these anchors with synonyms or "
+    "alternative preservation language (e.g. NEVER substitute 'overall "
+    "composition' or 'relative position of subjects' for the identity "
+    "anchor). "
+    "Add specific stylistic descriptors (lighting, color palette, art "
+    "technique, materials) at the START or END, not inside the "
+    "preserving clause. Do NOT invent objects, scenes, or characters "
+    "not in the user prompt — expand existing details only. NEVER "
+    "describe the input photo's content — Kontext sees it directly. "
+    "Output ONLY the expanded prompt with no preamble, no quotes, "
+    "no explanation."
+)
 
-    The ``name`` parameter is needed for the per-backend RAM lookup —
-    Backend rows don't carry RAM info (it lived in v0.7.14's separate
-    ``checks.RAM_REQUIRED_GB`` table). The lookup is exhaustive for the
-    4 current built-ins; unknown names raise (forces explicit table
-    update if a new built-in lands during the v0.8 arc).
-    """
-    if name not in _V07_BACKEND_RAM_DEFAULTS:
-        raise KeyError(
-            f"_V07_BACKEND_RAM_DEFAULTS missing entry for {name!r}. "
-            "Add (baseline_gb, slope_per_mp, encoder_gb) row in models.py "
-            "before deriving a Model for this backend."
-        )
-    baseline, slope, encoder = _V07_BACKEND_RAM_DEFAULTS[name]
-    return Model(
+_QWEN_EDIT_ENHANCE_SYS = (
+    "You expand instruction-style edit prompts for Qwen-Image-Edit. "
+    "Use imperative verbs ('transform', 'restyle', 'apply'). Keep the "
+    "output under 40 tokens — Qwen-Edit prefers shorter directives "
+    "than FLUX. "
+    "CRITICAL: preserve the entire 'while preserving …' clause from "
+    "the user prompt VERBATIM, including identity anchors like "
+    "'facial identity', 'exact facial features', or 'recognizable "
+    "expression'. Do NOT swap these for synonyms. "
+    "Do NOT invent objects, scenes, or characters not in the user "
+    "prompt — expand existing details only. NEVER describe the input "
+    "photo's content. Output ONLY the expanded prompt with no preamble, "
+    "no quotes, no explanation."
+)
+
+_FLUX_DEV_DRAW_ENHANCE_SYS = (
+    "You are a prompt engineer for FLUX.1, a text-to-image diffusion "
+    "model. Expand the user's brief description into a richer, "
+    "visually-detailed image prompt suitable for generation from "
+    "scratch (no input photo). "
+    "Add concrete detail to: subject (specific appearance, clothing, "
+    "expression, posture), composition (camera angle, framing, "
+    "subject placement), lighting (source, quality, direction, color "
+    "temperature), color palette (dominant tones, accents, mood), "
+    "and art style (medium, technique, era, named artists or schools "
+    "where the user's prompt implies one). "
+    "Stay faithful to the user's intent — do NOT invent a different "
+    "subject, swap genders, change species, or relocate the scene. "
+    "Expand the existing details; don't replace them. "
+    "Target 40-70 tokens. Output ONLY the expanded prompt with no "
+    "preamble, no quotes, no explanation, no 'Here is the expanded "
+    "prompt:' framing."
+)
+
+# Multi-substring identity-anchor invariants — see v0.5 enhance.py.
+# Per-style-family anchor: one of these substrings must survive the
+# enhance pass for the i2i identity preservation contract to hold.
+_IDENTITY_ANCHOR_INVARIANTS: tuple[str, ...] = (
+    "facial identity",
+    "exact facial features",
+    "recognizable expression",
+)
+
+
+# ── BUILTIN_MODELS — literal-declared registry (v0.8.0 commit 4b) ──────
+#
+# Replaces the commit-2-3 derived view. Each row is the v0.8 canonical
+# name keyed to a literal Model() construction. RAM values populated
+# inline from the v0.7.14 baseline table (preserved in commit-history
+# context for `_V07_BACKEND_RAM_DEFAULTS`); commit 8 (per §Q) will
+# tune per-Model ram_baseline_gb / slope based on real measurements.
+# Per-Model param defaults (default_steps / guidance / min_guidance)
+# stay at dataclass defaults at 4b; commit 7 wires the per-Model
+# values into the resolver path per §G.1 and §M.
+
+BUILTIN_MODELS: dict[str, Model] = {
+    # FLUX.1-Kontext-dev — i2i style transfer (v0.7 name: flux).
+    "flux-kontext": Model(
         engine="mflux",
-        binary=backend.binary,
-        extra_args=backend.extra_args,
-        image_flag=backend.image_flag,
-        supports_strength=backend.supports_strength,
-        supports_negative=backend.supports_negative,
-        needs_token=backend.needs_token,
-        lora_compat_group=backend.lora_compat_group,
-        hf_gated_repo=backend.hf_gated_repo,
-        enhance_system_prompt=backend.enhance_system_prompt,
-        enhance_invariants=backend.enhance_invariants,
-        # v0.8 NEW fields — populated from the per-backend lookup
-        # table above. Commit 4b replaces this with inline declarations
-        # per §G.1 and the table is deleted.
-        ram_baseline_gb=baseline,
-        ram_slope_gb_per_mp=slope,
-        encoder_ram_gb=encoder,
-        # default_steps / default_guidance / min_guidance / max_guidance
-        # stay at dataclass defaults for the derived-view phase —
-        # explicit per-model values land alongside the §G.1 inline
-        # declarations in commit 4b.
-    )
+        binary="mflux-generate-kontext",
+        needs_token=True,
+        image_flag="--image-path",
+        supports_strength=True,
+        supports_negative=True,
+        extra_args=("--model", "dev"),
+        enhance_system_prompt=_FLUX_KONTEXT_ENHANCE_SYS,
+        enhance_invariants=_IDENTITY_ANCHOR_INVARIANTS,
+        lora_compat_group="flux-1",
+        hf_gated_repo="black-forest-labs/FLUX.1-Kontext-dev",
+        ram_baseline_gb=9.0,
+        ram_slope_gb_per_mp=5.0,
+        encoder_ram_gb=0.0,
+    ),
+
+    # Qwen-Image-Edit-2509 — open-license i2i (v0.7 name: qwen).
+    "qwen-image-edit-v1": Model(
+        engine="mflux",
+        binary="mflux-generate-qwen-edit",
+        needs_token=False,
+        image_flag="--image-paths",
+        supports_strength=False,
+        supports_negative=False,
+        extra_args=("--model", "qwen"),
+        enhance_system_prompt=_QWEN_EDIT_ENHANCE_SYS,
+        enhance_invariants=_IDENTITY_ANCHOR_INVARIANTS,
+        lora_compat_group="qwen",
+        hf_gated_repo=None,
+        ram_baseline_gb=10.0,
+        ram_slope_gb_per_mp=5.0,
+        encoder_ram_gb=7.0,  # Qwen2.5-VL encoder ~7 GB peak
+    ),
+
+    # FLUX.1-dev — t2i default for `imgen draw` (name unchanged at 4b).
+    "flux-dev": Model(
+        engine="mflux",
+        binary="mflux-generate",
+        needs_token=True,
+        image_flag="--image-path",  # dataclass-shape consistency; build_cmd
+                                    # gates emission on input_path being set.
+        supports_strength=False,
+        supports_negative=True,
+        extra_args=("--model", "dev"),
+        enhance_system_prompt=_FLUX_DEV_DRAW_ENHANCE_SYS,
+        enhance_invariants=(),  # t2i: no identity-anchor contract
+        lora_compat_group="flux-dev",
+        hf_gated_repo="black-forest-labs/FLUX.1-dev",
+        ram_baseline_gb=9.0,
+        ram_slope_gb_per_mp=5.0,
+        encoder_ram_gb=0.0,
+    ),
+
+    # FLUX.2-klein-edit-9b — Hires-Fix refine default (name unchanged at 4b).
+    "flux2-klein-edit-9b": Model(
+        engine="mflux",
+        binary="mflux-generate-flux2-edit",
+        needs_token=True,
+        image_flag="--image-paths",
+        supports_strength=False,
+        supports_negative=False,  # FLUX.2 family deliberately dropped CFG/neg
+        extra_args=("-m", "flux2-klein-9b"),
+        enhance_system_prompt=None,
+        enhance_invariants=(),
+        lora_compat_group="flux2-klein-9b",
+        hf_gated_repo="black-forest-labs/FLUX.2-klein-9B",
+        ram_baseline_gb=14.0,
+        ram_slope_gb_per_mp=5.5,
+        encoder_ram_gb=0.0,
+    ),
+}
 
 
-# Derived registry view. Built from BUILTIN_BACKENDS at module load —
-# single source of derivation, no manual sync between the two dicts.
-# When commit 4b flips source-of-truth, this becomes the live literal
-# declaration and BUILTIN_BACKENDS becomes the derived view going
-# backward (`{name: _backend_from_model(m) for ...}`).
-def _build_builtin_models() -> dict[str, Model]:
-    """Local import to avoid module-load circularity — backends.py
-    imports `Model` from us in its facade (post-§D), but at this commit
-    backends.py only exports legacy `Backend` + `BUILTIN_BACKENDS`."""
-    from .backends import BUILTIN_BACKENDS
-    return {
-        name: _model_from_backend(b, name)
-        for name, b in BUILTIN_BACKENDS.items()
-    }
+# ── Strict v0.8 accessors (canonical Engine-layer API) ─────────────────
+#
+# Per architect M-1 (4b design pre-vet): get_model / list_models are the
+# new canonical API and are STRICTLY v0.8-only — they take v0.8 keys
+# and raise on anything else. The v0.7-name translation surface lives
+# in backends.get_backend (v0.7-compat shim) so the alias layer is
+# single-source. New Engine-layer code (commit 6+) uses get_model;
+# existing call sites continue to use get_backend through 4b.
 
 
-BUILTIN_MODELS: dict[str, Model] = _build_builtin_models()
+def get_model(name: str) -> Model:
+    """Strict v0.8-only Model lookup. Raises KeyError on unknown names
+    or v0.7 spellings. v0.7-name translation lives in
+    ``backends.get_backend`` (see architect 4b pre-vet M-1)."""
+    if name not in BUILTIN_MODELS:
+        available = ", ".join(sorted(BUILTIN_MODELS.keys()))
+        raise KeyError(
+            f"Unknown model '{name}'. Available: {available}"
+        )
+    return BUILTIN_MODELS[name]
+
+
+def list_models() -> list[str]:
+    """Sorted v0.8 canonical names of built-in Models. User-TOML Models
+    are NOT included at 4b — user TOMLs go through the v0.7 Backend
+    facade (see backends.py ``list_backends``). Commit 6+ Engine layer
+    wires user-TOML-derived Models into this list."""
+    return sorted(BUILTIN_MODELS.keys())

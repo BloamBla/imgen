@@ -302,7 +302,7 @@ def cmd_draw(args) -> int:
     heaviest_quant = max(it.final_quantize for it in iterations)
     max_megapixels = megapixels_of(args.width, args.height)
     preflight_resources(
-        backend=backend, heaviest_quant=heaviest_quant,
+        model=backend, heaviest_quant=heaviest_quant,
         force=args.force, max_megapixels=max_megapixels,
     )
 
@@ -339,7 +339,7 @@ def cmd_draw(args) -> int:
     # `seed` field (already per-row in history).
     env = build_mflux_env(token=token, backend_secret=backend_secret)
     ctx = BatchContext(
-        backend=backend,
+        model=backend,
         seed=base_seed,
         width=args.width,
         height=args.height,

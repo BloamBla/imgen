@@ -90,7 +90,14 @@ class BatchContext:
     constructs BatchContext without passing the field (zero today —
     every site updates in lockstep with v0.7.0).
     """
-    backend: str
+    # v0.8.0 commit 4b: field renamed `backend` → `model` in lockstep
+    # with the CLI/argparse `--model` rename. Value carries the v0.8
+    # canonical name (resolver-translated from user input at parser
+    # level), e.g. "flux-kontext" or "qwen-image-edit-v1". Legacy
+    # v0.7 values still flow through via Namespace fixtures + history
+    # replay; the back-compat shim in backends.get_backend accepts
+    # both forms.
+    model: str
     seed: int
     width: int
     height: int
@@ -490,7 +497,7 @@ class BatchLogger:
         input_paths: list[Path],
         styles: list[str],
         run_dir: Path | None,
-        backend: str,
+        model: str,
         quant: int,
         preview: bool,
         scope: str | None,
@@ -528,7 +535,7 @@ class BatchLogger:
             f"# inputs ({len(input_paths)}):  {input_names}\n"
             f"# styles ({len(styles)}):  {styles_names}\n"
             f"# output:   {run_dir}\n"
-            f"# backend:  {backend} q{quant}  "
+            f"# model:    {model} q{quant}  "
             f"preview={preview}  scope={scope}  seed={seed}\n"
         )
         fd = self._ensure_open()

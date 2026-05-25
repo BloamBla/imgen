@@ -144,7 +144,7 @@ def cmd_generate(args) -> int:
     # `imgen draw`. cmd_generate is i2i; flux-dev's mflux-generate
     # binary has no input-image flow. Give a one-line actionable hint
     # instead of letting load_backend_and_token build a doomed cmd.
-    if args.backend == "flux-dev":
+    if args.model == "flux-dev":
         die(
             "--model flux-dev is text-to-image; cmd_generate requires "
             "a source photo. Use `imgen draw \"<prompt>\"` instead "
@@ -316,7 +316,7 @@ def cmd_generate(args) -> int:
         heaviest_quant = max(it.final_quantize for it in iterations)
         max_megapixels = megapixels_of(width, height)
         preflight_resources(
-            backend=backend, heaviest_quant=heaviest_quant,
+            model=backend, heaviest_quant=heaviest_quant,
             force=args.force, max_megapixels=max_megapixels,
         )
 
@@ -363,7 +363,7 @@ def cmd_generate(args) -> int:
                     input_paths=[input_path],
                     styles=[it.style_name for it in iterations],
                     run_dir=run_dir,
-                    backend=backend,
+                    model=backend,
                     quant=heaviest_quant,
                     preview=args.preview,
                     # v0.6.5 architect IMP-A: see batch.py write_header
@@ -396,7 +396,7 @@ def cmd_generate(args) -> int:
             # Iteration.cmd already points mflux at the sips-converted
             # JPEG via mflux_input above.
             ctx = BatchContext(
-                backend=backend,
+                model=backend,
                 seed=seed,
                 width=width,
                 height=height,

@@ -55,9 +55,10 @@ from .config import ConfigError, effective_defaults, load_validated_config
 from .defaults import DEFAULTS
 from .parser import (
     _check_for_deprecated_backend_flag,
+    _check_for_deprecated_list_backends_flag,
     build_parser,
-    print_backends,
     print_loras,
+    print_models,
     print_styles,
 )
 from .paths import CONFIG_FILE
@@ -89,13 +90,13 @@ def main() -> int:
     #   - an --option value that happens to match a subcommand name
     #     blocking the shorthand dispatch
     argv = sys.argv[1:]
-    # v0.8.0 commit 4a: pre-argparse hook — surface a clear rename
-    # message for the deprecated --backend flag BEFORE the implicit-
-    # generate prepend or argparse's "unrecognized arguments" error.
-    # Runs on the raw sys.argv tail so both forms `imgen photo.jpg
-    # --backend flux` and `imgen generate photo.jpg --backend flux`
-    # get the same hint.
+    # v0.8.0 commits 4a + 4b: pre-argparse hooks surface clean migration
+    # messages for the deprecated flags BEFORE the implicit-generate
+    # prepend or argparse's "unrecognized arguments" error. Run on the
+    # raw sys.argv tail so both subcommand-prepended and bare forms get
+    # the same hint.
     _check_for_deprecated_backend_flag(argv)
+    _check_for_deprecated_list_backends_flag(argv)
     first_positional = next((a for a in argv if not a.startswith("-")), None)
     if first_positional and first_positional not in _KNOWN_SUBCOMMANDS:
         argv = ["generate"] + argv
@@ -135,8 +136,8 @@ def main() -> int:
     # Top-level info actions: handled before subcommand dispatch
     if getattr(args, "list_styles", False):
         return print_styles()
-    if getattr(args, "list_backends", False):
-        return print_backends()
+    if getattr(args, "list_models", False):
+        return print_models()
     if getattr(args, "list_loras", False):
         return print_loras()
 

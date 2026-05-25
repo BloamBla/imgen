@@ -98,31 +98,42 @@ class TestMfluxEngineConformance:
 
 
 @pytest.mark.parametrize(
-    "backend_name",
-    ["flux", "qwen", "flux-dev", "flux2-klein-edit-9b"],
+    "v07_name,v08_name",
+    [
+        ("flux", "flux-kontext"),
+        ("qwen", "qwen-image-edit-v1"),
+        ("flux-dev", "flux-dev"),
+        ("flux2-klein-edit-9b", "flux2-klein-edit-9b"),
+    ],
 )
 class TestMfluxEngineBuildCmdMatchesV07_17:
-    """Argv-stability lock-in (§D, §Q commit 2): MfluxEngine.build_cmd
+    """Argv-stability lock-in (§D, §Q commit 2 + 4b): MfluxEngine.build_cmd
     produces bit-identical argv to v0.7.17's `build_mflux_cmd` for
-    every currently-built-in backend. Without this contract, the
-    facade re-exports (§D) would silently produce different argv,
-    breaking colleagues' shell-script reproducibility."""
+    every currently-built-in model.
 
-    def test_build_cmd_argv_identical_to_v07_17(self, backend_name):
+    4b updated to parametrize by ``(v07_name, v08_name)`` pairs because
+    BUILTIN_MODELS is now keyed by v0.8 names (literal declaration per
+    §G.1) while ``backends.BACKENDS`` (= BUILTIN_BACKENDS, derived
+    backward) keeps the v0.7 keys for v0.7.x test fixture compatibility.
+    Each parametrize row exercises BOTH the literal Model lookup and
+    the v0.7 Backend lookup, asserting argv parity.
+    """
+
+    def test_build_cmd_argv_identical_to_v07_17(self, v07_name, v08_name):
         from pathlib import Path
         from imgen.backends import BACKENDS, build_mflux_cmd
         from imgen.engines.base import GenParams
         from imgen.engines.mflux_engine import MfluxEngine
-        from imgen.models import _model_from_backend
+        from imgen.models import BUILTIN_MODELS
 
-        backend = BACKENDS[backend_name]
-        model = _model_from_backend(backend, backend_name)
+        backend = BACKENDS[v07_name]
+        model = BUILTIN_MODELS[v08_name]
 
         # Pick an input_path only for backends that accept one — flux
         # and qwen are i2i; flux-dev is t2i (image_flag set for
         # dataclass shape consistency but the runtime gate is on
         # input_path is None per backends.py:925-927).
-        input_path = Path("/fake/in.png") if backend_name != "flux-dev" else None
+        input_path = Path("/fake/in.png") if v07_name != "flux-dev" else None
         common = dict(
             output_path=Path("/fake/out.png"),
             prompt="a samurai on a misty mountain at dawn",
@@ -141,7 +152,7 @@ class TestMfluxEngineBuildCmdMatchesV07_17:
 
         legacy_argv = build_mflux_cmd(
             binary=Path("/fake/mflux-bin"),
-            backend=backend,
+            model=backend,
             input_path=input_path,
             **common,
         )

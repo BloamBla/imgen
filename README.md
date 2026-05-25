@@ -187,7 +187,7 @@ imgen batch <dir> --dry-run                    # show every mflux command withou
 # Diagnostics
 imgen doctor                                   # env + RAM forecast + cached models + backends + enhancer
 imgen --list-styles                            # show presets
-imgen --list-backends                          # show built-in + user backends from ~/.imgen/backends.d/
+imgen --list-models                            # show built-in + user models from ~/.imgen/models.d/ + ~/.imgen/backends.d/
 imgen --list-loras                             # show LoRAs each style ships with + HF cache state
 imgen --dry-run <photo> -s anime               # show mflux command, don't run
 imgen -v   /   imgen --version                 # print version
@@ -479,7 +479,7 @@ Built-in:
 - `flux-dev` — **FLUX.1-dev** — t2i base for `imgen draw`. Gated, same HF token + license as `flux-kontext`.
 - `flux2-klein-edit-9b` — **FLUX.2-klein-9B** distilled edit — default for `imgen refine` (v0.7.5+). Native ~4 MP support (up to 2048²) past FLUX.1's 1.5K clean ceiling. Gated, accept license at https://huggingface.co/black-forest-labs/FLUX.2-klein-9B. Q4 default needs **~24 GB peak RAM** (real measurement at 1.5K-2K²; 32 GB Mac required, 16 GB will OOM). Internal `--guidance` pinned to 1.0 by mflux — `imgen refine` handles this automatically (the `--guidance` flag still works for `--model flux-kontext` fallback).
 
-`imgen --list-backends` shows the full set including any user-defined models below. (The flag itself will be renamed to `--list-models` in a follow-up v0.8.0 commit.)
+`imgen --list-models` shows the full set including any user-defined models below. The legacy `imgen --list-backends` form is detected and dies with a migration hint pointing at the new flag.
 
 ### Why these specific model versions?
 
@@ -516,7 +516,7 @@ Then:
 imgen doctor
 
 # Or just list:
-imgen --list-backends
+imgen --list-models
 
 # Use it:
 export MY_MODEL_API_KEY=...             # (only if [secret] declared with required=true)

@@ -25,7 +25,7 @@ def params():
     at a time to keep assertions focused."""
     return dict(
         binary=Path("/venv/bin/mflux-generate-x"),
-        backend=BACKENDS["flux"],
+        model=BACKENDS["flux"],
         input_path=Path("/in/photo.jpg"),
         output_path=Path("/out/photo.png"),
         prompt="anime prompt text",
@@ -93,7 +93,7 @@ def test_input_path_none_omits_image_flag(params):
     skips the `backend.image_flag <path>` argv pair entirely. The
     rest of the cmd is unchanged."""
     params["input_path"] = None
-    params["backend"] = BACKENDS["flux-dev"]
+    params["model"] = BACKENDS["flux-dev"]
     cmd = build_mflux_cmd(**params)
     # Neither --image-path nor its value lands in argv.
     assert "--image-path" not in cmd
@@ -106,7 +106,7 @@ def test_input_path_set_emits_image_flag(params):
     """Symmetric lock-in for the i2i path — the None gate doesn't
     accidentally break the populated case."""
     params["input_path"] = Path("/in/photo.jpg")
-    params["backend"] = BACKENDS["flux"]
+    params["model"] = BACKENDS["flux"]
     cmd = build_mflux_cmd(**params)
     assert "--image-path" in cmd
     idx = cmd.index("--image-path")
@@ -118,7 +118,7 @@ def test_flux_dev_t2i_no_strength_no_image(params):
     no --image-path, no --image-strength (supports_strength=False on
     flux-dev), prompt + output + quantize + steps still land."""
     params["input_path"] = None
-    params["backend"] = BACKENDS["flux-dev"]
+    params["model"] = BACKENDS["flux-dev"]
     cmd = build_mflux_cmd(**params)
     assert "--image-path" not in cmd
     assert "--image-strength" not in cmd
@@ -132,14 +132,14 @@ def test_flux_dev_t2i_no_strength_no_image(params):
 # ── FLUX-specific ───────────────────────────────────────────────────
 
 def test_flux_uses_image_path_singular(params):
-    params["backend"] = BACKENDS["flux"]
+    params["model"] = BACKENDS["flux"]
     cmd = build_mflux_cmd(**params)
     assert "--image-path" in cmd
     assert "--image-paths" not in cmd
 
 
 def test_flux_includes_image_strength(params):
-    params["backend"] = BACKENDS["flux"]
+    params["model"] = BACKENDS["flux"]
     cmd = build_mflux_cmd(**params)
     assert "--image-strength" in cmd
     idx = cmd.index("--image-strength")
@@ -147,7 +147,7 @@ def test_flux_includes_image_strength(params):
 
 
 def test_flux_includes_negative_prompt_when_set(params):
-    params["backend"] = BACKENDS["flux"]
+    params["model"] = BACKENDS["flux"]
     cmd = build_mflux_cmd(**params)
     assert "--negative-prompt" in cmd
     idx = cmd.index("--negative-prompt")
@@ -155,14 +155,14 @@ def test_flux_includes_negative_prompt_when_set(params):
 
 
 def test_flux_omits_negative_prompt_when_empty(params):
-    params["backend"] = BACKENDS["flux"]
+    params["model"] = BACKENDS["flux"]
     params["negative"] = ""
     cmd = build_mflux_cmd(**params)
     assert "--negative-prompt" not in cmd
 
 
 def test_flux_appends_model_dev(params):
-    params["backend"] = BACKENDS["flux"]
+    params["model"] = BACKENDS["flux"]
     cmd = build_mflux_cmd(**params)
     assert "--model" in cmd
     idx = cmd.index("--model")
@@ -172,7 +172,7 @@ def test_flux_appends_model_dev(params):
 def test_flux_tail_order_strength_model_negative(params):
     """v0.1.x order: ...--image-strength X --model dev --negative-prompt Y.
     Regression guard against accidentally reordering."""
-    params["backend"] = BACKENDS["flux"]
+    params["model"] = BACKENDS["flux"]
     cmd = build_mflux_cmd(**params)
     strength_idx = cmd.index("--image-strength")
     model_idx = cmd.index("--model")
@@ -183,7 +183,7 @@ def test_flux_tail_order_strength_model_negative(params):
 # ── QWEN-specific ───────────────────────────────────────────────────
 
 def test_qwen_uses_image_paths_plural(params):
-    params["backend"] = BACKENDS["qwen"]
+    params["model"] = BACKENDS["qwen"]
     cmd = build_mflux_cmd(**params)
     assert "--image-paths" in cmd
     assert "--image-path" not in cmd
@@ -192,7 +192,7 @@ def test_qwen_uses_image_paths_plural(params):
 def test_qwen_omits_image_strength(params):
     """qwen-image-edit doesn't accept --image-strength — passing it would
     error mflux. This is the footgun architect #7 specifically named."""
-    params["backend"] = BACKENDS["qwen"]
+    params["model"] = BACKENDS["qwen"]
     cmd = build_mflux_cmd(**params)
     assert "--image-strength" not in cmd
 
@@ -200,7 +200,7 @@ def test_qwen_omits_image_strength(params):
 def test_qwen_omits_negative_prompt_even_when_set(params):
     """qwen-image-edit doesn't accept --negative-prompt either, even if
     the caller passes a non-empty negative string."""
-    params["backend"] = BACKENDS["qwen"]
+    params["model"] = BACKENDS["qwen"]
     params["negative"] = "should be ignored"
     cmd = build_mflux_cmd(**params)
     assert "--negative-prompt" not in cmd
@@ -213,14 +213,14 @@ def test_flux2_klein_edit_9b_omits_negative_prompt_even_when_set(params):
     the caller passes a non-empty negative (typically leaked from the
     default ``pixar`` style preset's ``negative_prompt`` field), argv
     must not contain ``--negative-prompt``. Mirrors the qwen guard."""
-    params["backend"] = BACKENDS["flux2-klein-edit-9b"]
+    params["model"] = BACKENDS["flux2-klein-edit-9b"]
     params["negative"] = "low quality, blurry"
     cmd = build_mflux_cmd(**params)
     assert "--negative-prompt" not in cmd
 
 
 def test_qwen_appends_model_qwen(params):
-    params["backend"] = BACKENDS["qwen"]
+    params["model"] = BACKENDS["qwen"]
     cmd = build_mflux_cmd(**params)
     assert "--model" in cmd
     idx = cmd.index("--model")
@@ -234,7 +234,7 @@ def test_qwen_appends_model_qwen(params):
     ("qwen", "--image-paths"),
 ])
 def test_image_flag_per_backend(params, backend_name, expected_image_flag):
-    params["backend"] = BACKENDS[backend_name]
+    params["model"] = BACKENDS[backend_name]
     cmd = build_mflux_cmd(**params)
     assert expected_image_flag in cmd
 
@@ -250,7 +250,7 @@ def test_hypothetical_backend_without_strength_omits_it(params):
         supports_negative=True,
         extra_args=("--model", "hypo"),
     )
-    params["backend"] = no_strength
+    params["model"] = no_strength
     cmd = build_mflux_cmd(**params)
     assert "--image-strength" not in cmd
     # Negative is supported AND non-empty → must appear

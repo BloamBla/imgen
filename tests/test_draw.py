@@ -134,7 +134,7 @@ class TestDrawParser:
 
     def test_default_backend_is_flux_dev(self):
         args = _parse_draw("a samurai")
-        assert args.backend == "flux-dev"
+        assert args.model == "flux-dev"
 
     def test_default_dimensions_1024x1024(self):
         args = _parse_draw("a samurai")
@@ -577,7 +577,7 @@ def _make_args(**overrides):
         quantize=None,
         guidance=None,
         seed=42,
-        backend="flux-dev",
+        model="flux-dev",
         preview=False,
         width=1024,
         height=1024,

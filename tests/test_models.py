@@ -171,61 +171,87 @@ class TestParamOverridesImmutability:
             m.param_overrides.append(("another", 1))  # type: ignore[attr-defined]
 
 
-class TestModelFromBackendDerivation:
-    """v0.8.0 commit 2 (§F + §Q): `_model_from_backend(backend, name)`
-    derives a Model from a v0.7 Backend row. BUILTIN_MODELS in commit 2
-    is the dict comprehension `{name: _model_from_backend(b, name) for
-    name, b in BUILTIN_BACKENDS.items()}` — single derivation path.
+class TestBuiltinModelsLiteral:
+    """v0.8.0 commit 4b (§Q): BUILTIN_MODELS becomes the LIVE registry
+    via literal declaration with v0.8 canonical keys. The commit-2/3
+    ``_model_from_backend``-derived-view contract is gone; BUILTIN_MODELS
+    is now its own source-of-truth (per §G.1).
 
-    The derived Model row preserves every Backend field that maps 1:1
-    (binary, extra_args, image_flag, supports_*, lora_compat_group,
-    hf_gated_repo, enhance_*) AND populates the v0.8-NEW fields
-    (ram_baseline_gb, ram_slope_gb_per_mp, encoder_ram_gb) from a
-    per-backend lookup table that exists ONLY to satisfy __post_init__
-    until commit 4b promotes BUILTIN_MODELS to live-registry status
-    with literal per-model values."""
+    BUILTIN_BACKENDS becomes the BACKWARD-DERIVED v0.7-keyed view
+    (architect 4b pre-vet HIGH-1) so v0.7.x test fixtures asserting
+    ``BACKENDS["flux"]`` shape stay green without churn.
+    """
 
-    def test_derived_model_engine_is_always_mflux(self):
-        from imgen.backends import BACKENDS
-        from imgen.models import _model_from_backend
-        for name, backend in BACKENDS.items():
-            m = _model_from_backend(backend, name)
+    def test_builtin_models_keyed_by_v08_canonical_names(self):
+        """4b lock-in: literal declaration uses v0.8 names. Two renames
+        (flux→flux-kontext, qwen→qwen-image-edit-v1) per §I; other names
+        unchanged."""
+        from imgen.models import BUILTIN_MODELS
+        assert set(BUILTIN_MODELS.keys()) == {
+            "flux-kontext",
+            "qwen-image-edit-v1",
+            "flux-dev",
+            "flux2-klein-edit-9b",
+        }
+
+    def test_builtin_models_all_engine_mflux(self):
+        """Every built-in at 4b routes to mflux engine; the
+        diffusers_mps engine lands at commit 6 with zero built-in rows
+        (templated only via ~/.imgen/models.d.example/) per §G.2."""
+        from imgen.models import BUILTIN_MODELS
+        for name, m in BUILTIN_MODELS.items():
             assert m.engine == "mflux", (
-                f"derived Model for {name} has engine={m.engine!r}, "
-                "expected 'mflux'"
+                f"built-in {name!r} has engine={m.engine!r}, "
+                "expected 'mflux' at 4b"
             )
 
-    def test_derived_model_preserves_v07_fields(self):
-        from imgen.backends import BACKENDS
-        from imgen.models import _model_from_backend
-        backend = BACKENDS["flux"]
-        m = _model_from_backend(backend, "flux")
-        assert m.binary == backend.binary
-        assert m.extra_args == backend.extra_args
-        assert m.image_flag == backend.image_flag
-        assert m.supports_strength == backend.supports_strength
-        assert m.supports_negative == backend.supports_negative
-        assert m.needs_token == backend.needs_token
-        assert m.lora_compat_group == backend.lora_compat_group
-        assert m.hf_gated_repo == backend.hf_gated_repo
-        assert m.enhance_system_prompt == backend.enhance_system_prompt
-        assert m.enhance_invariants == backend.enhance_invariants
+    def test_builtin_models_have_required_v08_fields(self):
+        """Literal declaration must populate ram_baseline_gb /
+        ram_slope_gb_per_mp (the __post_init__ sentinels) — would have
+        raised at module load otherwise; this asserts non-zero values
+        per row."""
+        from imgen.models import BUILTIN_MODELS
+        for name, m in BUILTIN_MODELS.items():
+            assert m.ram_baseline_gb > 0.0, name
+            assert m.ram_slope_gb_per_mp > 0.0, name
 
-    def test_builtin_models_dict_is_derived_view(self):
-        """BUILTIN_MODELS keys match BUILTIN_BACKENDS keys 1:1 (registry
-        stays live as BUILTIN_BACKENDS through commits 2-3 per §Q
-        round-2 fix; flip in commit 4b)."""
+    def test_v08_to_v07_rename_map_inverts_for_renamed_models(self):
+        """The inverse of ``_V07_TO_V08_MODEL_RENAMES`` maps v0.8
+        canonical names back to v0.7 keys. backends.py uses this
+        inversion for the backward-derived BUILTIN_BACKENDS view."""
+        from imgen.models import _V07_TO_V08_MODEL_RENAMES
+        assert _V07_TO_V08_MODEL_RENAMES["flux"] == "flux-kontext"
+        assert _V07_TO_V08_MODEL_RENAMES["qwen"] == "qwen-image-edit-v1"
+        # Unchanged names not present in the map
+        assert "flux-dev" not in _V07_TO_V08_MODEL_RENAMES
+        assert "flux2-klein-edit-9b" not in _V07_TO_V08_MODEL_RENAMES
+
+    def test_builtin_backends_derived_backward_with_v07_keys(self):
+        """architect 4b HIGH-1: BUILTIN_BACKENDS is keyed by v0.7
+        names (derived backward from BUILTIN_MODELS via the inverse
+        rename map). v0.7.x test fixtures like ``BACKENDS["flux"]``
+        keep working unchanged."""
         from imgen.backends import BUILTIN_BACKENDS
-        from imgen.models import BUILTIN_MODELS
-        assert set(BUILTIN_MODELS.keys()) == set(BUILTIN_BACKENDS.keys())
+        assert set(BUILTIN_BACKENDS.keys()) == {
+            "flux",
+            "qwen",
+            "flux-dev",
+            "flux2-klein-edit-9b",
+        }
 
-    def test_builtin_models_pass_post_init_invariants(self):
-        """Every derived Model must satisfy `__post_init__` — instantiation
-        at module load WOULD have raised otherwise. This test just asserts
-        the dict loaded cleanly (which proves the per-backend RAM lookup
-        table is exhaustive for the current 9 backends)."""
-        from imgen.models import BUILTIN_MODELS
-        assert len(BUILTIN_MODELS) >= 4  # at least flux/flux-dev/qwen/flux2
+    def test_backend_from_model_preserves_v07_shape(self):
+        """The conversion helper drops v0.8-only fields (engine, repo,
+        ram_*, default_*) but preserves every v0.7 Backend field."""
+        from imgen.backends import BACKENDS
+        be = BACKENDS["flux"]
+        assert be.binary == "mflux-generate-kontext"
+        assert be.image_flag == "--image-path"
+        assert be.supports_strength is True
+        assert be.supports_negative is True
+        assert be.extra_args == ("--model", "dev")
+        assert be.needs_token is True
+        assert be.lora_compat_group == "flux-1"
+        assert be.hf_gated_repo == "black-forest-labs/FLUX.1-Kontext-dev"
 
 
 class TestGenParams:
