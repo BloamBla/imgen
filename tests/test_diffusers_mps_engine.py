@@ -554,3 +554,147 @@ class TestRunWithStderrRedactionStdinData:
             stdin_data=payload,
         )
         assert rc == 0
+
+
+# ── M-NEW-1 (v0.8.3): O_NOFOLLOW symlink-traversal guard ───────────────
+
+
+class TestOpenOutputForSaveSymlinkGuard:
+    """v0.8.3 M-NEW-1: ``_open_output_for_save`` refuses pre-existing
+    symlinks via ``O_NOFOLLOW``. Tests the helper directly so they
+    exercise the boundary without needing diffusers installed or a
+    full pipeline run.
+    """
+
+    def test_open_output_for_save_writes_to_fresh_png(self, tmp_path):
+        """Plain output path → returns wb file object + 'PNG' format."""
+        from imgen.engines._diffusers_runner import _open_output_for_save
+        out = tmp_path / "fresh.png"
+        fp, fmt = _open_output_for_save(str(out))
+        with fp:
+            fp.write(b"\x89PNG\r\n\x1a\n")  # PNG magic
+        assert fmt == "PNG"
+        assert out.read_bytes().startswith(b"\x89PNG")
+
+    def test_open_output_for_save_maps_jpeg_aliases(self, tmp_path):
+        """Both .jpg and .jpeg → 'JPEG'; .webp → 'WEBP'."""
+        from imgen.engines._diffusers_runner import _open_output_for_save
+        for ext, expected in [(".jpg", "JPEG"), (".jpeg", "JPEG"),
+                              (".webp", "WEBP")]:
+            out = tmp_path / f"img{ext}"
+            fp, fmt = _open_output_for_save(str(out))
+            with fp:
+                fp.write(b"x")
+            assert fmt == expected
+
+    def test_open_output_for_save_truncates_existing_file(self, tmp_path):
+        """O_TRUNC: writing over a regular file is allowed (this is
+        the normal re-run case; output filenames are stable per
+        iteration)."""
+        from imgen.engines._diffusers_runner import _open_output_for_save
+        out = tmp_path / "stale.png"
+        out.write_bytes(b"OLD CONTENT")
+        fp, _ = _open_output_for_save(str(out))
+        with fp:
+            fp.write(b"NEW")
+        assert out.read_bytes() == b"NEW"
+
+    def test_open_output_for_save_refuses_symlink(self, tmp_path):
+        """Pre-existing symlink at output_path → OSError with
+        ELOOP. The symlink target MUST stay unchanged."""
+        import errno
+        from imgen.engines._diffusers_runner import _open_output_for_save
+        target = tmp_path / "victim.txt"
+        target.write_text("SENSITIVE — must not be overwritten\n")
+        link = tmp_path / "out.png"
+        link.symlink_to(target)
+
+        with pytest.raises(OSError) as excinfo:
+            _open_output_for_save(str(link))
+        assert excinfo.value.errno == errno.ELOOP
+        # Target untouched.
+        assert target.read_text() == "SENSITIVE — must not be overwritten\n"
+
+    def test_open_output_for_save_refuses_unsupported_extension(self, tmp_path):
+        """Caller-bypass safety: even if validation is skipped, the
+        helper itself rejects extensions outside the PIL format map."""
+        from imgen.engines._diffusers_runner import _open_output_for_save
+        with pytest.raises(ValueError, match="unsupported output extension"):
+            _open_output_for_save(str(tmp_path / "x.gif"))
+
+
+def test_diffusers_runner_main_refuses_symlink_at_output_path(tmp_path):
+    """End-to-end: the runner subprocess hits the O_NOFOLLOW guard
+    only after validation + import + pipeline-run, none of which we
+    can exercise in CI without diffusers + weights.
+
+    Instead, monkeypatch the pipeline call inside the runner module
+    to a stub that returns a fake result, then drive ``main()`` in-
+    process with a symlinked output_path. This locks the guard at the
+    save call site (not just inside the helper)."""
+    import errno
+
+    from imgen.engines import _diffusers_runner as runner
+
+    target = tmp_path / "victim.txt"
+    target.write_text("MUST NOT BE OVERWRITTEN\n")
+    link = tmp_path / "out.png"
+    link.symlink_to(target)
+
+    payload = {
+        "repo": "org/model",
+        "prompt": "x",
+        "negative": "",
+        "steps": 20,
+        "guidance": 4.0,
+        "width": 1024,
+        "height": 1024,
+        "seed": 42,
+        "output_path": str(link),
+    }
+
+    # Stub out the heavy imports + pipeline so main() reaches the save
+    # path. Inject a stub torch + diffusers into sys.modules; the
+    # runner imports them lazily inside main().
+    fake_torch = MagicMock()
+    fake_torch.bfloat16 = "bf16"
+    fake_torch.Generator.return_value.manual_seed.return_value = MagicMock()
+
+    fake_image = MagicMock()
+    fake_pipe_result = MagicMock()
+    fake_pipe_result.images = [fake_image]
+
+    fake_pipeline = MagicMock(return_value=fake_pipe_result)
+    fake_pipeline_class = MagicMock()
+    fake_pipeline_class.from_pretrained.return_value = fake_pipeline
+
+    fake_diffusers = MagicMock()
+    fake_diffusers.DiffusionPipeline = fake_pipeline_class
+    fake_diffusers_utils = MagicMock()
+
+    with patch.dict(sys.modules, {
+        "torch": fake_torch,
+        "diffusers": fake_diffusers,
+        "diffusers.utils": fake_diffusers_utils,
+    }), patch.object(
+        sys, "stdin",
+        MagicMock(buffer=MagicMock(
+            read=lambda n: json.dumps(payload).encode("utf-8"),
+        )),
+    ), patch.object(sys, "stderr", new=MagicMock()) as stderr_mock:
+        rc = runner.main()
+
+    assert rc == 1, f"runner should return 1 on symlinked output, got {rc}"
+    # Target file untouched — the save was refused before PIL could
+    # dereference the symlink.
+    assert target.read_text() == "MUST NOT BE OVERWRITTEN\n"
+    # Static stderr message uses errno, not the user path.
+    stderr_writes = "".join(
+        call.args[0] for call in stderr_mock.write.call_args_list
+        if call.args
+    )
+    assert f"errno {errno.ELOOP}" in stderr_writes
+    assert "O_NOFOLLOW" in stderr_writes
+    # No echo of the user-controlled path in stderr (control-byte
+    # avoidance discipline).
+    assert str(link) not in stderr_writes

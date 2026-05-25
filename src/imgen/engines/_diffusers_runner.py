@@ -71,6 +71,16 @@ _SAFE_IMAGE_INPUT_EXTS: frozenset[str] = frozenset({
     ".png", ".jpg", ".jpeg", ".webp", ".heic", ".heif",
 })
 
+# Map _SAFE_OUTPUT_EXTS → PIL format keyword. When PIL.save is given
+# an open file object (instead of a path string) it cannot infer the
+# format from the extension and needs ``format=...`` explicitly.
+_PIL_FORMAT_BY_EXT: dict[str, str] = {
+    ".png": "PNG",
+    ".jpg": "JPEG",
+    ".jpeg": "JPEG",
+    ".webp": "WEBP",
+}
+
 # param_overrides allowlist — only these keys may flow from user TOML
 # into ``pipe(**kwargs)``. Memo §E.1 round-2 security HIGH; symmetric
 # to ``backends.py:_DANGEROUS_ENV_VARS`` deny-by-default discipline.
@@ -249,6 +259,39 @@ def _splitext_lower(path: str) -> str:
     return path[idx:].lower()
 
 
+def _open_output_for_save(output_path: str):
+    """Open ``output_path`` with ``O_NOFOLLOW`` and return ``(file_obj,
+    pil_format)``. The caller wraps file_obj in a ``with`` block so the
+    fd is closed even if ``PIL.Image.save`` raises.
+
+    v0.8.3 M-NEW-1 defence-in-depth: a pre-existing symlink at
+    ``output_path`` (planted by a same-uid attacker) would otherwise
+    let PIL dereference and write image bytes to whatever the symlink
+    points at. Same-uid attacker already has direct file-write, so
+    impact is bounded; this matches the rest of the runner's
+    deny-by-default discipline.
+
+    Raises ``OSError`` with ``errno.ELOOP`` if the path is a symlink
+    (POSIX behaviour of ``O_NOFOLLOW``). The caller in ``main`` catches
+    + emits a static stderr line + returns rc=1.
+
+    The extension is already in ``_SAFE_OUTPUT_EXTS`` per
+    ``_validate_payload_shape``, so the format lookup never raises
+    KeyError in production — but a stand-alone test that bypasses
+    validation would, hence the explicit ``ValueError`` fallback.
+    """
+    ext = _splitext_lower(output_path)
+    pil_format = _PIL_FORMAT_BY_EXT.get(ext)
+    if pil_format is None:
+        raise ValueError(f"unsupported output extension: {ext!r}")
+    fd = os.open(
+        output_path,
+        os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_TRUNC,
+        0o644,
+    )
+    return os.fdopen(fd, "wb"), pil_format
+
+
 # ── Entry point ────────────────────────────────────────────────────────
 
 
@@ -354,7 +397,21 @@ def main() -> int:
         pipe_kwargs["image"] = load_image(payload["input_path"])
 
     result = pipe(**pipe_kwargs)
-    result.images[0].save(payload["output_path"])
+
+    # M-NEW-1 (v0.8.3): O_NOFOLLOW-guarded write. See
+    # _open_output_for_save() for the threat-model rationale.
+    try:
+        out_fp, pil_format = _open_output_for_save(payload["output_path"])
+    except OSError as e:
+        # Static stderr — don't echo the user-controlled path back
+        # (memo §I round-1 MEDIUM: control-byte avoidance in stderr).
+        sys.stderr.write(
+            f"runner: refused to write output_path (errno {e.errno}); "
+            "path may be a symlink (O_NOFOLLOW) or permission denied\n"
+        )
+        return 1
+    with out_fp:
+        result.images[0].save(out_fp, format=pil_format)
     return 0
 
 
