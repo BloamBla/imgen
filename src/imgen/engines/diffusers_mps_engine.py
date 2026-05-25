@@ -61,7 +61,9 @@ class DiffusersMpsEngine:
         self,
         model,
         params: GenParams,
+        *,
         env: Mapping[str, str] | None = None,
+        log_file = None,  # BinaryIO | None — BatchLogger-borrowed fd
     ) -> int:
         """Spawn ``.venv-diffusers/bin/python -m
         imgen.engines._diffusers_runner`` with JSON payload on stdin.
@@ -157,6 +159,7 @@ class DiffusersMpsEngine:
             argv,
             dict(env) if env is not None else build_diffusers_env(),
             stdin_data=json.dumps(payload).encode("utf-8"),
+            log_file=log_file,
         )
 
     def validate(self, model, params: GenParams) -> list[str]:

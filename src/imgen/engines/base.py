@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Protocol, runtime_checkable
+from typing import BinaryIO, Mapping, Protocol, runtime_checkable
 
 __all__ = ["Engine", "GenParams"]
 
@@ -71,18 +71,37 @@ class Engine(Protocol):
         self,
         model,
         params: GenParams,
+        *,
         env: Mapping[str, str] | None = None,
+        log_file: BinaryIO | None = None,
     ) -> int:
         """Execute generation. Returns exit code (0 success, non-zero
         failure).
 
         For subprocess Engines: routes through
-        ``subprocess_helpers.run_with_stderr_redaction`` (or its v0.8.0
-        sibling) to preserve HF-token redaction + chunk-streamed
-        logging. The redaction wrapper is mandatory for both engines —
-        diffusers' ``from_pretrained`` 401/403 tracebacks include auth
-        headers that must be filtered on the way out (see §E.1 security
+        ``subprocess_helpers.run_with_stderr_redaction`` to preserve
+        HF-token redaction + chunk-streamed logging. The redaction
+        wrapper is mandatory for both engines — diffusers'
+        ``from_pretrained`` 401/403 tracebacks include auth headers
+        that must be filtered on the way out (see §E.1 security
         round-2 fix).
+
+        ``log_file`` (v0.8.2 architect CRITICAL-1 closure): optional
+        BatchLogger-borrowed fd. When non-None the redacted stderr
+        tee writes into this fd alongside the in-memory copy, so
+        multi-style runs preserve their ``~/.imgen/logs/<batch_id>.log``
+        layout. Engine implementations pass it through to
+        ``run_with_stderr_redaction(log_file=...)`` unchanged.
+
+        ``env`` and ``log_file`` are keyword-only — positional
+        passthrough would silently drift if a future field landed
+        between them.
+
+        KeyboardInterrupt must propagate UNWRAPPED. The orchestration
+        layer (``cmd_helpers.run_one_iteration``) owns the
+        cancel-history-marker side effect; if Engine.run caught and
+        swallowed (or re-raised as a different exception), the marker
+        couldn't fire.
         """
         ...
 

@@ -306,3 +306,178 @@ def test_build_draw_iterations_populates_model_and_params():
     assert it.model.engine == "mflux"
     # Draw is t2i → input_path is None
     assert it.params.input_path is None
+
+
+# ── MfluxEngine.run argv-identity matrix (CRITICAL-2) ────────────────
+
+
+def _gen_params_with(**overrides):
+    """Build a GenParams with sensible defaults, overriding only what
+    the matrix axis being tested cares about."""
+    from imgen.engines.base import GenParams
+    base = dict(
+        prompt="a samurai on a misty mountain",
+        negative="",
+        width=1024, height=1024,
+        steps=20, guidance=3.5, seed=42, quantize=4, strength=0.55,
+        input_path=Path("/fake/in.png"),
+        output_path=Path("/fake/out.png"),
+        loras=(),
+        mlx_cache_gb=12, battery_stop=20,
+    )
+    base.update(overrides)
+    return GenParams(**base)
+
+
+def _legacy_argv(backend, **kwargs):
+    """Build the legacy build_mflux_cmd argv with matching defaults."""
+    from imgen.backends import build_mflux_cmd
+    base = dict(
+        binary=Path("/fake/mflux-bin"),
+        model=backend,
+        input_path=Path("/fake/in.png"),
+        output_path=Path("/fake/out.png"),
+        prompt="a samurai on a misty mountain",
+        negative="",
+        quantize=4, steps=20, guidance=3.5, strength=0.55,
+        seed=42, width=1024, height=1024,
+        mlx_cache_gb=12, battery_stop=20,
+        loras=(),
+    )
+    base.update(kwargs)
+    return build_mflux_cmd(**base)
+
+
+def test_mflux_engine_build_cmd_matches_legacy_with_negative_prompt():
+    """v0.8.2 architect CRITICAL-2 lock-in (negative axis): when
+    ``params.negative`` is set + model.supports_negative=True, the
+    Engine path's argv MUST be byte-identical to the legacy
+    build_mflux_cmd's. Pre-M-1 the legacy path was production; post-
+    M-1 Engine.run owns argv via self.build_cmd. Drift = silent
+    behaviour change."""
+    from imgen.backends import BACKENDS
+    from imgen.engines.mflux_engine import MfluxEngine
+    from imgen.models import BUILTIN_MODELS
+
+    # flux-dev supports_negative=True per the registry — verified by
+    # the build_mflux_cmd branch at backends.py
+    model = BUILTIN_MODELS["flux-dev"]
+    backend = BACKENDS["flux-dev"]
+
+    params = _gen_params_with(
+        negative="blurry, low quality, jpeg artifacts",
+        input_path=None,  # flux-dev is t2i
+    )
+    legacy = _legacy_argv(
+        backend, input_path=None,
+        negative="blurry, low quality, jpeg artifacts",
+    )
+    new = MfluxEngine().build_cmd(
+        model, params, binary=Path("/fake/mflux-bin"),
+    )
+    assert new == legacy, (
+        f"argv drift with negative_prompt:\n"
+        f"  legacy: {legacy}\n  new:    {new}"
+    )
+    # Sanity: negative IS in the argv (not silently dropped)
+    assert "--negative-prompt" in new
+    assert "blurry, low quality, jpeg artifacts" in new
+
+
+def test_mflux_engine_build_cmd_matches_legacy_with_loras():
+    """CRITICAL-2 lock-in (LoRA axis): a non-empty ``params.loras``
+    flows through filter_compatible_loras → --lora-paths /
+    --lora-scales argv slots, byte-identical to legacy."""
+    from imgen.backends import BACKENDS
+    from imgen.engines.mflux_engine import MfluxEngine
+    from imgen.models import BUILTIN_MODELS
+    from imgen.styles import LoraRef
+
+    model = BUILTIN_MODELS["flux-kontext"]
+    backend = BACKENDS["flux"]
+
+    loras = (
+        LoraRef(
+            ref="strangerzonehf/Flux-Cute-3D-Kawaii-LoRA",
+            weight=0.85,
+            compatible_with=("flux-1",),
+            trigger="Pixar 3D",
+        ),
+    )
+    params = _gen_params_with(loras=loras)
+    legacy = _legacy_argv(backend, loras=loras)
+    new = MfluxEngine().build_cmd(
+        model, params, binary=Path("/fake/mflux-bin"),
+    )
+    assert new == legacy, (
+        f"argv drift with LoRAs:\n  legacy: {legacy}\n  new:    {new}"
+    )
+    assert "--lora-paths" in new
+    assert "--lora-scales" in new
+
+
+def test_mflux_engine_build_cmd_matches_legacy_no_input_path():
+    """CRITICAL-2 lock-in (input_path=None / t2i axis): when
+    ``params.input_path is None``, the ``--image-path / --image-paths``
+    slot must be ABSENT from argv. Drift would mean an empty-string
+    image path leaks into mflux's argv and crashes the subprocess at
+    parse time."""
+    from imgen.backends import BACKENDS
+    from imgen.engines.mflux_engine import MfluxEngine
+    from imgen.models import BUILTIN_MODELS
+
+    model = BUILTIN_MODELS["flux-dev"]
+    backend = BACKENDS["flux-dev"]
+
+    params = _gen_params_with(input_path=None)
+    legacy = _legacy_argv(backend, input_path=None)
+    new = MfluxEngine().build_cmd(
+        model, params, binary=Path("/fake/mflux-bin"),
+    )
+    assert new == legacy
+    assert "--image-path" not in new
+    assert "--image-paths" not in new
+
+
+# ── MfluxEngine.run KeyboardInterrupt re-raise (HIGH-2) ──────────────
+
+
+def test_mflux_engine_run_propagates_keyboard_interrupt_unwrapped(
+    monkeypatch,
+):
+    """v0.8.2 architect HIGH-2 lock-in: when ``run_with_stderr_redaction``
+    raises KeyboardInterrupt (user hit Ctrl-C mid-generation), the
+    Engine.run path must let it propagate UNWRAPPED. The cancel-
+    history-marker side effect lives in
+    ``cmd_helpers.run_one_iteration``; if Engine.run wrapped the
+    exception (as RuntimeError, SystemExit, etc.) the marker would
+    silently not fire and the cancelled run would be missing from
+    history.jsonl."""
+    from imgen.engines.base import GenParams
+    from imgen.engines import mflux_engine as me
+    from imgen.models import BUILTIN_MODELS
+
+    def fake_run_with_stderr_redaction(*args, **kwargs):
+        raise KeyboardInterrupt("user pressed Ctrl-C")
+
+    monkeypatch.setattr(
+        me, "run_with_stderr_redaction",
+        # Bind via module-level name so the late `from ..subprocess_helpers
+        # import` inside MfluxEngine.run still sees the patched fn — we
+        # need to monkeypatch the import source.
+        fake_run_with_stderr_redaction,
+        raising=False,
+    )
+    # The MfluxEngine.run uses a late `from ..subprocess_helpers import`
+    # so patch THAT module's binding too.
+    from imgen import subprocess_helpers
+    monkeypatch.setattr(
+        subprocess_helpers, "run_with_stderr_redaction",
+        fake_run_with_stderr_redaction,
+    )
+
+    model = BUILTIN_MODELS["flux-dev"]
+    params = _gen_params_with(input_path=None)
+
+    with pytest.raises(KeyboardInterrupt):
+        me.MfluxEngine().run(model, params, env={"PATH": "/usr/bin"})

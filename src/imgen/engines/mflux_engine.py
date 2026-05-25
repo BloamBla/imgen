@@ -102,30 +102,55 @@ class MfluxEngine:
         self,
         model,
         params: GenParams,
+        *,
         env: Mapping[str, str] | None = None,
+        log_file = None,  # BinaryIO | None — BatchLogger-borrowed fd
     ) -> int:
-        """Intentionally stubbed at v0.8.x — call sites still use the
-        legacy ``build_mflux_cmd`` + ``run_with_stderr_redaction`` path
-        directly through ``run_one_iteration`` (cmd_helpers.py).
+        """Execute an mflux generation subprocess. v0.8.2 M-1B closure
+        of the v0.8.1 M-1 backlog item.
 
-        v0.8.1 §R.4 M-1 / architect docstring-drift closure: pre-v0.8.1
-        comment promised wiring "in commit 6" — that wiring never
-        landed across commits 6-11. The Engine layer pays rent today
-        via three other surfaces — ``ram_estimate_gb``, ``validate``,
-        ``build_cmd`` — and ``run`` remains the foundation for a future
-        ``Engine.run`` dispatch refactor (architect §R.4 M-1 backlog
-        item). When that lands, it replaces the
-        ``run_one_iteration`` subprocess block.
+        Argv comes from ``self.build_cmd(model, params)`` — same
+        argv-shape locked to v0.7.17 by ``test_engines.py::
+        TestMfluxEngineBuildCmdMatchesV07_17`` AND now also byte-
+        identical with the legacy ``backends.build_mflux_cmd``
+        (architect CRITICAL-2 lock-in:
+        ``test_mflux_engine_build_cmd_matches_legacy_build_mflux_cmd``).
 
-        Until then, calling this raises so a confused caller hits an
-        explicit error rather than silently no-op'ing.
+        The argv is dispatched through
+        ``subprocess_helpers.run_with_stderr_redaction`` which:
+          * Tees stderr to the parent process's stderr + the optional
+            ``log_file`` BinaryIO (BatchLogger-borrowed fd).
+          * Applies HF-token redaction on the stream so a 401 traceback
+            doesn't leak ``hf_<token>`` into either destination.
+          * Streams chunk-by-chunk so 5+ minute mflux runs surface
+            progress instead of buffering.
+
+        ``env`` is passed through verbatim — the caller
+        (``cmd_helpers.run_one_iteration``) builds it via
+        ``build_mflux_env`` to populate the allowlisted env vars
+        (HF_TOKEN, PYTHONPATH, etc.).
+
+        KeyboardInterrupt propagates unwrapped (architect HIGH-2):
+        ``run_with_stderr_redaction`` already re-raises on its own
+        catch; this method doesn't swallow either. The cancel-history-
+        marker side effect lives in the orchestrator
+        (``run_one_iteration``).
         """
-        raise NotImplementedError(
-            "MfluxEngine.run is intentionally stubbed at v0.8.x. "
-            "Production paths use build_mflux_cmd + "
-            "run_with_stderr_redaction via cmd_helpers.run_one_iteration. "
-            "Full Engine.run subprocess dispatch is a v0.8.x cleanup "
-            "item (see project_v08x_backlog.md M-1 / architect §R.4)."
+        from ..subprocess_helpers import (
+            build_mflux_env,
+            run_with_stderr_redaction,
+        )
+
+        cmd = self.build_cmd(model, params)
+        # env=None defensive fallback: build a minimal allowlisted env
+        # (no HF_TOKEN — gated-repo runs require the caller to pass
+        # env=build_mflux_env(token=...) explicitly). Production path
+        # via cmd_helpers.run_one_iteration always passes ctx.env;
+        # this branch only fires for tests / direct Engine.run calls.
+        return run_with_stderr_redaction(
+            cmd,
+            dict(env) if env is not None else build_mflux_env(),
+            log_file=log_file,
         )
 
     def validate(self, model, params: GenParams) -> list[str]:
