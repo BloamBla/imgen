@@ -220,6 +220,16 @@ def auto_run_dirname(now: _dt.datetime | None = None) -> str:
     return now.strftime("%Y-%m-%d-%H-%M-%S")
 
 
+# Defensive cap on collision-suffix loops. A buggy caller that probes
+# the same `(parent, stem)` 10K+ times — or a parent dir polluted with
+# orphan suffixed files — would otherwise walk every collision before
+# returning. Realistic single-user CLI usage rarely sees >5 collisions
+# on the same run, so 1000 is a non-interfering ceiling that fails
+# fast on programming errors instead of hanging on stat() calls.
+# (v0.7.1 architect NIT, deferred to v0.7.10.)
+_MAX_COLLISIONS = 1000
+
+
 def next_available_path(
     parent: Path,
     stem: str,
@@ -240,6 +250,10 @@ def next_available_path(
     outputs reuse the same collision-suffix logic. The default
     ``suffix=".png"`` keeps every existing draw call-site working
     with a one-arg drop-in update.
+
+    v0.7.10 (architect NIT closure): caps the collision loop at
+    ``_MAX_COLLISIONS`` and raises :class:`RuntimeError` if exceeded,
+    instead of walking unbounded ``i``.
     """
     target = parent / f"{stem}{suffix}"
     if not target.exists():
@@ -247,6 +261,12 @@ def next_available_path(
     i = 2
     while (parent / f"{stem}-{i}{suffix}").exists():
         i += 1
+        if i > _MAX_COLLISIONS:
+            raise RuntimeError(
+                f"more than {_MAX_COLLISIONS} collisions on "
+                f"stem={stem!r} in {parent} — likely a buggy caller "
+                "or polluted output directory"
+            )
     return parent / f"{stem}-{i}{suffix}"
 
 
@@ -265,6 +285,10 @@ def next_available_run_dir(parent: Path, dirname: str) -> Path:
     succeed and share the run folder (files inside still collide on
     `<basename>-<style>.png` only if both use the same input + style).
     Documented limitation, not a target for atomic-claim today.
+
+    v0.7.10 (architect NIT closure): caps the collision loop at
+    ``_MAX_COLLISIONS`` and raises :class:`RuntimeError` if exceeded,
+    mirroring :func:`next_available_path`.
     """
     target = parent / dirname
     if not target.exists():
@@ -272,6 +296,12 @@ def next_available_run_dir(parent: Path, dirname: str) -> Path:
     i = 2
     while (parent / f"{dirname}_{i}").exists():
         i += 1
+        if i > _MAX_COLLISIONS:
+            raise RuntimeError(
+                f"more than {_MAX_COLLISIONS} collisions on "
+                f"dirname={dirname!r} in {parent} — likely a buggy "
+                "caller or polluted output directory"
+            )
     return parent / f"{dirname}_{i}"
 
 

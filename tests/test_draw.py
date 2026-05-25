@@ -21,7 +21,7 @@ from imgen.cmd_helpers import (
     build_draw_iteration,
     prompt_slug,
 )
-from imgen.runs import next_available_path
+from imgen.runs import _MAX_COLLISIONS, next_available_path
 from imgen.commands.draw import cmd_draw
 from imgen.defaults import DEFAULTS
 
@@ -98,6 +98,20 @@ class TestNextAvailablePath:
         (tmp_path / "samurai.mp4").write_bytes(b"a")
         out = next_available_path(tmp_path, "samurai", suffix=".mp4")
         assert out == tmp_path / "samurai-2.mp4"
+
+    def test_caps_collisions_at_cap(self, tmp_path, monkeypatch):
+        """v0.7.10: collision loop raises RuntimeError once it exceeds
+        _MAX_COLLISIONS. Mocks Path.exists() always-True so the loop
+        walks to the cap without 1001 real files on disk.
+
+        `monkeypatch.setattr(Path, "exists", ...)` patches the method
+        on the class for the duration of this test only; pytest reverts
+        it on teardown, so no cross-test leakage."""
+        monkeypatch.setattr(Path, "exists", lambda self: True)
+        with pytest.raises(
+            RuntimeError, match=f"more than {_MAX_COLLISIONS} collisions"
+        ):
+            next_available_path(tmp_path, "samurai")
 
 
 # ── Parser stanza ────────────────────────────────────────────────────

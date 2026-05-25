@@ -14,7 +14,7 @@ imgen draw "samurai" --lora Shakker-Labs/FLUX.1-dev-LoRA-add-details
 
 # Hires-Fix refine (v0.7.5+) — upsample an existing image at 1.5x/2x
 imgen draw "samurai" --num-iterations 5 --preview             # explore: 5 variants at 1024²
-imgen refine ~/Desktop/imgen/<run>/samurai-3.png              # winner → polished 1536² (~10-20 min)
+imgen refine ~/Desktop/imgen/<run>/samurai-3.png              # winner → polished 1536² (~49 min on M2 Pro 32GB)
 imgen refine winner.png --scale 2                             # 1024² → 2048² (FLUX.2-klein native cap)
 imgen refine winner.png --width 1920 --height 1080            # explicit dims (16-multiple rounding)
 

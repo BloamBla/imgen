@@ -15,10 +15,12 @@ into a dedicated runs.py module.
 from __future__ import annotations
 
 import datetime as dt
+from pathlib import Path
 
 import pytest
 
 from imgen.runs import (
+    _MAX_COLLISIONS,
     auto_run_dirname,
     ensure_logs_dir,
     next_available_run_dir,
@@ -91,6 +93,21 @@ def test_next_available_run_dir_does_not_create(tmp_path):
     'this is the path that *would* be used' shouldn't get a side effect."""
     target = next_available_run_dir(tmp_path, "2026-05-21-14-30-12")
     assert not target.exists()
+
+
+def test_next_available_run_dir_caps_collisions(tmp_path, monkeypatch):
+    """v0.7.10: collision loop raises after _MAX_COLLISIONS instead of
+    walking unbounded. Mocks Path.exists to always-True so the loop
+    hits the cap without creating 1000 actual dirs on disk.
+
+    `monkeypatch.setattr(Path, "exists", ...)` patches the method on
+    the class for the duration of this test only; pytest reverts it on
+    teardown, so no cross-test leakage."""
+    monkeypatch.setattr(Path, "exists", lambda self: True)
+    with pytest.raises(
+        RuntimeError, match=f"more than {_MAX_COLLISIONS} collisions"
+    ):
+        next_available_run_dir(tmp_path, "2026-05-21-14-30-12")
 
 
 # ── ensure_logs_dir ─────────────────────────────────────────────────────
