@@ -74,6 +74,60 @@ ok "imgen package installed (mflux ${MFLUX_VERSION})"
 chmod +x ./imgen
 ok "imgen launcher is executable"
 
+# ── 5b. Diffusers stack (v0.8.0 commit 6, opt-in) ─────────────────────────
+# Per [[project-v080-design]] §E.2. The diffusers_mps engine spawns a
+# subprocess in a SEPARATE Python venv (~10 GB on disk: torch +
+# diffusers + transformers + accelerate). mflux-only colleagues skip
+# this. Architect commit-6 pre-vet C1: anchor the venv path to
+# $SCRIPT_DIR (the bootstrap-side install root) — IMGEN_INSTALL_ROOT
+# is a Python module constant, NOT a shell variable.
+#
+# Three install modes (architect H4):
+#   - Interactive TTY → prompt [y/N].
+#   - Non-interactive (curl|bash, CI, ssh < /dev/null) → skip with a
+#     hint pointing at the env-var override below.
+#   - IMGEN_INSTALL_DIFFUSERS=1 → install unconditionally
+#     (CI / scripted installs).
+
+install_diffusers_stack() {
+  step "Installing diffusers stack into .venv-diffusers/ (this adds ~10 GB)"
+  python3.12 -m venv "$SCRIPT_DIR/.venv-diffusers"
+  # Editable install of imgen INTO the diffusers venv so
+  # `.venv-diffusers/bin/python -m imgen.engines._diffusers_runner` resolves
+  # without re-installing the whole imgen package.
+  "$SCRIPT_DIR/.venv-diffusers/bin/pip" install --quiet --upgrade pip
+  "$SCRIPT_DIR/.venv-diffusers/bin/pip" install --quiet -e "$SCRIPT_DIR"
+  # Heavy deps. torch downloads ~700 MB; diffusers ~120 MB.
+  "$SCRIPT_DIR/.venv-diffusers/bin/pip" install --quiet \
+    diffusers transformers accelerate torch
+  ok "diffusers stack installed at $SCRIPT_DIR/.venv-diffusers/"
+}
+
+if [[ -d "$SCRIPT_DIR/.venv-diffusers" && -x "$SCRIPT_DIR/.venv-diffusers/bin/python" ]]; then
+  ok "diffusers venv already exists at .venv-diffusers/"
+elif [[ "${IMGEN_INSTALL_DIFFUSERS:-}" = "1" ]]; then
+  install_diffusers_stack
+elif [[ ! -t 0 ]]; then
+  echo
+  echo "${D}Skipping diffusers stack install (non-interactive bootstrap).${N}"
+  echo "${D}If you need the diffusers_mps engine later, re-run from a TTY${N}"
+  echo "${D}OR set IMGEN_INSTALL_DIFFUSERS=1 for non-interactive install:${N}"
+  echo "${D}  IMGEN_INSTALL_DIFFUSERS=1 ./bootstrap.sh${N}"
+else
+  echo
+  echo "Engine layer (v0.8.0+): install the diffusers stack for non-mflux models?"
+  echo "${D}~10 GB on disk. Needed only for the diffusers_mps engine (e.g.${N}"
+  echo "${D}qwen-image-2512-bf16, future HF day-0 models). Mflux-only setups${N}"
+  echo "${D}can skip this.${N}"
+  echo
+  read -r -p "Install diffusers stack? [y/N] " answer
+  if [[ "$answer" =~ ^[Yy] ]]; then
+    install_diffusers_stack
+  else
+    echo "${D}Skipping. Re-run bootstrap.sh later (or set IMGEN_INSTALL_DIFFUSERS=1) to install.${N}"
+  fi
+fi
+
 # ── 6. Hand off to imgen setup (alias + token) ────────────────────────────
 echo
 step "Running 'imgen setup' for shell alias and HF token"

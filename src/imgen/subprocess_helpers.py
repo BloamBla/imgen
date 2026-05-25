@@ -120,6 +120,45 @@ def build_enhance_env() -> dict[str, str]:
     }
 
 
+# v0.8.0 commit 6 — env allowlist for the diffusers_mps engine subprocess.
+# Per architect commit-6 pre-vet M1: a SIBLING of build_enhance_env (NOT a
+# generalised build_engine_env) — matches the project precedent of one
+# narrow allowlist per subprocess class. Includes HF_TOKEN because
+# DiffusionPipeline.from_pretrained may need auth for gated repos (mflux
+# uses ~/.imgen/hf_token via build_mflux_env; diffusers_mps inherits the
+# HF_TOKEN env var if the user set it, matching standard HuggingFace
+# library expectations). PyTorch MPS fallback flag is set inside the
+# runner itself (architect pre-vet M4) BEFORE torch is imported, not
+# forwarded from parent env.
+_DIFFUSERS_ENV_ALLOWLIST: tuple[str, ...] = (
+    # Filesystem + locale plumbing the Python interpreter needs.
+    "PATH", "HOME", "USER", "LANG", "LC_ALL", "TMPDIR",
+    # HuggingFace cache redirection — runner must find pre-downloaded
+    # weights without re-downloading to its own default location.
+    "HF_HOME", "HF_HUB_CACHE", "TRANSFORMERS_CACHE",
+    # HF auth — diffusers' from_pretrained supports gated repos via
+    # HF_TOKEN; forward through if the user's shell carries one.
+    "HF_TOKEN",
+)
+
+
+def build_diffusers_env() -> dict[str, str]:
+    """Minimal environment for the diffusers_mps engine subprocess.
+
+    Sibling of :func:`build_enhance_env` per architect commit-6 pre-vet
+    M1 — narrow allowlist, deny-by-default. Adds ``HF_TOKEN`` to the
+    enhance allowlist because diffusers' ``from_pretrained`` is the
+    canonical gated-repo path on the diffusers side; mflux keeps its
+    own ``~/.imgen/hf_token`` plumbing via :func:`build_mflux_env`,
+    so the two stay separate.
+    """
+    return {
+        k: os.environ[k]
+        for k in _DIFFUSERS_ENV_ALLOWLIST
+        if k in os.environ
+    }
+
+
 # Minimum 36 chars after `hf_` so a truncated prefix at a buffer boundary
 # (e.g. `hf_AbC\n` flushed via the last-`\r`-or-`\n` rule before the rest
 # of the token arrives) can't sneak through as plaintext. Real HF tokens
@@ -178,6 +217,8 @@ def run_with_stderr_redaction(
     cmd: list[str],
     env: dict,
     log_file: BinaryIO | None = None,
+    *,
+    stdin_data: bytes | None = None,
 ) -> int:
     """Run subprocess streaming stderr to terminal with HF token patterns
     redacted on the fly.
@@ -193,10 +234,44 @@ def run_with_stderr_redaction(
     but does NOT close. (Was `log_path: Path | None` in v0.2.3-v0.2.4;
     architect FWD-6 from v0.2.4 review unified ownership under
     BatchLogger.)
+
+    stdin_data (v0.8.0 commit 6): if non-None, bytes to write to the
+    child's stdin BEFORE entering the stderr-read loop. Used by the
+    diffusers_mps Engine to pass JSON-serialised GenParams + Model
+    fields to its static runner module (see
+    [[project-v080-design]] §E.1 — locked security-critical pattern;
+    static argv, all user data crosses the process boundary as a
+    bounded JSON blob, never via -c "<string>" or .format()).
+
+    The write happens BEFORE the stderr-read loop and `proc.stdin` is
+    closed immediately after — for ≤64 KB payloads (the design-locked
+    upper bound for the diffusers runner) the kernel pipe buffer
+    holds the entire write without blocking, so no full-duplex
+    deadlock risk. Keyword-only so the legacy positional/log_file
+    call sites stay binary-compatible (architect commit-6 pre-vet
+    CRITICAL C3 lock-in).
     """
-    proc = subprocess.Popen(
-        cmd, env=env, stderr=subprocess.PIPE, bufsize=0,
-    )
+    popen_kwargs = dict(env=env, stderr=subprocess.PIPE, bufsize=0)
+    if stdin_data is not None:
+        popen_kwargs["stdin"] = subprocess.PIPE
+    proc = subprocess.Popen(cmd, **popen_kwargs)
+    if stdin_data is not None:
+        # Write before the stderr-read loop. ≤64KB payloads fit the
+        # kernel pipe buffer in one syscall on macOS / Linux (default
+        # PIPE_BUF cap is 16 KB but the OS-buffer is 64 KB+), so the
+        # write completes synchronously and we can close cleanly.
+        # Larger writes would risk full-duplex deadlock — but the
+        # runner side rejects oversize stdin with EX_USAGE before
+        # reading anything, and the diffusers payload is design-
+        # capped at 64 KB (security commit-6 pre-vet bounded-stdin).
+        try:
+            assert proc.stdin is not None
+            proc.stdin.write(stdin_data)
+            proc.stdin.close()
+        except (OSError, BrokenPipeError):
+            # Child died before reading stdin — fall through to the
+            # stderr-read loop which will surface its exit code.
+            pass
     buffer = b""
     # v0.6.x backlog security NIT-3 defence-in-depth: also rewrite
     # ``$HOME`` → ``~`` in the streamed stderr so any local-path lora.ref

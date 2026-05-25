@@ -91,6 +91,33 @@ def _self_update() -> None:
         warn(f"pip install -e failed: {e}")
         print(f"   {C.DIM}Re-run: {IMGEN_HOME / 'bootstrap.sh'}{C.END}")
 
+    # v0.8.0 commit 6: keep .venv-diffusers/ editable-install in sync.
+    # Per architect commit-6 pre-vet M2: UNCONDITIONAL pip install -e
+    # if the diffusers venv exists — 5-10s cost amortises against the
+    # risk of "imgen upgrade pulled new transitive deps, diffusers venv
+    # didn't, ImportError at next imgen draw" UX disaster. The
+    # diffusers venv has imgen editable-installed too (see
+    # bootstrap.sh §5b); editable install means src/imgen/* is shared
+    # via egg-link, but transitive Python deps in pyproject.toml are
+    # NOT auto-pulled on the next imgen launch — pip must re-run.
+    _diffusers_venv = IMGEN_HOME / ".venv-diffusers" if IMGEN_HOME else None
+    if _diffusers_venv is not None and _diffusers_venv.is_dir():
+        diff_pip = _diffusers_venv / "bin" / "pip"
+        if diff_pip.is_file():
+            try:
+                subprocess.check_call(
+                    [str(diff_pip), "install", "--quiet", "-e",
+                     str(IMGEN_HOME)],
+                    timeout=180,
+                )
+                ok("diffusers venv editable-install refreshed")
+            except (subprocess.CalledProcessError,
+                    subprocess.TimeoutExpired) as e:
+                warn(f"diffusers venv pip install -e failed: {e}")
+                print(f"   {C.DIM}Re-run: {IMGEN_HOME / 'bootstrap.sh'}"
+                      f" (the diffusers prompt re-creates the venv)"
+                      f"{C.END}")
+
 
 def cmd_upgrade(args) -> int:
     step("Upgrading imgen (self-update)")

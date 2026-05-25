@@ -768,6 +768,18 @@ def cmd_doctor(_args) -> int:
             err(f"{CONFIG_FILE}: {e}")
             issues += 1
 
+    # v0.8.0 commit 6 — diffusers_mps engine readiness check.
+    # Per [[project-v080-design]] §E.3 + architect commit-6 pre-vet
+    # H2: report .venv-diffusers/ presence; if a user TOML declares
+    # engine="diffusers_mps" but the venv is missing, warn at doctor
+    # time (not at first-use time). Disk-free check for
+    # ~/.cache/huggingface added for the diffusers-declared case —
+    # diffusers' enable_model_cpu_offload writes >30 GB shards
+    # during inference on a 50 GB bf16 model.
+    print()
+    info("Diffusers engine (v0.8.0)")
+    issues += _report_diffusers_health()
+
     print()
     if issues == 0 and mflux_ver and tok:
         step("Everything ready")
@@ -777,3 +789,87 @@ def cmd_doctor(_args) -> int:
         return 1
     step("Some setup needed (see ⚠️  above)")
     return 0
+
+
+def _report_diffusers_health() -> int:
+    """Print the diffusers-engine doctor section. Returns the number
+    of blocking issues to add to the cmd_doctor running total.
+
+    Architect commit-6 pre-vet H2: if any user TOML declares
+    ``engine = "diffusers_mps"`` AND the venv is missing, surface
+    the gap here so colleagues don't hit it at first-use time.
+    Disk-free under ``~/.cache/huggingface`` reported when a
+    diffusers_mps model is declared, since
+    ``enable_model_cpu_offload`` shards weights to disk during
+    inference (>30 GB writes per gen on bf16 models).
+    """
+    from ..paths import HF_CACHE, IMGEN_INSTALL_ROOT
+
+    issues = 0
+    venv_python = (
+        IMGEN_INSTALL_ROOT / ".venv-diffusers" / "bin" / "python"
+    )
+    venv_present = venv_python.is_file()
+
+    # Scan the merged registry for any Model with engine=diffusers_mps.
+    # At commit 6 the built-in registry has none; user TOMLs gain v0.8
+    # schema fields at commit 6+ via the loader extension. For now
+    # detect by iterating BUILTIN_MODELS + user-merged backends and
+    # checking for an "engine" attribute equal to "diffusers_mps".
+    try:
+        from ..backends import _load_merged_backends
+        from ..models import BUILTIN_MODELS
+        diffusers_declared = any(
+            getattr(m, "engine", None) == "diffusers_mps"
+            for m in BUILTIN_MODELS.values()
+        ) or any(
+            getattr(b, "engine", None) == "diffusers_mps"
+            for b in _load_merged_backends().values()
+        )
+    except Exception:
+        # If registry load fails for an unrelated reason, don't crash
+        # doctor — surface what we can about the venv only.
+        diffusers_declared = False
+
+    if venv_present:
+        ok(f".venv-diffusers present at {venv_python.parent.parent}")
+        if diffusers_declared:
+            _report_hf_cache_disk_free()
+    else:
+        if diffusers_declared:
+            err(".venv-diffusers MISSING but a diffusers_mps model is "
+                "declared")
+            print(f"   {C.DIM}Run bootstrap.sh and answer 'y' at the "
+                  f"diffusers prompt, OR IMGEN_INSTALL_DIFFUSERS=1 "
+                  f"./bootstrap.sh{C.END}")
+            issues += 1
+        else:
+            dim("   .venv-diffusers not installed (optional; needed "
+                "only if a user TOML declares engine=\"diffusers_mps\")")
+            print(f"   {C.DIM}Run IMGEN_INSTALL_DIFFUSERS=1 "
+                  f"./bootstrap.sh to install (~10 GB).{C.END}")
+    return issues
+
+
+def _report_hf_cache_disk_free() -> None:
+    """Architect H2 lock-in: when a diffusers_mps model is declared,
+    surface free disk under ``~/.cache/huggingface`` since
+    ``enable_model_cpu_offload`` shards weights to disk during
+    inference. <50 GB free → warn; <20 GB → err (some bf16 models
+    exceed 30 GB resident peak)."""
+    import shutil
+    from ..paths import HF_CACHE
+    try:
+        usage = shutil.disk_usage(HF_CACHE.parent if HF_CACHE.exists() else HF_CACHE.parents[1])
+    except (OSError, IndexError):
+        return  # cache parent missing — bootstrap or first-run case
+    free_gb = usage.free / 1e9
+    if free_gb < 20.0:
+        warn(f"   only {free_gb:.1f} GB free under {HF_CACHE} — "
+             "diffusers_mps inference offloads weights to disk; "
+             "may run out of space mid-gen")
+    elif free_gb < 50.0:
+        dim(f"   {free_gb:.1f} GB free under {HF_CACHE} — "
+            "diffusers_mps cpu_offload may need 30+ GB for bf16 models")
+    else:
+        dim(f"   {free_gb:.1f} GB free under {HF_CACHE}")
