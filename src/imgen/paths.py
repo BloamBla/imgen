@@ -30,6 +30,7 @@ __all__ = [
     "HF_CLI_TOKEN_FILE",
     "HISTORY_FILE",
     "IMGEN_HOME",
+    "IMGEN_INSTALL_ROOT",
     "LEGACY_TOKEN_FILE",
     "MFLUX_LORAS_CACHE",
     "SAFE_OUTPUT_EXTS",
@@ -51,6 +52,75 @@ IMGEN_HOME: Path | None = (
 
 # The bin/ dir of the venv hosting this package. Mflux binaries live here.
 VENV_BIN = Path(sys.executable).parent
+
+
+def _compute_imgen_install_root() -> Path:
+    """Locate the imgen install root for diffusers_mps engine venv
+    resolution (v0.8.0 §E lock-in).
+
+    The diffusers_mps engine spawns ``.venv-diffusers/bin/python`` to
+    run a static runner module. That path MUST resolve from a stable
+    anchor, not from cwd — otherwise ``cd /tmp/attacker && imgen ...``
+    could exec a planted python.
+
+    Probe order:
+
+    1. ``Path(sys.prefix).parent`` — canonical bootstrap.sh layout.
+       sys.prefix is ``<imgen-root>/.venv``; its parent is the install
+       root containing ``src/imgen/__init__.py``.
+    2. ``Path(__file__).resolve().parents[2]`` — fallback for pipx /
+       uv tool install / Homebrew Python where sys.prefix is unrelated
+       (e.g. ``/opt/homebrew/...``). paths.py is at
+       ``<imgen-root>/src/imgen/paths.py``, so parents[2] is the root.
+
+    Both probes verify ``<candidate>/src/imgen/__init__.py`` exists, so
+    a directory that happens to be on the path but isn't an imgen
+    install is rejected.
+
+    Dies via SystemExit if neither probe resolves — the install is
+    broken in a way diffusers_mps engine couldn't recover from anyway,
+    and the error message gives the user a path forward
+    (``IMGEN_INSTALL_ROOT`` env var would be the v0.8.x extension if
+    field reports ever need it).
+    """
+    # Local import to keep die() out of module-load critical path —
+    # colors.die uses ANSI codes that wouldn't apply at this boot phase.
+    from sys import exit as _sys_exit
+
+    def _candidate_is_imgen_root(p: Path) -> bool:
+        return (p / "src" / "imgen" / "__init__.py").is_file()
+
+    # Probe 1 — canonical bootstrap.sh / `python -m venv .venv` layout.
+    venv_layout = Path(sys.prefix).parent
+    if _candidate_is_imgen_root(venv_layout):
+        return venv_layout
+
+    # Probe 2 — fallback for pipx / uv / Homebrew where sys.prefix is
+    # the system Python, not a project-local venv. paths.py lives at
+    # `<root>/src/imgen/paths.py`; parents[2] is the root.
+    source_layout = Path(__file__).resolve().parents[2]
+    if _candidate_is_imgen_root(source_layout):
+        return source_layout
+
+    # Neither resolved. Surface a diagnostic before dying — diffusers_mps
+    # engine needs this; mflux-only users hit this branch only if the
+    # source tree is genuinely broken.
+    sys.stderr.write(
+        "imgen: cannot locate install root for diffusers_mps engine.\n"
+        f"  Tried sys.prefix.parent  = {venv_layout}\n"
+        f"  Tried __file__-relative  = {source_layout}\n"
+        "  Neither contains src/imgen/__init__.py.\n"
+        "  If you installed imgen via pipx/uv, file an issue — the\n"
+        "  fallback chain needs another probe arm for your layout.\n"
+    )
+    _sys_exit(1)
+
+
+# Install root anchor for ``.venv-diffusers/`` resolution (v0.8 §E).
+# Computed eagerly at module load so paths.STATE_DIR / paths.HF_CACHE /
+# IMGEN_INSTALL_ROOT all stay consistent (no lazy-init footgun where the
+# value depends on call-site cwd at first read).
+IMGEN_INSTALL_ROOT = _compute_imgen_install_root()
 
 # Persistent state — independent of install mode.
 STATE_DIR = Path.home() / ".imgen"
