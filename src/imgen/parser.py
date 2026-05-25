@@ -408,32 +408,15 @@ def _resolve_v07_alias(name: str) -> str:
     return name
 
 
-def _v07_default_to_v08_for_i2i(name: str) -> str:
-    """Translate a v0.7 i2i backend default to its v0.8 canonical name
-    for use as an argparse ``default=`` value.
-
-    argparse runs ``type=`` on string defaults too — see the Python
-    docs caveat on "default parsed as if it were a command-line
-    argument". Without this pre-translation, ``default="flux"`` would
-    crash on ``_resolve_v07_alias("flux")``'s v0.7-rename branch when
-    the user invokes a subcommand without ``--model``.
-
-    The rename map is applied ONLY to i2i defaults (generate / batch's
-    ``defaults["backend"]``). Draw's ``defaults["backend_draw"]``
-    default is ``flux-dev`` (already v0.8 canonical, not in the map)
-    AND deliberately kept OUT of the translation — a user with
-    ``[defaults] backend_draw = "flux"`` in their config was already
-    broken on v0.7 (FLUX.1-Kontext is i2i, not t2i), and silently
-    migrating to ``flux-kontext`` for the t2i subcommand would replace
-    one wrong with a different wrong. Better to surface the
-    v0.7-rename error via ``_resolve_v07_alias`` and let the user fix
-    their config explicitly. (Architect HIGH-1 from v0.8.0 commit 4a
-    design review.)
-
-    Refine's hardcoded ``default="flux2-klein-edit-9b"`` is not in the
-    rename map either, so passes through without translation.
-    """
-    return _V07_TO_V08_MODEL_RENAMES.get(name, name)
+# NOTE: ``_v07_default_to_v08_for_i2i`` helper deleted at v0.8.0
+# commit 5. Reason: ``defaults["model"]`` (renamed from
+# ``defaults["backend"]`` at commit 5) now ships the v0.8 canonical
+# value ``"flux-kontext"`` directly. The legacy v0.7 → v0.8
+# translation moved upstream to ``config._apply_v08_defaults_aliases``
+# which warn-and-bridges any user-supplied ``[defaults] backend = ...``
+# to ``[defaults] model = ...`` before parser construction. The
+# helper's defensive translation became a no-op (rename map lookup
+# with identity fallback) and was removed.
 
 
 # ── Parser ───────────────────────────────────────────────────────────────
@@ -647,16 +630,18 @@ def _add_generate_args(
                         "style preset may override)")
     p.add_argument("--seed", type=_int_range(0, 2**32 - 1),
                    help="Seed (default: random)")
-    # v0.8.0 commits 4a + 4b: --backend → --model rename. ``dest="model"``
+    # v0.8.0 commits 4a/4b/5: --backend → --model rename. ``dest="model"``
     # at 4b — registry source-of-truth flipped to BUILTIN_MODELS, args
-    # attribute matches the CLI flag. Default pre-translated through
-    # the rename map so argparse's default-passes-through-type= behaviour
-    # doesn't crash on the v0.7 rename in _resolve_v07_alias.
-    _v08_default = _v07_default_to_v08_for_i2i(defaults["backend"])
+    # attribute matches the CLI flag. v0.8.0 commit 5 promoted the
+    # internal default key to v0.8 canonical form too (defaults.py
+    # ships ``DEFAULTS["model"] = "flux-kontext"``), so the value
+    # reaches argparse as a v0.8 name — ``_resolve_v07_alias`` passes
+    # it through cleanly with no pre-translation needed.
+    _model_default = defaults["model"]
     p.add_argument(
         "--model", type=_resolve_v07_alias, dest="model",
-        default=_v08_default, metavar="NAME",
-        help=f"Model (default {_v08_default}). "
+        default=_model_default, metavar="NAME",
+        help=f"Model (default {_model_default}). "
              f"Run --list-models for the full set.",
     )
     p.add_argument("-q", "--quantize", type=int, choices=[3, 4, 5, 6, 8],
@@ -732,14 +717,13 @@ def _add_batch_args(
     p.add_argument("--seed", type=_int_range(0, 2**32 - 1),
                    help="Seed shared across the whole N×M batch "
                         "(default: random)")
-    # v0.8.0 commits 4a + 4b: same --model rename as generate (dest=model
-    # at 4b). Shares the same i2i default (defaults["backend"]) → pre-
-    # translate through the v0.7→v0.8 rename map.
-    _v08_default = _v07_default_to_v08_for_i2i(defaults["backend"])
+    # v0.8.0 commits 4a/4b/5: same --model rename + canonical-default
+    # plumbing as generate. Shares the same i2i default (defaults["model"]).
+    _model_default = defaults["model"]
     p.add_argument(
         "--model", type=_resolve_v07_alias, dest="model",
-        default=_v08_default, metavar="NAME",
-        help=f"Model (default {_v08_default}). "
+        default=_model_default, metavar="NAME",
+        help=f"Model (default {_model_default}). "
              f"Run --list-models for the full set.",
     )
     p.add_argument("-q", "--quantize", type=int, choices=[3, 4, 5, 6, 8],

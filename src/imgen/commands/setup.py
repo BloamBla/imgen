@@ -36,10 +36,17 @@ _STARTER_CONFIG_TEMPLATE = f"""\
 # imgen config — uncomment lines to override built-in defaults.
 # All keys are optional; missing keys fall back to module DEFAULTS.
 # Precedence: CLI flag > this file > built-in DEFAULTS.
+#
+# v0.8.0 schema notes:
+#   * `[defaults] backend = ...` was renamed to `model = ...` (legacy
+#     key is still read with a DEPRECATED warn through v0.8.x; v0.9.0
+#     drops it). Values renamed too: `flux` → `flux-kontext`,
+#     `qwen` → `qwen-image-edit-v1`. See `imgen --list-models`.
+#   * `[defaults] style = ...` was REMOVED. Pass `--style NAME`
+#     per-invocation; setting it in config raises an error.
 
 [defaults]
-# style = "{DEFAULTS['style']}"             # one of: imgen --list-styles
-# backend = "{DEFAULTS['backend']}"             # "flux" (needs HF token) | "qwen" (open)
+# model = "{DEFAULTS['model']}"          # see `imgen --list-models`
 # quantize = {DEFAULTS['quantize']}                  # 3, 4, 5, 6, or 8
 # steps = {DEFAULTS['steps']}                    # 1..200
 # guidance = {DEFAULTS['guidance']}                # 0.0..15.0  (preset may override; 0 = no CFG, for distilled models)

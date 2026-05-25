@@ -1,54 +1,64 @@
-"""v0.7.15: doctor warns when config.toml has the deprecated
-`[defaults] style` key.
+"""v0.7.15 → v0.8.0 commit 5: doctor's deprecation surface for
+config keys.
 
-v0.7.13 (gap 8 BREAKING) made `--style` an explicit opt-in;
-`merged_defaults["style"]` is no longer consulted as a fallback.
-The config-schema key was kept for back-compat — but pre-v0.7.15
-colleagues with `[defaults] style = "anime"` in their config.toml
-had no visible signal the key was dead. doctor now surfaces the
-deprecation so users can clean up before v0.8 removes the field
-from the schema entirely.
+History: v0.7.15 (architect advisory) added a doctor warn when
+config.toml carried the soft-deprecated `[defaults] style` key
+(dead-code fallback since v0.7.13 BREAKING). v0.8.0 commit 5
+hard-removed the key — config.py raises ConfigError at load time
+on `[defaults] style = ...`, so the deprecation warn never runs.
+The helper was generalised to `warn_deprecated_keys(cfg)` per the
+v0.7.15 architect advisory, returning a list of (warn, hint) pairs
+that cmd_doctor renders.
 
-Tested via `warn_deprecated_defaults_style` helper (extracted from
-cmd_doctor for testability — full cmd_doctor invocation runs slow
-network + system probes the deprecation logic doesn't need).
+The legacy `warn_deprecated_defaults_style(defaults_section)` is
+kept as a NO-OP shim — calling it with a `style` key triggers
+nothing because the schema layer hard-errored on it upstream. The
+shim exists only so any v0.7.x test importing the symbol keeps
+working through the v0.8.x deprecation window.
 """
 from __future__ import annotations
 
-from imgen.commands.doctor import warn_deprecated_defaults_style
+from imgen.commands.doctor import (
+    warn_deprecated_defaults_style,
+    warn_deprecated_keys,
+)
 
 
-def test_warns_when_defaults_style_present(capsys):
-    """v0.7.15 (architect advisory): warn surfaces with the
-    DEPRECATED phrase + v0.7.13 reference + v0.8 removal timeline
-    + the offending value (so colleagues can grep their config to
-    confirm WHICH style was set)."""
+def test_warn_deprecated_keys_returns_empty_list_for_clean_config():
+    """v0.8.0 commit 5: at this point no doctor-visible deprecation
+    is fired in code (the only v0.8.0 deprecation — `[defaults]
+    backend` → `model` — fires at config load time, not doctor time).
+    The helper exists with its v0.8 shape; commits 9+ add concrete
+    deprecations into the returned list.
+    """
+    notices = warn_deprecated_keys({"defaults": {"model": "flux-kontext"}})
+    assert notices == []
+
+
+def test_warn_deprecated_keys_handles_empty_cfg():
+    """Edge case: empty config dict. No deprecation notices, no
+    crashes on `cfg["defaults"]` lookup."""
+    assert warn_deprecated_keys({}) == []
+    assert warn_deprecated_keys({"defaults": {}}) == []
+
+
+def test_legacy_warn_deprecated_defaults_style_is_noop(capsys):
+    """v0.8.0 commit 5: the v0.7.15 helper became a no-op shim.
+    Calling it with the now-removed `style` key fires nothing —
+    config.py raises ConfigError at load time before this helper
+    would ever see the key. The shim is kept only to avoid breaking
+    v0.7.15 test imports during the v0.8.x window."""
     warn_deprecated_defaults_style({"style": "anime", "quantize": 4})
     captured = capsys.readouterr()
-    output = captured.out + captured.err
-    assert "[defaults] style" in output
-    assert "DEPRECATED" in output
-    assert "v0.7.13" in output  # references the breaking-change release
-    assert "v0.8" in output     # tells the user when the key dies
-    assert "'anime'" in output  # surfaces the offending value
+    assert (captured.out + captured.err) == ""
 
 
-def test_no_warn_when_defaults_style_absent(capsys):
-    """Symmetric lock-in: defaults section without `style` triggers
-    no deprecation noise. Prevents a future drift where the warn
-    fires unconditionally."""
+def test_legacy_warn_deprecated_defaults_style_handles_empty(capsys):
+    """Edge case mirror: shim is no-op regardless of input shape."""
+    warn_deprecated_defaults_style({})
     warn_deprecated_defaults_style({"quantize": 4, "steps": 20})
     captured = capsys.readouterr()
-    output = captured.out + captured.err
-    assert "DEPRECATED" not in output
-
-
-def test_no_warn_on_empty_defaults_section(capsys):
-    """Edge case: empty `defaults` dict (valid TOML with empty
-    `[defaults]` table). No warn fires."""
-    warn_deprecated_defaults_style({})
-    captured = capsys.readouterr()
-    assert "DEPRECATED" not in (captured.out + captured.err)
+    assert (captured.out + captured.err) == ""
 
 
 # ── Gap 3 lock-in: autouse=True conftest fixture ───────────────────────

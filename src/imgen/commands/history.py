@@ -337,7 +337,7 @@ def replay_entry(entry: dict) -> int:
         strength=entry.get("strength", DEFAULTS["strength"]),
         seed=None,  # new random seed
         model=_normalize_backend_value(
-            entry.get("backend", DEFAULTS["backend"])
+            entry.get("backend", DEFAULTS["model"])
         ),
         quantize=entry.get("quantize", DEFAULTS["quantize"]),
         width=entry.get("width"),

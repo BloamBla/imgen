@@ -14,8 +14,20 @@ __all__ = [
 
 DEFAULTS = {
     "style": "pixar",
-    "backend": "flux",   # flux | qwen — default for `imgen generate` (i2i)
-    "backend_draw": "flux-dev",  # v0.7.0: default for `imgen draw` (t2i)
+    # v0.8.0 commit 5: key renamed `backend` → `model` + value
+    # translated to v0.8 canonical form. Config schema accepts both
+    # `[defaults] backend = ...` (DEPRECATED warn-and-bridge) and
+    # `[defaults] model = ...` (preferred) through the v0.8.x
+    # deprecation window; v0.9.0 drops the legacy key.
+    "model": "flux-kontext",
+    # v0.7.0 t2i default for `imgen draw`. Key unchanged at commit 5
+    # — §J §Q scope only covers `backend` → `model`; `backend_draw`
+    # stays its own config key. Architect HIGH-1 (4a pre-vet) tied
+    # this back-compat to a real risk: silently auto-translating
+    # `[defaults] backend_draw = "flux"` to `flux-kontext` would
+    # replace one config wrong (FLUX.1-Kontext is i2i, not t2i) with
+    # a different wrong.
+    "backend_draw": "flux-dev",
     "quantize": 8,       # 3 4 5 6 8
     "steps": 20,
     "guidance": 3.5,

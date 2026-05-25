@@ -25,8 +25,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ._schema import validate_against_schema
-from .backends import BACKENDS
+from .backends import list_backends
 from .colors import warn
+from .models import _V07_TO_V08_MODEL_RENAMES, BUILTIN_MODELS
 from .styles import list_styles
 
 
@@ -71,14 +72,46 @@ def _is_number_not_bool(v: Any) -> bool:
 
 _SchemaEntry = tuple[str, Callable[[Any], bool]]
 
+
+def _is_valid_v08_model_name(v: Any) -> bool:
+    """v0.8.0 commit 5: validator for ``[defaults] model = ...``.
+
+    Accepts:
+    * v0.8 built-in canonical names (``flux-kontext``, ``flux-dev``,
+      ``qwen-image-edit-v1``, ``flux2-klein-edit-9b``).
+    * User TOML stems registered in ``list_backends()`` that are
+      either unchanged at v0.7→v0.8 (e.g. ``z-image``,
+      ``qwen-image-2512``) or simply not in the rename map.
+
+    Rejects v0.7 built-in names (``flux``, ``qwen``) — config schema
+    is v0.8-only; legacy keys go through the
+    ``[defaults] backend = ...`` warn-and-bridge path which auto-maps
+    to v0.8 values before reaching this validator.
+    """
+    if not isinstance(v, str):
+        return False
+    # The v0.8 universe = list_backends() (v0.7-keyed merged) translated
+    # forward through the rename map. Mirrors `_resolve_v07_alias`
+    # validation in parser.py — single source of "valid v0.8 name".
+    v08_universe = {
+        _V07_TO_V08_MODEL_RENAMES.get(n, n) for n in list_backends()
+    }
+    return v in v08_universe
+
+
 DEFAULTS_SCHEMA: dict[str, _SchemaEntry] = {
-    "style": (
-        "string from imgen.styles.list_styles()",
-        lambda v: isinstance(v, str) and v in list_styles(),
+    # v0.8.0 commit 5: `[defaults] model` is the canonical key. `backend`
+    # legacy form is migrated through `_apply_v08_defaults_aliases` BEFORE
+    # this schema runs, so the validated dict only ever has `model` here.
+    # `style` legacy form is hard-rejected by `_reject_removed_defaults_keys`
+    # before validation — deliberately absent from this schema too.
+    "model": (
+        "v0.8 canonical model name (see `imgen --list-models`)",
+        _is_valid_v08_model_name,
     ),
-    "backend": (
-        f"one of {sorted(BACKENDS.keys())!r}",
-        lambda v: isinstance(v, str) and v in BACKENDS,
+    "backend_draw": (
+        "v0.8 canonical model name for `imgen draw` t2i default",
+        _is_valid_v08_model_name,
     ),
     "quantize": (
         "int in {3, 4, 5, 6, 8}",
@@ -224,16 +257,107 @@ def validate_section(
     )
 
 
+# ── v0.8.0 commit 5 — [defaults] section migrations ─────────────────────
+#
+# Per [[project-v080-design]] §J + §Q commit 5. Two flavours of
+# migration land at the same gate (between TOML-parse and schema-
+# validate):
+#
+# 1. `[defaults] style` — REMOVED. Hard-error with a static migration
+#    hint. The rejected VALUE is never echoed (memo §J round-2
+#    security MEDIUM) so a config-typed `[defaults] style = "..."`
+#    can't smuggle terminal-escape sequences via the error message.
+#    Soft-deprecated since v0.7.13; doctor-warned since v0.7.15.
+#
+# 2. `[defaults] backend = ...` — DEPRECATED warn-and-bridge. Auto-
+#    maps to `[defaults] model = ...` via the v0.7 → v0.8 rename
+#    map (`flux` → `flux-kontext`, `qwen` → `qwen-image-edit-v1`;
+#    unchanged names pass through). When both `backend` and `model`
+#    are set, `model` wins (memo §J "preferring model"). v0.9.0
+#    drops the legacy key entirely.
+#
+# Both functions are pure: they take the parsed dict + a source label
+# (e.g. `"[defaults]"`) and return either a migrated dict or raise
+# ConfigError. No I/O, no logging side-effects beyond the deprecation
+# warn (which goes through ``warn()`` for terminal display).
+
+
+def _reject_removed_defaults_keys(
+    raw: dict[str, Any], source: str,
+) -> None:
+    """Hard-reject keys removed in v0.8.0 with a STATIC migration hint.
+
+    The rejected value is never echoed in the error message — even
+    via ``repr()`` — so a TOML-typed
+    ``[defaults] style = "$(touch /tmp/x)"`` can't leak escape
+    sequences into terminals via ConfigError diagnostics. Matches the
+    ``parser._check_for_deprecated_backend_flag`` discipline (4a
+    security MEDIUM).
+    """
+    if "style" in raw:
+        raise ConfigError(
+            f"{source}: [defaults] style was removed in v0.8.0. "
+            "Use `--style NAME` explicitly per-invocation, or set "
+            "`[enhance] default = true` to keep enhanced prompts as "
+            "your default. (Soft-deprecated since v0.7.13; "
+            "doctor-warned since v0.7.15.)"
+        )
+
+
+def _apply_v08_defaults_aliases(
+    raw: dict[str, Any], source: str,
+) -> dict[str, Any]:
+    """Warn-and-bridge legacy `[defaults] backend = ...` → `model`.
+
+    Returns a NEW dict — does not mutate the input. The rename map
+    translation handles both renamed names (flux → flux-kontext) and
+    unchanged names (user TOML stems pass through). If both `backend`
+    and `model` are set, `model` wins per memo §J.
+    """
+    if "backend" not in raw:
+        return raw
+    legacy_value = raw["backend"]
+    out = {k: v for k, v in raw.items() if k != "backend"}
+    if "model" not in out:
+        # Translate the legacy value through the rename map; unchanged
+        # names + arbitrary user TOML stems pass through identity.
+        if isinstance(legacy_value, str):
+            out["model"] = _V07_TO_V08_MODEL_RENAMES.get(
+                legacy_value, legacy_value,
+            )
+        else:
+            # Non-string value — let the schema validator reject it
+            # downstream so the user gets a typed-error message.
+            out["model"] = legacy_value
+    warn(
+        f"{source}: [defaults] backend = ... is DEPRECATED in v0.8.0. "
+        f"Use [defaults] model = ... instead. The legacy key is read "
+        f"with auto-migration through v0.8.x; v0.9.0 drops it entirely."
+    )
+    return out
+
+
 def load_validated_config(path: Path) -> dict[str, dict[str, Any]]:
     """Load + validate config.toml. Returns {'defaults': {...}, 'ui': {...}}.
 
     Missing file → empty sections (callers use module DEFAULTS).
     Bad value in known key → ConfigError propagates so cli can die clean.
+
+    v0.8.0 commit 5: the [defaults] section gets two pre-validation
+    migration passes — ``_reject_removed_defaults_keys`` (hard-error
+    on the removed ``style`` key) and ``_apply_v08_defaults_aliases``
+    (warn-and-bridge the legacy ``backend`` key to v0.8 ``model``).
+    Other sections ([ui], [enhance]) are unchanged.
     """
     raw = load_config(path)
+    defaults_raw = raw.get("defaults", {})
+    # v0.8.0 commit 5 — reject before any other validation so the
+    # error surfaces the removal regardless of other config issues.
+    _reject_removed_defaults_keys(defaults_raw, "[defaults]")
+    defaults_raw = _apply_v08_defaults_aliases(defaults_raw, "[defaults]")
     return {
         "defaults": validate_section(
-            "defaults", raw.get("defaults", {}), DEFAULTS_SCHEMA
+            "defaults", defaults_raw, DEFAULTS_SCHEMA,
         ),
         "ui": validate_section("ui", raw.get("ui", {}), UI_SCHEMA),
         "enhance": validate_section(

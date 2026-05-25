@@ -533,10 +533,10 @@ Collisions with built-ins (`flux-kontext.toml`, `qwen-image-edit-v1.toml`) get a
 
 ```toml
 [defaults]
-style = "anime"
-backend = "qwen"            # save the FLUX token check for one-off --model flux-kontext
-                            # (config schema key stays `backend` through v0.8.x;
-                            # commit 5 migrates it to `model` in a follow-up.)
+model = "qwen-image-edit-v1"  # see `imgen --list-models`
+                              # (legacy `backend = "qwen"` still loads
+                              #  with a DEPRECATED warn through v0.8.x;
+                              #  v0.9.0 drops the old key.)
 quantize = 4
 steps = 12
 guidance = 4.0
@@ -549,6 +549,8 @@ color = "auto"              # "auto" | "always" | "never"
 ```
 
 **Precedence:** CLI flag > `~/.imgen/config.toml` > built-in defaults. Bad value (e.g. `steps = 999`) → `imgen` warns and falls back to built-ins until you fix the file. Unknown keys are dropped with a warning so old `imgen` versions don't break on configs written by newer ones.
+
+> **v0.8.0 migration:** `[defaults] style = ...` was REMOVED (soft-deprecated since v0.7.13, hard-removed at v0.8.0) — pass `--style NAME` per-invocation instead, or set `[enhance] default = true` to keep enhanced prompts as your default. `[defaults] backend = "flux"` still loads through v0.8.x with a DEPRECATED warn that auto-maps to `[defaults] model = "flux-kontext"`. Rename in your config to clear the warn; v0.9.0 drops the legacy key.
 
 For `output_dir` specifically the resolution is **`--output-dir` CLI flag > `$IMGEN_OUTPUT_DIR` env > config > default**.
 

@@ -29,13 +29,17 @@ def test_load_config_missing_file_returns_empty(tmp_path):
 
 
 def test_load_config_parses_known_sections(tmp_path):
+    """v0.8.0 commit 5: ``style`` removed; pivot to ``model`` for a
+    non-empty [defaults] fixture. ``load_config`` is the RAW TOML
+    reader (no v0.8 migration / schema run yet) — at this layer the
+    value is read as-is."""
     cfg = tmp_path / "config.toml"
     cfg.write_text(
-        "[defaults]\nstyle = \"anime\"\n"
+        "[defaults]\nmodel = \"flux-kontext\"\n"
         "[ui]\nopen_in_preview = false\n"
     )
     raw = load_config(cfg)
-    assert raw["defaults"]["style"] == "anime"
+    assert raw["defaults"]["model"] == "flux-kontext"
     assert raw["ui"]["open_in_preview"] is False
 
 
@@ -63,9 +67,12 @@ def test_load_config_oversized_file_returns_empty_with_warning(tmp_path, capsys)
 # ── validate_section — type + range gate for known keys ─────────────────
 
 def test_validate_section_accepts_all_known_keys():
+    """v0.8.0 commit 5: ``style`` removed from schema (hard-errored
+    upstream by ``_reject_removed_defaults_keys``); ``backend``
+    removed from schema (migrated to ``model`` upstream by
+    ``_apply_v08_defaults_aliases``); ``model`` is the canonical key."""
     raw = {
-        "style": "anime",
-        "backend": "qwen",
+        "model": "qwen-image-edit-v1",
         "quantize": 4,
         "steps": 30,
         "guidance": 4.5,
@@ -93,23 +100,27 @@ def test_validate_section_rejects_battery_stop_out_of_range(bad):
 
 
 def test_validate_section_drops_unknown_keys_with_warning(capsys):
-    raw = {"style": "anime", "made_up_key": "whatever"}
+    """v0.8.0 commit 5: ``style`` is unknown to DEFAULTS_SCHEMA now
+    (removed at 4b-5). At the LOW-LEVEL ``validate_section`` API
+    (which doesn't run pre-validate hooks), unknown keys still
+    warn-and-drop — but the user-facing load path raises ConfigError
+    on style via ``_reject_removed_defaults_keys`` upstream.
+    """
+    raw = {"model": "flux-kontext", "made_up_key": "whatever"}
     out = validate_section("defaults", raw, DEFAULTS_SCHEMA)
     assert "made_up_key" not in out
-    assert out["style"] == "anime"
+    assert out["model"] == "flux-kontext"
     captured = capsys.readouterr()
     assert "made_up_key" in (captured.out + captured.err)
 
 
-def test_validate_section_rejects_unknown_style():
-    with pytest.raises(ConfigError) as exc_info:
-        validate_section("defaults", {"style": "stalin_neopop"}, DEFAULTS_SCHEMA)
-    assert "style" in str(exc_info.value)
-
-
-def test_validate_section_rejects_unknown_backend():
+def test_validate_section_rejects_unknown_model():
+    """v0.8.0 commit 5: schema key is ``model`` (was ``backend`` pre-4b).
+    Unknown model name → ConfigError at schema-validation time."""
     with pytest.raises(ConfigError):
-        validate_section("defaults", {"backend": "stable-diffusion"}, DEFAULTS_SCHEMA)
+        validate_section(
+            "defaults", {"model": "stable-diffusion"}, DEFAULTS_SCHEMA,
+        )
 
 
 @pytest.mark.parametrize("bad_q", [2, 7, 9, 16])
@@ -191,13 +202,17 @@ def test_load_validated_config_empty_file(tmp_path):
 
 
 def test_load_validated_config_round_trip(tmp_path):
+    """v0.8.0 commit 5: ``[defaults] style`` REMOVED — use ``model``
+    for the round-trip lock-in. ``style`` would now hard-error via
+    ``_reject_removed_defaults_keys``; that path is tested separately
+    in ``tests/test_v080_config_migration.py``."""
     cfg = tmp_path / "config.toml"
     cfg.write_text(
-        "[defaults]\nstyle = \"anime\"\nsteps = 12\n"
+        "[defaults]\nmodel = \"flux-kontext\"\nsteps = 12\n"
         "[ui]\nopen_in_preview = false\n"
     )
     result = load_validated_config(cfg)
-    assert result["defaults"] == {"style": "anime", "steps": 12}
+    assert result["defaults"] == {"model": "flux-kontext", "steps": 12}
     assert result["ui"] == {"open_in_preview": False}
 
 

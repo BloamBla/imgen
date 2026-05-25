@@ -130,8 +130,13 @@ def test_load_validated_config_includes_enhance_section(tmp_path):
 
 
 def test_missing_enhance_section_yields_empty_dict(tmp_path):
+    """v0.8.0 commit 5: pivot from ``[defaults] style = ...``
+    (REMOVED) to ``[defaults] model = ...`` for the non-empty
+    [defaults] fixture. The test asserts [enhance] section absence;
+    [defaults] just needs ONE valid key to exercise the section-load
+    path."""
     cfg = tmp_path / "config.toml"
-    cfg.write_text("[defaults]\nstyle = \"anime\"\n")
+    cfg.write_text("[defaults]\nmodel = \"flux-kontext\"\n")
     loaded = load_validated_config(cfg)
     assert loaded["enhance"] == {}
 

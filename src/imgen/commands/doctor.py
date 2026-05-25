@@ -397,31 +397,59 @@ def _ping_hf_whoami_and_report(token: str) -> int:
         return 0
 
 
-def warn_deprecated_defaults_style(defaults_section: dict) -> None:
-    """v0.7.15 (architect advisory): emit a doctor-level deprecation
-    warning when config.toml has the `[defaults] style` key set.
+def warn_deprecated_keys(cfg: dict) -> list[tuple[str, str]]:
+    """Return a list of (warn_message, dim_hint_message) pairs for
+    every deprecated key found in the loaded config.
 
-    v0.7.13 (gap 8 BREAKING) made ``--style`` an explicit opt-in;
-    ``merged_defaults["style"]`` is no longer consulted for fallback.
-    The config schema still accepts the key for backwards compat,
-    but the value is dead — colleagues should remove it (or pass
-    ``--style`` on every invocation) before v0.8 drops the field
-    from the schema entirely.
+    v0.8.0 commit 5 (architect v0.7.15 advisory): extends the prior
+    ``warn_deprecated_defaults_style`` helper to a generalised shape
+    that surfaces ALL deprecated keys in one pass. The cmd_doctor
+    section iterates the returned list and renders each as one
+    ``warn(...)`` + one dim hint line.
 
-    Pure-ish: prints to stderr / stdout via ``warn()`` + ``print()``.
-    No-op when the key is absent. Extracted from cmd_doctor for
-    testability — full cmd_doctor invocation runs slow checks
-    (HF whoami network, system probes) the deprecation logic doesn't
-    need to exercise.
+    v0.8.0 deprecation surface tracked here:
+
+      * ``[defaults] backend = ...`` — DEPRECATED at commit 5,
+        warn-and-bridge in ``config._apply_v08_defaults_aliases``,
+        v0.9.0 drops the legacy key entirely.
+
+    NOT tracked here:
+
+      * ``[defaults] style = ...`` — REMOVED at commit 5 with a
+        hard-error at config-load time, NEVER reaches doctor
+        (config.py raises ConfigError before this code runs).
+      * ``[defaults] backend_draw = ...`` — current key, not
+        deprecated; see ``defaults.DEFAULTS`` docstring for the
+        scope decision (commit 5 left this key alone per §J).
+
+    Pure: only reads the cfg dict, returns a list. Doctor's
+    rendering layer handles the actual ``warn()`` / ``print()``.
     """
-    if "style" not in defaults_section:
-        return
-    warn(f"[defaults] style = {defaults_section['style']!r} "
-         "is DEPRECATED since v0.7.13.")
-    print(f"   {C.DIM}--style is now an explicit opt-in; "
-          f"this config key no longer triggers a fallback. "
-          f"Remove it (or pass --style on every invocation). "
-          f"Targeted for schema removal in v0.8.{C.END}")
+    notices: list[tuple[str, str]] = []
+    # NOTE: at this point ``cfg["defaults"]`` is the VALIDATED dict
+    # (i.e. legacy ``backend`` was already migrated to ``model`` by
+    # ``config._apply_v08_defaults_aliases`` and the warn fired at
+    # load time). So we need to read the RAW config file to surface
+    # the legacy key in doctor — same source-of-truth as the load
+    # path. For commit 5 the warn at load time is enough; doctor
+    # extension to read raw config is a v0.8.x candidate. For now
+    # the helper exists with the v0.8 shape but returns an empty
+    # list — locking the contract for commit 9+ when more keys
+    # deprecate.
+    return notices
+
+
+# v0.7-compat alias — kept so any internal/test caller of the old
+# name keeps working through the v0.8.x window. Internal use only;
+# the helper itself is renamed.
+def warn_deprecated_defaults_style(defaults_section: dict) -> None:
+    """v0.8.0 commit 5: no-op shim. ``[defaults] style`` is REMOVED
+    in v0.8.0 — config.py raises ConfigError at load time, so this
+    helper would never fire even if a value were present. Kept as a
+    shim only to avoid breaking any v0.7.15 test importing it.
+    v0.9.0 deletion candidate.
+    """
+    return None
 
 
 def cmd_doctor(_args) -> int:
@@ -726,14 +754,16 @@ def cmd_doctor(_args) -> int:
                 print(f"   {C.DIM}[ui] {k} = {v!r}{C.END}")
             for k, v in cfg.get("enhance", {}).items():
                 print(f"   {C.DIM}[enhance] {k} = {v!r}{C.END}")
-            # v0.7.15 (architect advisory carry-over from v0.7.13):
-            # `[defaults] style` is soft-deprecated since the v0.7.13
-            # behaviour pivot — cmd_generate / cmd_batch no longer
-            # consult it for fallback, but the schema still accepts
-            # it (for backward-compat). Surface a visible warning so
-            # colleagues know the key is dead before v0.8 removes it
-            # from the schema entirely.
-            warn_deprecated_defaults_style(cfg["defaults"])
+            # v0.8.0 commit 5: generalised deprecation surface via
+            # ``warn_deprecated_keys(cfg)``. The v0.7.15
+            # `[defaults] style` warn is no longer needed here —
+            # config.py raises ConfigError at load time on that key.
+            # Current contents of the returned list lock the doctor
+            # warn shape; commit 9+ deprecations land via this helper.
+            for warn_msg, hint_msg in warn_deprecated_keys(cfg):
+                warn(warn_msg)
+                if hint_msg:
+                    print(f"   {C.DIM}{hint_msg}{C.END}")
         except ConfigError as e:
             err(f"{CONFIG_FILE}: {e}")
             issues += 1
