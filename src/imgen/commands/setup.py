@@ -23,7 +23,13 @@ from ..paths import (
     TOKEN_FILE,
     VENV_BIN,
 )
-from ..tokens import load_token, save_token_atomic, validate_token
+from ..tokens import (
+    HF_CLI_TOKEN_FILE,
+    load_token,
+    save_token_atomic,
+    sync_token_to_hf_cli_store,
+    validate_token,
+)
 
 
 _STARTER_CONFIG_TEMPLATE = f"""\
@@ -126,6 +132,34 @@ def cmd_setup(_args) -> int:
                 except OSError as e:
                     warn(f"Saved new token but couldn't remove legacy "
                          f"{LEGACY_TOKEN_FILE}: {e}")
+            # v0.7.12 (gap 9): sync into HF CLI's own token store so
+            # standalone `hf` CLI / diffusers / scripts that read it
+            # directly stay aligned with imgen's copy. Pre-v0.7.12 a
+            # fresh imgen token next to a stale HF CLI token caused
+            # `hf download` to fail with "Invalid user token" even
+            # though imgen worked fine. Sync is best-effort; if the
+            # HF CLI store can't be written (read-only ~/.cache, etc.)
+            # imgen itself still works — just warns.
+            sync_status = sync_token_to_hf_cli_store(tok)
+            if sync_status == "written":
+                ok(f"Also synced to {HF_CLI_TOKEN_FILE} (HF CLI / diffusers)")
+            elif sync_status == "matched":
+                dim(f"   {HF_CLI_TOKEN_FILE} already in sync")
+            elif sync_status == "diverged_overwritten":
+                warn(f"Overwrote {HF_CLI_TOKEN_FILE} (was different — "
+                     "now aligned with imgen's token)")
+            elif sync_status == "error":
+                warn(f"Saved imgen token but couldn't sync to "
+                     f"{HF_CLI_TOKEN_FILE} — `hf` CLI / diffusers may "
+                     "still see a stale token. Set manually with "
+                     "`hf auth login` if needed.")
+            else:
+                # Defence-in-depth: if SyncStatus gains a new Literal
+                # variant in the future, surface it explicitly rather
+                # than silently no-op'ing the UI. (architect NIT from
+                # v0.7.12 pre-tag review.)
+                warn(f"sync_token_to_hf_cli_store returned unexpected "
+                     f"status: {sync_status!r}")
             result = validate_token(tok)
             if result.username:
                 ok(f"Token valid (HF user: {result.username})")

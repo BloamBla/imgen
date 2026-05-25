@@ -98,6 +98,46 @@ def test_load_user_style_file_rejects_bad_strength(tmp_path, bad_s):
         load_user_style_file(p)
 
 
+# ── v0.7.12 (sec LOW closure): user-TOML prompt/negative control-byte filter
+
+def test_load_user_style_file_rejects_negative_with_control_bytes(tmp_path):
+    """v0.7.12: ``negative`` field flows into mflux argv → per-batch log
+    files → terminal display via dry-run output. A user TOML negative
+    with ANSI ESC (0x1b) or other C0/DEL/C1 bytes could clear screen /
+    inject window-title escape when the user later does ``cat <log>``
+    or runs ``imgen ... --dry-run``. Pre-v0.7.12 the schema validated
+    type-only (``isinstance(v, str)``) — gap caught by v0.7.11 security
+    review Q5 (pre-existing). Symmetric with ``scene_suffix`` hardening
+    (v0.5 security IMP-3) and ``_clean_prompt_arg`` for refine."""
+    p = tmp_path / "evil.toml"
+    p.write_text(
+        'prompt = "x"\n'
+        'negative = "low quality, \\u001b[2Jblurry"\n'
+    )
+    with pytest.raises(UserStyleError, match="negative"):
+        load_user_style_file(p)
+
+
+def test_load_user_style_file_rejects_prompt_with_control_bytes(tmp_path):
+    """Symmetric with negative — ``prompt`` flows the same terminal-
+    rendering surfaces. Pre-v0.7.12 validated type-and-nonempty only;
+    now also rejects control bytes."""
+    p = tmp_path / "evil_prompt.toml"
+    p.write_text('prompt = "evil \\u001b[2Jprompt"\n')
+    with pytest.raises(UserStyleError, match="prompt"):
+        load_user_style_file(p)
+
+
+def test_load_user_style_file_accepts_empty_negative(tmp_path):
+    """``negative = ""`` stays valid — some user styles legitimately
+    have no negative prompt. The hardening targets unsafe bytes, not
+    empty content. Locks v0.7.12 to not over-tighten."""
+    p = tmp_path / "no_negative.toml"
+    p.write_text('prompt = "x"\nnegative = ""\n')
+    style = load_user_style_file(p)
+    assert style.negative == ""
+
+
 def test_load_user_style_file_rejects_bool_as_numeric(tmp_path):
     """TOML `guidance = true` would silently pass isinstance(int) — pinned."""
     p = tmp_path / "bool.toml"

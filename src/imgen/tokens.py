@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Literal
 
 from .colors import ok, warn
-from .paths import LEGACY_TOKEN_FILE, TOKEN_FILE, ensure_state_dir
+from .paths import HF_CLI_TOKEN_FILE, LEGACY_TOKEN_FILE, TOKEN_FILE, ensure_state_dir
 
 __all__ = [
     "TOKEN_MAX_BYTES",
@@ -32,6 +32,7 @@ __all__ = [
     "load_token",
     "safe_display_username",
     "save_token_atomic",
+    "sync_token_to_hf_cli_store",
     "validate_token",
 ]
 
@@ -197,6 +198,85 @@ def save_token_atomic(tok: str) -> None:
                  os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w") as f:
         f.write(tok)
+
+
+SyncStatus = Literal["written", "matched", "diverged_overwritten", "error"]
+
+
+def sync_token_to_hf_cli_store(tok: str) -> SyncStatus:
+    """Sync ``tok`` into HF CLI's token store (``~/.cache/huggingface/token``).
+
+    v0.7.12 (gap 9): close the silent-drift surface where
+    ``~/.imgen/hf_token`` and ``~/.cache/huggingface/token`` carried
+    different tokens — imgen kept working off its own copy while
+    ``hf download`` / diffusers failed with "Invalid user token". The
+    standalone ``hf`` CLI normally writes 0o644; we tighten to 0o600
+    on each sync (best-effort — ``hf`` may re-widen on its own next
+    write, but a defence-in-depth chmod here costs nothing).
+
+    Returns one of:
+        ``"written"``               — file didn't exist; new file created.
+        ``"matched"``               — file already had exact same content,
+                                      no-op.
+        ``"diverged_overwritten"``  — file existed with DIFFERENT content
+                                      (the drift case); overwritten with
+                                      ``tok``. Caller should warn the
+                                      user about the divergence so they
+                                      know the prior HF CLI token is
+                                      gone.
+        ``"error"``                 — write failed (filesystem-level OS
+                                      error). Caller should report but
+                                      not abort — imgen itself still has
+                                      its token via ``save_token_atomic``.
+
+    Pure-ish: no env reads, no network. Touches HF_CLI_TOKEN_FILE +
+    parent dir (auto-created with mode 0o700).
+
+    Single-source-of-truth at setup time: imgen setup is treated as the
+    authority for the user's HF token because the user JUST interactively
+    pasted it. A previously-set HF CLI token (e.g. from a stale
+    ``hf auth login`` months ago) is informed-consent-overwritten via the
+    ``diverged_overwritten`` return value, not silently blown away.
+    """
+    try:
+        parent = HF_CLI_TOKEN_FILE.parent
+        parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+        if HF_CLI_TOKEN_FILE.exists():
+            try:
+                existing = HF_CLI_TOKEN_FILE.read_text()
+            except OSError:
+                # Unreadable but exists — treat as divergence and try
+                # to overwrite. If the overwrite also fails the outer
+                # try/except returns "error".
+                existing = None
+            if existing == tok:
+                # Tighten perms even on no-content-change in case the
+                # HF CLI last wrote 0o644 — best-effort, don't fail if
+                # chmod is rejected on a weird filesystem.
+                try:
+                    HF_CLI_TOKEN_FILE.chmod(0o600)
+                except OSError:
+                    pass
+                return "matched"
+            # Diverged — overwrite. Use O_TRUNC because the file
+            # already exists; perms preserved via explicit chmod after
+            # write so the new content lands at 0o600 even if the file
+            # had wider perms before.
+            HF_CLI_TOKEN_FILE.write_text(tok)
+            HF_CLI_TOKEN_FILE.chmod(0o600)
+            return "diverged_overwritten"
+
+        # Fresh write — use O_CREAT|O_EXCL + 0o600 from creation to
+        # avoid any world-readable window (same discipline as
+        # save_token_atomic for TOKEN_FILE).
+        fd = os.open(str(HF_CLI_TOKEN_FILE),
+                     os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(tok)
+        return "written"
+    except OSError:
+        return "error"
 
 
 def validate_token(token: str) -> TokenValidation:

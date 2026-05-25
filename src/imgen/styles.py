@@ -563,8 +563,23 @@ def _is_lora_list(v: Any) -> bool:
 
 
 _USER_STYLE_SCHEMA: dict[str, tuple[str, Callable[[Any], bool]]] = {
-    "prompt": ("string", lambda v: isinstance(v, str) and v.strip() != ""),
-    "negative": ("string", lambda v: isinstance(v, str)),
+    # v0.7.12 (sec LOW closure from v0.7.11 review Q5): prompt + negative
+    # add C0/DEL/C1 byte rejection on top of the existing type checks.
+    # Both fields flow into mflux argv → per-batch log files → terminal
+    # display via dry-run output → terminal display via confirm gate;
+    # an ANSI ESC (0x1b) in a user TOML could clear the user's screen
+    # when they later ``cat ~/.imgen/logs/<id>.log``. Symmetric with
+    # ``scene_suffix`` hardening (v0.5 security IMP-3) and ``_clean_
+    # prompt_arg`` for refine (v0.7.7 Sec #S3). Empty negative remains
+    # valid — defence is about unsafe bytes, not empty content.
+    "prompt": (
+        "non-empty string (no control bytes)",
+        lambda v: isinstance(v, str) and v.strip() != "" and _is_safe_stem(v),
+    ),
+    "negative": (
+        "string (no control bytes)",
+        lambda v: isinstance(v, str) and _is_safe_stem(v),
+    ),
     "guidance": (
         # v0.7.11 (gap 2): symmetric with [defaults] guidance schema —
         # user styles for distilled backends may legitimately set 0.0.

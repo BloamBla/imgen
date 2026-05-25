@@ -27,6 +27,7 @@ __all__ = [
     "CONFIG_FILE",
     "DEFAULT_OUTPUT_DIR",
     "HF_CACHE",
+    "HF_CLI_TOKEN_FILE",
     "HISTORY_FILE",
     "IMGEN_HOME",
     "LEGACY_TOKEN_FILE",
@@ -60,6 +61,14 @@ CONFIG_FILE = STATE_DIR / "config.toml"
 # fallback and auto-migrated to TOKEN_FILE on first load. See tokens.py.
 TOKEN_FILE = STATE_DIR / "hf_token"
 LEGACY_TOKEN_FILE = Path.home() / ".hf_token"
+# v0.7.12 (gap 9): HF CLI's own token store, separate from imgen's. mflux
+# subprocess reads TOKEN_FILE via env injection; `hf` CLI + standalone
+# diffusers read HF_CLI_TOKEN_FILE. Pre-v0.7.12 these drifted silently —
+# fresh imgen token next to a stale HF CLI token (or vice versa) caused
+# `hf download` to fail with "Invalid user token" even though imgen
+# worked. ``sync_token_to_hf_cli_store`` in tokens.py writes here after
+# ``save_token_atomic`` to keep both stores aligned at setup time.
+HF_CLI_TOKEN_FILE = Path.home() / ".cache" / "huggingface" / "token"
 # Fallback only — runtime env ($IMGEN_OUTPUT_DIR) and ~/.imgen/config.toml
 # `[defaults] output_dir` win in that order. Resolution lives in
 # config.effective_output_dir, which checks env at call time so test

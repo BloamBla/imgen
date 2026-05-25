@@ -520,6 +520,72 @@ extra_args = ["--model", "sdxl"]
     assert be.extra_args == ("--model", "sdxl")
 
 
+# ── v0.7.12 (gap 5): hf_gated_repo in user TOML schema ───────────────────
+
+def test_load_user_backend_file_accepts_hf_gated_repo(tmp_path):
+    """v0.7.12 (gap 5): user TOML can declare ``hf_gated_repo`` so the
+    backend's gate-URL hint (surfaced by doctor + cmd_draw post-failure
+    handler) works for user-registered gated repos like
+    ``briaai/FIBO``, matching how FLUX.1-dev's built-in row uses it."""
+    from imgen.backends import load_user_backend_file
+    toml_path = tmp_path / "fibo.toml"
+    _write_toml(toml_path, '''
+binary = "mflux-generate-fibo"
+image_flag = "--image-paths"
+hf_gated_repo = "briaai/FIBO"
+extra_args = ["-m", "briaai/FIBO"]
+''')
+    be = load_user_backend_file(toml_path)
+    assert be.hf_gated_repo == "briaai/FIBO"
+
+
+def test_load_user_backend_file_hf_gated_repo_defaults_to_none(tmp_path):
+    """Field is optional — TOMLs that don't declare it get None on the
+    Backend (matches built-in qwen behaviour: open repo, no gate hint
+    needed)."""
+    from imgen.backends import load_user_backend_file
+    toml_path = tmp_path / "open.toml"
+    _write_toml(toml_path, '''
+binary = "mflux-generate-foo"
+image_flag = "--image-path"
+extra_args = []
+''')
+    be = load_user_backend_file(toml_path)
+    assert be.hf_gated_repo is None
+
+
+def test_load_user_backend_file_rejects_hf_gated_repo_with_control_bytes(tmp_path):
+    """C0/DEL/C1 byte in hf_gated_repo would leak into the post-failure
+    hint URL display + doctor output → terminal escape injection risk
+    matching all the other string-field hardenings (binary, extra_args,
+    enhance_system_prompt). Schema rejects at load time."""
+    from imgen.backends import load_user_backend_file
+    toml_path = tmp_path / "evil.toml"
+    _write_toml(toml_path, '''
+binary = "mflux-generate-foo"
+image_flag = "--image-path"
+hf_gated_repo = "evil/\\u001b[2Jrepo"
+extra_args = []
+''')
+    with pytest.raises(UserBackendError, match="hf_gated_repo"):
+        load_user_backend_file(toml_path)
+
+
+def test_load_user_backend_file_rejects_hf_gated_repo_empty(tmp_path):
+    """Empty string is also invalid — either declare a real repo or
+    omit the field entirely."""
+    from imgen.backends import load_user_backend_file
+    toml_path = tmp_path / "empty_repo.toml"
+    _write_toml(toml_path, '''
+binary = "mflux-generate-foo"
+image_flag = "--image-path"
+hf_gated_repo = ""
+extra_args = []
+''')
+    with pytest.raises(UserBackendError, match="hf_gated_repo"):
+        load_user_backend_file(toml_path)
+
+
 def test_load_user_backend_file_rejects_oversized(tmp_path):
     """Real backend TOMLs are tiny (hundreds of bytes). A multi-MB
     file is corruption or misuse — refuse rather than slurp."""

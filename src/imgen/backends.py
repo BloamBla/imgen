@@ -418,6 +418,20 @@ _USER_BACKEND_SCHEMA: dict[str, tuple[str, Callable[[Any], bool]]] = {
         "non-empty string (no control bytes)",
         lambda v: isinstance(v, str) and v.strip() != "" and _is_clean_str(v),
     ),
+    # v0.7.12 (gap 5): HF gated-repo identifier, e.g. "briaai/FIBO" or
+    # "black-forest-labs/FLUX.1-dev". When mflux subprocess fails with
+    # GatedRepoError, ``cmd_draw`` / ``cmd_generate`` / ``cmd_batch``
+    # post-failure hint surfaces a URL pointing at the per-model
+    # license page on huggingface.co so the user can accept the gate
+    # and retry — same UX as built-in flux / flux-dev / flux2-klein-
+    # edit-9b rows. Pre-v0.7.12 only built-in backends could set this
+    # (Backend.hf_gated_repo existed but user TOMLs got "unknown field"
+    # warn). Control-byte filter because the value ends up rendered in
+    # terminal output via the post-failure hint.
+    "hf_gated_repo": (
+        "non-empty string (no control bytes)",
+        lambda v: isinstance(v, str) and v.strip() != "" and _is_clean_str(v),
+    ),
 }
 
 _SECRET_SCHEMA: dict[str, tuple[str, Callable[[Any], bool]]] = {
@@ -622,6 +636,14 @@ def validate_user_backend_schema(data: dict, source: Path) -> Backend:
     # in a style is silently warn-skipped at command-construction time.
     lora_compat_group = validated.get("lora_compat_group", "")
 
+    # v0.7.12 (gap 5): HF gated-repo identifier. Optional — absent →
+    # None → Backend default → post-failure hint silently skips. Set
+    # to e.g. "briaai/FIBO" or "black-forest-labs/FLUX.1-dev" so the
+    # error path surfaces the license-acceptance URL. Intentionally
+    # NOT in `_USER_BACKEND_DEFAULTS` — None sentinel is the correct
+    # absent value (symmetric with `enhance_system_prompt` above).
+    hf_gated_repo = validated.get("hf_gated_repo")
+
     return Backend(
         binary=validated["binary"],
         needs_token=False,
@@ -634,6 +656,7 @@ def validate_user_backend_schema(data: dict, source: Path) -> Backend:
         enhance_system_prompt=enhance_system_prompt,
         enhance_invariants=enhance_invariants,
         lora_compat_group=lora_compat_group,
+        hf_gated_repo=hf_gated_repo,
     )
 
 

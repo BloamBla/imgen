@@ -26,28 +26,108 @@ def tmp_token(tmp_path, monkeypatch):
     and resets the per-process auto-migrate guard so each test gets a
     fresh attempt.
 
-    Returns SimpleNamespace(new=Path, legacy=Path, state_dir=Path).
+    v0.7.12 (gap 9): also redirects HF_CLI_TOKEN_FILE so
+    ``sync_token_to_hf_cli_store`` can be exercised without touching
+    the real ``~/.cache/huggingface/token``.
+
+    Returns SimpleNamespace(new=Path, legacy=Path, state_dir=Path,
+    hf_cli=Path).
     """
     state_dir = tmp_path / ".imgen"
     state_dir.mkdir(mode=0o700)
     new_token = state_dir / "hf_token"
     legacy_token = tmp_path / ".hf_token"
+    hf_cli_token = tmp_path / ".cache" / "huggingface" / "token"
 
     monkeypatch.delenv("HF_TOKEN", raising=False)
 
     import imgen.paths as paths_mod
     import imgen.tokens as tokens_mod
     monkeypatch.setattr(paths_mod, "STATE_DIR", state_dir)
+    monkeypatch.setattr(paths_mod, "HF_CLI_TOKEN_FILE", hf_cli_token)
     monkeypatch.setattr(tokens_mod, "TOKEN_FILE", new_token)
     monkeypatch.setattr(tokens_mod, "LEGACY_TOKEN_FILE", legacy_token)
+    monkeypatch.setattr(tokens_mod, "HF_CLI_TOKEN_FILE", hf_cli_token)
     monkeypatch.setattr(tokens_mod, "_migrate_attempted", False)
 
     return SimpleNamespace(new=new_token, legacy=legacy_token,
-                           state_dir=state_dir)
+                           state_dir=state_dir, hf_cli=hf_cli_token)
 
 
 def test_load_token_no_file_returns_none(tmp_token):
     assert load_token() is None
+
+
+# ── v0.7.12 (gap 9): sync_token_to_hf_cli_store ─────────────────────────
+
+class TestSyncTokenToHfCliStore:
+    """imgen setup writes ~/.imgen/hf_token (mflux env source) but the
+    standalone HF CLI / diffusers read ~/.cache/huggingface/token. The
+    two stores drift silently → `hf download` fails with "Invalid user
+    token" even when imgen works. v0.7.12 syncs forward: imgen setup is
+    the authority when it runs."""
+
+    def test_creates_hf_cli_token_when_absent(self, tmp_token):
+        """No existing HF CLI token → write the new one with restrictive
+        perms (parent dir auto-created)."""
+        from imgen.tokens import sync_token_to_hf_cli_store
+        status = sync_token_to_hf_cli_store("hf_freshly_set_token")
+        assert status == "written"
+        assert tmp_token.hf_cli.exists()
+        assert tmp_token.hf_cli.read_text() == "hf_freshly_set_token"
+        # Perms: 0o600 — symmetric with TOKEN_FILE atomic save.
+        assert tmp_token.hf_cli.stat().st_mode & 0o777 == 0o600
+
+    def test_matched_when_existing_content_identical(self, tmp_token):
+        """HF CLI already has the exact same token → no-op, return
+        "matched" so the caller can report "already in sync" instead of
+        "overwrote"."""
+        from imgen.tokens import sync_token_to_hf_cli_store
+        tmp_token.hf_cli.parent.mkdir(parents=True)
+        tmp_token.hf_cli.write_text("hf_same_token")
+        status = sync_token_to_hf_cli_store("hf_same_token")
+        assert status == "matched"
+        # Content unchanged.
+        assert tmp_token.hf_cli.read_text() == "hf_same_token"
+
+    def test_overwrites_when_existing_content_differs(self, tmp_token):
+        """HF CLI has DIFFERENT token (drift case the gap closes) →
+        overwrite with the new one and return "diverged_overwritten"
+        so the caller can warn the user about the divergence (informed
+        consent rather than silent blow-away)."""
+        from imgen.tokens import sync_token_to_hf_cli_store
+        tmp_token.hf_cli.parent.mkdir(parents=True)
+        tmp_token.hf_cli.write_text("hf_stale_token_from_march")
+        status = sync_token_to_hf_cli_store("hf_new_token_from_may")
+        assert status == "diverged_overwritten"
+        assert tmp_token.hf_cli.read_text() == "hf_new_token_from_may"
+        assert tmp_token.hf_cli.stat().st_mode & 0o777 == 0o600
+
+    def test_returns_error_when_write_fails(self, tmp_path, monkeypatch):
+        """v0.7.12 pre-tag python NIT closure: the documented "error"
+        return path (OSError on mkdir / open / write) had no coverage.
+        Point HF_CLI_TOKEN_FILE at a path whose parent we make read-only
+        so mkdir(parents=True) fails — sync returns "error" cleanly
+        rather than propagating the OSError."""
+        from pathlib import Path
+        import imgen.tokens as tokens_mod
+        # A path whose parent doesn't exist AND whose grandparent we
+        # don't have write access to. /proc/1 is owned by root with no
+        # write on macOS — emulating via tmp_path with chmod 0o500.
+        ro_root = tmp_path / "readonly_root"
+        ro_root.mkdir()
+        ro_root.chmod(0o500)  # r-x: cannot create children
+        try:
+            monkeypatch.setattr(
+                tokens_mod, "HF_CLI_TOKEN_FILE",
+                ro_root / "huggingface" / "token",
+            )
+            from imgen.tokens import sync_token_to_hf_cli_store
+            status = sync_token_to_hf_cli_store("hf_some_token")
+            assert status == "error"
+        finally:
+            # Restore writability so pytest can clean up tmp_path.
+            ro_root.chmod(0o700)
 
 
 def test_load_token_normal_size_returns_stripped_content(tmp_token):
