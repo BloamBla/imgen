@@ -160,10 +160,23 @@ class DiffusersMpsEngine:
         )
 
     def validate(self, model, params: GenParams) -> list[str]:
-        """Stub for commit 6 — returns empty list (no validation).
-        Full per-Model validation (steps/guidance/quantize ranges)
-        lands at commit 7 alongside the resolver hook for param
-        defaults."""
+        """Intentionally stubbed by design — payload validation lives
+        at the subprocess trust boundary in
+        ``_diffusers_runner._validate_payload_shape`` per memo §E.1.
+
+        v0.8.1 §R.4 M-4 / architect docstring-drift closure: pre-v0.8.1
+        comment promised wiring "in commit 7" — that wiring never
+        landed across commits 7-11, and on reflection it shouldn't.
+        The runner re-validates EVERY field at the JSON-stdin boundary
+        with deny-by-default discipline; mirroring that here would
+        double-validate without catching anything new and risk drift
+        between the two checks. The Engine.validate surface stays
+        intentionally empty for diffusers_mps; MfluxEngine.validate
+        (which IS wired) catches per-Model invariants at the in-
+        process resolver layer where the runner has no presence.
+
+        Returns ``[]`` unconditionally — callers treat as "no errors".
+        """
         return []
 
     def ram_estimate_gb(self, model, params: GenParams) -> float:

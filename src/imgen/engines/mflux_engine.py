@@ -104,13 +104,28 @@ class MfluxEngine:
         params: GenParams,
         env: Mapping[str, str] | None = None,
     ) -> int:
-        """Stub for commit 2. Full implementation in commit 6 routes
-        through ``run_with_stderr_redaction``. Today's call sites
-        (cmd_generate / cmd_batch / cmd_draw / cmd_refine) continue
-        to invoke the legacy paths until the CLI rename in commit 4."""
+        """Intentionally stubbed at v0.8.x — call sites still use the
+        legacy ``build_mflux_cmd`` + ``run_with_stderr_redaction`` path
+        directly through ``run_one_iteration`` (cmd_helpers.py).
+
+        v0.8.1 §R.4 M-1 / architect docstring-drift closure: pre-v0.8.1
+        comment promised wiring "in commit 6" — that wiring never
+        landed across commits 6-11. The Engine layer pays rent today
+        via three other surfaces — ``ram_estimate_gb``, ``validate``,
+        ``build_cmd`` — and ``run`` remains the foundation for a future
+        ``Engine.run`` dispatch refactor (architect §R.4 M-1 backlog
+        item). When that lands, it replaces the
+        ``run_one_iteration`` subprocess block.
+
+        Until then, calling this raises so a confused caller hits an
+        explicit error rather than silently no-op'ing.
+        """
         raise NotImplementedError(
-            "MfluxEngine.run wired in commit 6 — call sites use legacy "
-            "subprocess paths through commit 5."
+            "MfluxEngine.run is intentionally stubbed at v0.8.x. "
+            "Production paths use build_mflux_cmd + "
+            "run_with_stderr_redaction via cmd_helpers.run_one_iteration. "
+            "Full Engine.run subprocess dispatch is a v0.8.x cleanup "
+            "item (see project_v08x_backlog.md M-1 / architect §R.4)."
         )
 
     def validate(self, model, params: GenParams) -> list[str]:
