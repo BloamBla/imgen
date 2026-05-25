@@ -397,6 +397,33 @@ def _ping_hf_whoami_and_report(token: str) -> int:
         return 0
 
 
+def warn_deprecated_defaults_style(defaults_section: dict) -> None:
+    """v0.7.15 (architect advisory): emit a doctor-level deprecation
+    warning when config.toml has the `[defaults] style` key set.
+
+    v0.7.13 (gap 8 BREAKING) made ``--style`` an explicit opt-in;
+    ``merged_defaults["style"]`` is no longer consulted for fallback.
+    The config schema still accepts the key for backwards compat,
+    but the value is dead — colleagues should remove it (or pass
+    ``--style`` on every invocation) before v0.8 drops the field
+    from the schema entirely.
+
+    Pure-ish: prints to stderr / stdout via ``warn()`` + ``print()``.
+    No-op when the key is absent. Extracted from cmd_doctor for
+    testability — full cmd_doctor invocation runs slow checks
+    (HF whoami network, system probes) the deprecation logic doesn't
+    need to exercise.
+    """
+    if "style" not in defaults_section:
+        return
+    warn(f"[defaults] style = {defaults_section['style']!r} "
+         "is DEPRECATED since v0.7.13.")
+    print(f"   {C.DIM}--style is now an explicit opt-in; "
+          f"this config key no longer triggers a fallback. "
+          f"Remove it (or pass --style on every invocation). "
+          f"Targeted for schema removal in v0.8.{C.END}")
+
+
 def cmd_doctor(_args) -> int:
     issues = 0  # count blocking problems; return non-zero if any
     step("Checking environment")
@@ -699,6 +726,14 @@ def cmd_doctor(_args) -> int:
                 print(f"   {C.DIM}[ui] {k} = {v!r}{C.END}")
             for k, v in cfg.get("enhance", {}).items():
                 print(f"   {C.DIM}[enhance] {k} = {v!r}{C.END}")
+            # v0.7.15 (architect advisory carry-over from v0.7.13):
+            # `[defaults] style` is soft-deprecated since the v0.7.13
+            # behaviour pivot — cmd_generate / cmd_batch no longer
+            # consult it for fallback, but the schema still accepts
+            # it (for backward-compat). Surface a visible warning so
+            # colleagues know the key is dead before v0.8 removes it
+            # from the schema entirely.
+            warn_deprecated_defaults_style(cfg["defaults"])
         except ConfigError as e:
             err(f"{CONFIG_FILE}: {e}")
             issues += 1

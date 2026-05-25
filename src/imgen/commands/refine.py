@@ -39,6 +39,7 @@ from ..cmd_helpers import (
     format_duration,
     load_backend_and_token,
     open_results,
+    megapixels_of,
     preflight_resources,
     print_batch_summary,
     resolve_output_layout,
@@ -284,7 +285,7 @@ def cmd_refine(args) -> int:
     # explicit --width/--height) — refine has exactly one iteration
     # so one value covers it.
     heaviest_quant = iteration.final_quantize
-    max_megapixels = (width * height) / 1_000_000
+    max_megapixels = megapixels_of(width, height)
     preflight_resources(
         backend=backend, heaviest_quant=heaviest_quant,
         force=args.force, max_megapixels=max_megapixels,

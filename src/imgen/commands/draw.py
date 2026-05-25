@@ -49,6 +49,7 @@ from ..cmd_helpers import (
     load_backend_and_token,
     maybe_enhance_prompts,
     open_results,
+    megapixels_of,
     preflight_resources,
     print_batch_summary,
     prompt_slug,
@@ -299,7 +300,7 @@ def cmd_draw(args) -> int:
     # 1 MP. t2i width/height come from CLI (--width/--height with
     # 1024² default), constant across the N iterations.
     heaviest_quant = max(it.final_quantize for it in iterations)
-    max_megapixels = (args.width * args.height) / 1_000_000
+    max_megapixels = megapixels_of(args.width, args.height)
     preflight_resources(
         backend=backend, heaviest_quant=heaviest_quant,
         force=args.force, max_megapixels=max_megapixels,

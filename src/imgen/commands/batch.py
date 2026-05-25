@@ -64,6 +64,7 @@ from ..cmd_helpers import (
     apply_enhance_results_to_groups,
     build_bare_i2i_iteration,
     build_iterations,
+    megapixels_of,
     require_style_or_prompt,
     check_prompt_style_compat,
     emit_gated_repo_hint_if_failed,
@@ -375,8 +376,8 @@ def cmd_batch(args) -> int:
         # its own width/height — take the largest area for the
         # conservative estimate.
         heaviest_quant = max(it.final_quantize for it in all_iters)
-        max_megapixels = (
-            max(pi.width * pi.height for pi in per_input_iters) / 1_000_000
+        max_megapixels = max(
+            megapixels_of(pi.width, pi.height) for pi in per_input_iters
         )
         preflight_resources(
             backend=backend, heaviest_quant=heaviest_quant,

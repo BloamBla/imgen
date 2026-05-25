@@ -105,6 +105,7 @@ __all__ = [
     "estimate_one_seconds",
     "exit_code",
     "format_duration",
+    "megapixels_of",
     "load_backend_and_token",
     "maybe_enhance_for_command",
     "maybe_enhance_prompts",
@@ -339,6 +340,26 @@ def check_prompt_style_compat(
             code=2,
             hint="Param-only styles in ~/.imgen/styles.d/ need a "
                  "CLI-supplied prompt.")
+
+
+def megapixels_of(width: int, height: int) -> float:
+    """Convert pixel dimensions to megapixels (width × height / 1e6).
+
+    v0.7.15 (architect Q6 advisory from v0.7.14 review): extracted from
+    4 copy-pasted call sites (cmd_generate, cmd_batch, cmd_refine,
+    cmd_draw) that each computed ``(w * h) / 1_000_000`` independently.
+    Single tested helper eliminates the copy-paste-bug surface (e.g.
+    accidental ``1_000`` instead of ``1_000_000`` typo would silently
+    over-block by 1000×).
+
+    The 1 MP canonical baseline at 1024² is exactly
+    ``1024 * 1024 / 1_000_000 = 1.048576``, not 1.0 — keep the float
+    return value so :func:`checks.ram_required_gb` sees the precise
+    activation budget rather than a rounded integer.
+
+    Pure: no I/O, no allocation beyond the float result.
+    """
+    return (width * height) / 1_000_000
 
 
 def require_style_or_prompt(

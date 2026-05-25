@@ -31,6 +31,7 @@ from ..cmd_helpers import (
     apply_enhance_results_to_iterations,
     build_bare_i2i_iteration,
     build_iterations,
+    megapixels_of,
     require_style_or_prompt,
     check_prompt_style_compat,
     emit_gated_repo_hint_if_failed,
@@ -313,7 +314,7 @@ def cmd_generate(args) -> int:
         # iterations share width/height; one value covers the whole
         # batch.
         heaviest_quant = max(it.final_quantize for it in iterations)
-        max_megapixels = (width * height) / 1_000_000
+        max_megapixels = megapixels_of(width, height)
         preflight_resources(
             backend=backend, heaviest_quant=heaviest_quant,
             force=args.force, max_megapixels=max_megapixels,

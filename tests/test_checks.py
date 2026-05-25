@@ -156,3 +156,47 @@ def test_unknown_backend_still_scales_with_megapixels():
     assert big > base, (
         f"unknown-backend at 4MP {big} should exceed 1MP baseline {base}"
     )
+
+
+# ── v0.7.15 (architect Q6 advisory): megapixels_of helper ──────────────
+
+
+class TestMegapixelsOf:
+    """Extracted from 4 copy-pasted ``(w * h) / 1_000_000`` call sites
+    (cmd_generate, cmd_batch, cmd_refine, cmd_draw) in v0.7.15. Pure
+    helper — single tested seam eliminates copy-paste typo risk."""
+
+    def test_1024sq_gives_canonical_1_048mp(self):
+        """1024² = 2¹⁰ × 2¹⁰ = 1,048,576 pixels = 1.048576 MP exactly.
+        This is the canonical 1 MP baseline anchor for `ram_required_gb`."""
+        from imgen.cmd_helpers import megapixels_of
+        assert megapixels_of(1024, 1024) == 1.048576
+
+    def test_1536sq_matches_v077_calibration_point(self):
+        """1536² used in the v0.7.7 flux2-klein-edit Q4 measurement."""
+        from imgen.cmd_helpers import megapixels_of
+        # 1536² = 2,359,296 → 2.359296 MP
+        assert megapixels_of(1536, 1536) == 2.359296
+
+    def test_2048sq_matches_v077_calibration_point(self):
+        """2048² used in the v0.7.7 flux2-klein-edit Q4 measurement."""
+        from imgen.cmd_helpers import megapixels_of
+        # 2048² = 4,194,304 → 4.194304 MP
+        assert megapixels_of(2048, 2048) == 4.194304
+
+    def test_returns_float_not_int(self):
+        """Even dimensions that produce an integer MP must return
+        float — `ram_required_gb` formulas expect float arithmetic."""
+        from imgen.cmd_helpers import megapixels_of
+        # 1000 × 1000 = 1,000,000 → 1 MP exactly. Integer-valued
+        # result but still float-typed.
+        result = megapixels_of(1000, 1000)
+        assert result == 1.0
+        assert isinstance(result, float)
+
+    def test_non_square_dimensions(self):
+        """1920 × 1080 (HD) = 2,073,600 → 2.0736 MP. Locks the
+        non-square path that refine + draw users with `--width`/
+        `--height` overrides may hit."""
+        from imgen.cmd_helpers import megapixels_of
+        assert megapixels_of(1920, 1080) == 2.0736

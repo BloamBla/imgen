@@ -2,22 +2,35 @@
 
 Keep fixtures lightweight — entire test suite targets <2s. No real
 subprocess to mflux, no GPU, no network.
+
+v0.7.15 (gap 3 closure): `tmp_state_dir` is now `autouse=True` so EVERY
+test gets an isolated ~/.imgen/ tmp redirect by default. Pre-v0.7.15
+tests that didn't explicitly request the fixture (e.g.
+test_gated_repo_hint_surfaces_on_mflux_failure) wrote into the REAL
+~/.imgen/history.jsonl during runs, polluting user state with
+test-generated entries. With autouse the pollution surface is closed
+at the harness level — no per-test opt-in required.
 """
 from __future__ import annotations
 
 import pytest
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def tmp_state_dir(tmp_path, monkeypatch):
     """Redirect imgen state (STATE_DIR, HISTORY_FILE, LOGS_DIR) to a
-    fresh tmp dir.
+    fresh tmp dir — `autouse=True` so EVERY test is isolated by default.
 
     Tests touching history.append/load or BatchLogger use this to avoid
     clobbering the user's real ~/.imgen/ and to get a clean state per
     test. LOGS_DIR is captured into `runs.py` at module import time,
     so a bare STATE_DIR monkeypatch doesn't propagate — patch both
     explicitly here.
+
+    Tests that previously requested `tmp_state_dir` explicitly keep
+    working unchanged: pytest reuses the same fixture instance
+    (function scope), so the autouse + explicit request produces one
+    state_dir per test, not two.
     """
     state_dir = tmp_path / "state"
     state_dir.mkdir(mode=0o700)
