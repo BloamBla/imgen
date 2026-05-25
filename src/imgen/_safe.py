@@ -1,12 +1,14 @@
 """Shared safety helpers for terminal-display + control-byte filtering.
 
 Per the v0.4 design decision: ``_has_control_bytes`` was duplicated
-inline across ``backends.py`` / ``parser.py`` / ``history.py`` /
-``commands/migrate_toml.py`` until a 4th surface emerged. That
-threshold was hit in v0.8.0 commit 9 (history.py) and v0.8.0 commit 10
-(migrate_toml.py); v0.8.1 LOW-3 closure extracts the helper here so the
-4 (going-on-5) call sites share a single byte-identical implementation
-+ a documented contract.
+inline across ``backends.py`` / ``parser.py`` / ``history.py`` until a
+4th surface emerged. That threshold was hit in v0.8.0 commit 9
+(history.py made it the 4th byte-detector copy). At the same time,
+``commands/migrate_toml.py`` shipped its own local ``_safe_path_display``
+display-helper duplicate of the same control-byte-aware repr pattern.
+v0.8.1 LOW-3 closure consolidates BOTH surfaces (byte detector + display
+wrapper) into this module so the consumers share a single byte-identical
+implementation + a documented contract.
 
 Three helpers ship from this module:
 
