@@ -2,15 +2,20 @@
 from __future__ import annotations
 
 __all__ = [
-    "ACTIVATION_GB_PER_MP_ABOVE_BASELINE",
     "DEFAULTS",
     "HISTORY_SCHEMA_VERSION",
     "MFLUX_PIN",
     "MIN_BATTERY_PCT",
     "MIN_DISK_GB",
     "PREVIEW_OVERRIDES",
-    "RAM_REQUIRED_GB",
 ]
+# v0.8.0 commit 8 (§L): RAM_REQUIRED_GB + ACTIVATION_GB_PER_MP_ABOVE_BASELINE
+# DELETED. Per-Model RAM math moved into ``Model.ram_baseline_gb`` /
+# ``Model.ram_slope_gb_per_mp`` / ``Model.encoder_ram_gb`` declared on
+# each row of ``models.BUILTIN_MODELS``. Computation lives in
+# ``Engine.ram_estimate_gb`` (single source-of-truth, exercised by
+# both the preflight gate in ``checks.ram_required_gb`` and the
+# doctor RAM table renderer).
 
 DEFAULTS = {
     "style": "pixar",
@@ -41,69 +46,6 @@ PREVIEW_OVERRIDES = {
     "quantize": 4,
     "steps": 8,
 }
-
-# Peak RAM (GB) required during inference at the CANONICAL 1 MP
-# resolution (1024² output): UNet/transformer weights + text encoders +
-# 1MP activations + MLX cache headroom. v0.7.14 (gap 6 closure): the
-# pre-v0.7.14 table was indexed by ``(backend, quant)`` with rows
-# calibrated for WORST-CASE 2K² output (flux2-klein-edit), which
-# over-blocked legitimate 1024² runs that fit comfortably on 32 GB
-# Macs. ``checks.ram_required_gb(backend, quant, megapixels)`` now
-# scales these 1MP baselines linearly with activation budget per the
-# v0.7.7 real-measurement slope (~4 GB / MP above the 1 MP baseline).
-#
-# Calibration data points (M2 Pro 32 GB, v0.7.7 instrumentation run):
-#   flux2-klein-edit Q4 @ 1536² (~2.25 MP): 23 GB resident peak
-#   flux2-klein-edit Q4 @ 2048² (~4 MP):    30 GB total (resident +
-#                                           compressed + swap)
-# Slope: (30 − 23) / (4 − 2.25) ≈ 4 GB/MP → reverse-extrapolated to
-# 1MP baseline of 14 GB for flux2-klein-edit Q4. Other (backend, quant)
-# rows kept unchanged from pre-v0.7.14 1MP-canonical estimates.
-RAM_REQUIRED_GB = {
-    ("flux", 3): 8,
-    ("flux", 4): 9,
-    ("flux", 5): 12,
-    ("flux", 6): 14,
-    ("flux", 8): 18,
-    ("qwen", 3): 10,
-    ("qwen", 4): 12,
-    ("qwen", 5): 16,
-    ("qwen", 6): 18,
-    ("qwen", 8): 25,
-    # v0.7.0: FLUX.1-dev (t2i) shares the FLUX.1 transformer family
-    # weight footprint with FLUX.1-Kontext-dev. Same RAM envelope.
-    ("flux-dev", 3): 8,
-    ("flux-dev", 4): 9,
-    ("flux-dev", 5): 12,
-    ("flux-dev", 6): 14,
-    ("flux-dev", 8): 18,
-    # v0.7.14 (gap 6): rows are now 1 MP baselines reverse-extrapolated
-    # from v0.7.7 calibration. Pre-v0.7.14 rows were 2K² worst-case
-    # estimates that blocked legitimate 1024² runs. The new function
-    # scales these up linearly above 1 MP; preflight at 2K² hits the
-    # same 30 GB ceiling for Q4 (= 14 + 4 × 3), preserving the
-    # 16-GB-Mac gating behaviour while unblocking 32 GB Macs at 1024².
-    ("flux2-klein-edit-9b", 3): 12,
-    ("flux2-klein-edit-9b", 4): 14,
-    ("flux2-klein-edit-9b", 5): 16,
-    ("flux2-klein-edit-9b", 6): 18,
-    ("flux2-klein-edit-9b", 8): 20,
-}
-
-# Activation budget scales ~linearly with megapixels above the 1 MP
-# canonical baseline. v0.7.7 real measurement on flux2-klein-edit Q4
-# at the actual computed megapixels (1024²=1.048MP, 1536²=2.36MP,
-# 2048²=4.19MP) gives a slope of ~5 GB/MP:
-#
-#   14 GB @ 1.05 MP → 23 GB @ 2.36 MP → 30 GB @ 4.19 MP
-#   slope (2.36 → 4.19) = (30 − 23) / (4.19 − 2.36) ≈ 3.8 GB/MP
-#   slope (1.05 → 4.19) = (30 − 14) / (4.19 − 1.05) ≈ 5.1 GB/MP
-#
-# Picking 5.0 (midpoint, matches the wider span) — applied uniformly
-# across backends until per-backend measurements diverge enough to
-# warrant per-backend slopes. v0.8 Engine layer can host per-Engine
-# slope tables if needed.
-ACTIVATION_GB_PER_MP_ABOVE_BASELINE = 5.0
 
 MIN_DISK_GB = 5             # minimum free disk to attempt
 MIN_BATTERY_PCT = 30        # below this on battery → warn (not block)

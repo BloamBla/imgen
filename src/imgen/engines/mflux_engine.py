@@ -160,12 +160,34 @@ class MfluxEngine:
         return errors
 
     def ram_estimate_gb(self, model, params: GenParams) -> float:
-        """Stub for commit 2 — minimal formula using Model fields so
-        the value is non-zero (commit 8 wires this into the doctor
-        RAM table)."""
-        mp = params.width * params.height / 1_000_000
-        return (
-            model.ram_baseline_gb
-            + model.ram_slope_gb_per_mp * mp
-            + model.encoder_ram_gb
-        )
+        """v0.8.0 commit 8 (§L): peak RAM estimate (GB) for the
+        (Model, GenParams) combination. Replaces v0.7.14's per-
+        (backend, quant) ``RAM_REQUIRED_GB`` lookup table with per-
+        Model math.
+
+        Formula (per memo §L):
+
+          weights_gb     = baseline * (quantize / 8)   — rough Q-scale
+          activations_gb = slope * mp
+          encoder_gb     = one-time peak from VLM encoder load
+          overhead_gb    = 0.5  — mflux subprocess + MLX cache headroom
+          total          = weights + activations + encoder + overhead
+
+        ``quantize / 8.0`` is the rough weight-memory scaling. Q8 →
+        full baseline; Q4 → half; Q3 → 3/8 (slightly underestimates
+        because int3 unpacking overhead is non-linear, but for
+        preflight estimation purposes the linear approximation is
+        within the noise of real measurements).
+
+        Calibration anchors (locked by tests):
+          * flux-kontext Q8 1MP ≈ 18 GB → matches v0.7.7 real
+            measurement on M2 Pro 32 GB.
+          * flux2-klein-edit-9b Q4 1536² ≈ 23 GB and Q4 2048² ≈ 30 GB
+            → both match v0.7.7 real-mflux smoke run.
+        """
+        mp = params.width * params.height / 1_000_000.0
+        weights_gb = model.ram_baseline_gb * (params.quantize / 8.0)
+        activations_gb = model.ram_slope_gb_per_mp * mp
+        encoder_gb = model.encoder_ram_gb
+        overhead_gb = 0.5
+        return weights_gb + activations_gb + encoder_gb + overhead_gb

@@ -250,8 +250,13 @@ BUILTIN_MODELS: dict[str, Model] = {
         enhance_invariants=_IDENTITY_ANCHOR_INVARIANTS,
         lora_compat_group="flux-1",
         hf_gated_repo="black-forest-labs/FLUX.1-Kontext-dev",
-        ram_baseline_gb=9.0,
-        ram_slope_gb_per_mp=5.0,
+        # v0.8.0 commit 8 (§L): RAM math separated into weights (scales
+        # with quantize) + activations (scales with megapixels) +
+        # encoder + engine overhead. Calibration anchor: Q8 1MP target
+        # ≈ 18 GB matching v0.7.7 real measurement on M2 Pro 32 GB →
+        # 13.5*1 + 4.0*1 + 0 + 0.5 = 18.0 ✓
+        ram_baseline_gb=13.5,
+        ram_slope_gb_per_mp=4.0,
         encoder_ram_gb=0.0,
         # v0.8.0 commit 7 (§M): per-Model param defaults applied
         # through the resolver. FLUX.1-Kontext needs CFG > 0 to
@@ -275,9 +280,15 @@ BUILTIN_MODELS: dict[str, Model] = {
         enhance_invariants=_IDENTITY_ANCHOR_INVARIANTS,
         lora_compat_group="qwen",
         hf_gated_repo=None,
-        ram_baseline_gb=10.0,
-        ram_slope_gb_per_mp=5.0,
-        encoder_ram_gb=7.0,  # Qwen2.5-VL encoder ~7 GB peak
+        # v0.8.0 commit 8 (§L): Qwen-Image-Edit has the Qwen2.5-VL
+        # encoder loaded one-time during prompt-encode (~7 GB peak).
+        # Activations slope slightly higher than FLUX due to denser
+        # cross-attention in the instruction-following arch.
+        # Q8 1MP target: 13*1 + 4.5*1 + 7 + 0.5 = 25.0 (matches the
+        # v0.7.14 calibration row for ("qwen", 8): 25).
+        ram_baseline_gb=13.0,
+        ram_slope_gb_per_mp=4.5,
+        encoder_ram_gb=7.0,
         # Qwen-Image-Edit converges slower than FLUX (instruction-
         # following architecture, denser cross-attention). 30 steps
         # is the model-card recommended floor for quality.
@@ -301,8 +312,10 @@ BUILTIN_MODELS: dict[str, Model] = {
         enhance_invariants=(),  # t2i: no identity-anchor contract
         lora_compat_group="flux-dev",
         hf_gated_repo="black-forest-labs/FLUX.1-dev",
-        ram_baseline_gb=9.0,
-        ram_slope_gb_per_mp=5.0,
+        # FLUX.1-dev shares the FLUX.1 transformer envelope with
+        # flux-kontext; same calibration applies.
+        ram_baseline_gb=13.5,
+        ram_slope_gb_per_mp=4.0,
         encoder_ram_gb=0.0,
         # FLUX.1-dev canonical: 20 steps, 3.5 guidance. min_guidance=1.0
         # because dev is NOT a distilled model — needs real CFG.
@@ -325,8 +338,17 @@ BUILTIN_MODELS: dict[str, Model] = {
         enhance_invariants=(),
         lora_compat_group="flux2-klein-9b",
         hf_gated_repo="black-forest-labs/FLUX.2-klein-9B",
-        ram_baseline_gb=14.0,
-        ram_slope_gb_per_mp=5.5,
+        # v0.8.0 commit 8 (§L): calibrated from v0.7.7 real-mflux
+        # measurements on M2 Pro 32 GB:
+        #   Q4 1536² (2.36 MP) → 23 GB resident peak
+        #   Q4 2048² (4.19 MP) → 30 GB total memory pressure
+        # Solving the formula `baseline*0.5 + slope*MP + 0.5` = both:
+        #   slope = (30 - 23) / (4.19 - 2.36) ≈ 4.0
+        #   baseline = (23 - 4*2.36 - 0.5) / 0.5 ≈ 27.0
+        # Verified: 27*0.5 + 4*2.36 + 0 + 0.5 = 23.4 GB ≈ 23 ✓
+        #           27*0.5 + 4*4.19 + 0 + 0.5 = 30.76 GB ≈ 30 ✓
+        ram_baseline_gb=27.0,
+        ram_slope_gb_per_mp=4.0,
         encoder_ram_gb=0.0,
         # v0.8.0 commit 7: FLUX.2-klein distilled — mflux 0.17.5's
         # `mflux-generate-flux2-edit` ONLY accepts `--guidance 1.0`

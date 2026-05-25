@@ -25,7 +25,7 @@ from ..config import (
     effective_enhance,
     load_validated_config,
 )
-from ..defaults import MIN_BATTERY_PCT, MIN_DISK_GB, RAM_REQUIRED_GB
+from ..defaults import MIN_BATTERY_PCT, MIN_DISK_GB
 from ..history import load_history
 from ..paths import (
     CONFIG_FILE,
@@ -538,27 +538,20 @@ def cmd_doctor(_args) -> int:
     else:
         ok("No other mflux process running")
 
-    # RAM forecast per backend/quant. v0.7.14 (architect NIT closure):
-    # column header now says "@1MP" because pre-v0.7.14 the table
-    # value was the 2K²-worst-case peak; post-v0.7.14 it is the 1 MP
-    # canonical baseline (peak grows by ~5 GB/MP above 1 MP per
-    # ACTIVATION_GB_PER_MP_ABOVE_BASELINE — see checks.ram_required_gb
-    # for the dimension-aware estimate the actual preflight uses).
-    # Colleagues reading the table would otherwise misread the 1MP
-    # baseline as the operational ceiling.
+    # RAM forecast per model × quant. v0.8.0 commit 8 (§L):
+    # iterates BUILTIN_MODELS × supported_quants and sources every
+    # cell from ``Engine.ram_estimate_gb`` — single source-of-truth
+    # with the preflight gate in checks.ram_required_gb. The pre-
+    # commit-8 RAM_REQUIRED_GB constant in defaults.py is deleted;
+    # the table here is now COMPUTED rather than looked-up.
     print()
     info("Will this fit in RAM? (peak at 1024² output — larger "
-         "resolutions need ~5 GB more per megapixel)")
-    headers = ["backend × quant", "@1MP", "have", "verdict"]
-    print(f"   {C.DIM}{headers[0]:<18} {headers[1]:>6}  "
+         "resolutions need additional GB per megapixel)")
+    headers = ["model × quant", "@1MP", "have", "verdict"]
+    print(f"   {C.DIM}{headers[0]:<24} {headers[1]:>7}  "
           f"{headers[2]:>6}  {headers[3]}{C.END}")
     if total_ram:
-        for (backend, q), need in sorted(RAM_REQUIRED_GB.items()):
-            verdict = (f"{C.OK}✅ fits{C.END}" if available_ram >= need
-                       else f"{C.ERR}❌ no{C.END}")
-            label = f"{backend} q{q}"
-            print(f"   {label:<18} {need:>4} GB  "
-                  f"{available_ram:>4.1f} GB  {verdict}")
+        _render_ram_forecast_rows(available_ram)
 
     # HF token
     print()
@@ -789,6 +782,47 @@ def cmd_doctor(_args) -> int:
         return 1
     step("Some setup needed (see ⚠️  above)")
     return 0
+
+
+def _render_ram_forecast_rows(available_ram: float) -> None:
+    """v0.8.0 commit 8 (§L): render the doctor RAM forecast table.
+
+    Iterates ``BUILTIN_MODELS`` × ``model.supported_quants`` and asks
+    ``Engine.ram_estimate_gb(model, params)`` for each (model, quant,
+    1MP) cell. Same source-of-truth as the preflight gate in
+    ``checks.ram_required_gb`` — a future tuning of the formula
+    propagates to both surfaces at once.
+
+    Extracted into a helper for testability (doctor's outer flow has
+    HF-whoami network probes + system reads that the RAM-table lock-
+    in doesn't need to exercise).
+    """
+    from ..engines import DiffusersMpsEngine, MfluxEngine
+    from ..engines.base import GenParams
+    from ..models import BUILTIN_MODELS
+    mflux_engine = MfluxEngine()
+    diffusers_engine = DiffusersMpsEngine()
+    # Sort by model name then quant for deterministic ordering.
+    for model_name in sorted(BUILTIN_MODELS):
+        model = BUILTIN_MODELS[model_name]
+        engine = (
+            mflux_engine if model.engine == "mflux"
+            else diffusers_engine
+        )
+        for q in sorted(model.supported_quants):
+            params = GenParams(
+                prompt="", negative="", width=1024, height=1024,
+                steps=1, guidance=0.0, seed=0, quantize=q,
+                strength=0.0, input_path=None,
+                output_path=Path("/tmp/_doctor_placeholder.png"),
+                loras=(),
+            )
+            need = engine.ram_estimate_gb(model, params)
+            verdict = (f"{C.OK}✅ fits{C.END}" if available_ram >= need
+                       else f"{C.ERR}❌ no{C.END}")
+            label = f"{model_name} q{q}"
+            print(f"   {label:<24} {need:>5.1f} GB  "
+                  f"{available_ram:>4.1f} GB  {verdict}")
 
 
 def _report_diffusers_health() -> int:

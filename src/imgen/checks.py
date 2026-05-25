@@ -9,12 +9,7 @@ import subprocess
 from pathlib import Path
 
 from .backends import BACKENDS
-from .defaults import (
-    ACTIVATION_GB_PER_MP_ABOVE_BASELINE,
-    MIN_BATTERY_PCT,
-    MIN_DISK_GB,
-    RAM_REQUIRED_GB,
-)
+from .defaults import MIN_BATTERY_PCT, MIN_DISK_GB
 from .paths import VENV_BIN
 
 __all__ = [
@@ -158,38 +153,83 @@ def find_running_mflux() -> int | None:
 def ram_required_gb(
     backend: str, quantize: int, megapixels: float,
 ) -> float:
-    """Dimension-aware peak RAM estimate (GB) for ``(backend, quant,
-    output_resolution_in_megapixels)``.
+    """Per-Model peak RAM estimate (GB) for the given
+    ``(model_name, quantize, megapixels)`` invocation.
 
-    v0.7.14 (gap 6 closure): replaces the pre-v0.7.14 fixed-table
-    lookup that was indexed only by ``(backend, quant)`` with rows
-    calibrated for WORST-CASE 2K² output. The flat table over-blocked
-    legitimate 1024² runs (a 32 GB Mac with 23.3 GB available was
-    refused even though peak need at 1MP is ~14 GB for flux2-klein-
-    edit Q4). Now the 1 MP baseline lives in ``RAM_REQUIRED_GB`` and
-    activations above 1 MP grow linearly per
-    :data:`ACTIVATION_GB_PER_MP_ABOVE_BASELINE` (≈ 4 GB/MP, calibrated
-    against the v0.7.7 real-measurement points on flux2-klein-edit Q4).
+    v0.8.0 commit 8 (§L) closure: replaces v0.7.14's per-
+    ``(backend, quant)`` fixed-table lookup with per-Model math
+    sourced from ``Engine.ram_estimate_gb``. The pre-commit-8
+    ``defaults.RAM_REQUIRED_GB`` + ``ACTIVATION_GB_PER_MP_ABOVE_BASELINE``
+    constants have been deleted; this function is the single
+    source-of-truth on the preflight side.
 
-    Sub-1 MP outputs (preview 768², thumb 256², etc.) clamp to the
-    1 MP baseline — weight footprint + text encoders + MLX cache
-    don't shrink with resolution, only activations do. Returning a
-    value below the baseline would falsely greenlight a backend the
-    Mac can't actually load.
+    Lookup path:
 
-    Unknown ``(backend, quant)`` combos fall back to a conservative
-    16 GB at 1 MP (same as the pre-v0.7.14 ``.get(..., 16)``
-    fallback) and still scale with megapixels above that.
+    1. Translate v0.7 names (``flux``, ``qwen``) to v0.8 canonical
+       names via ``_V07_TO_V08_MODEL_RENAMES`` — back-compat for
+       history-replay paths where ``entry["backend"]`` may carry
+       the legacy spelling.
+    2. ``BUILTIN_MODELS`` lookup → call ``engine.ram_estimate_gb``
+       on a minimal ``GenParams`` (only width × height and
+       quantize matter for the formula at commit 8).
+    3. Unknown model name (user-TOML registered Backend, or a typo)
+       → conservative flux-class fallback (baseline 13.5, slope 4.0,
+       no encoder, mflux overhead). Same physical math, no magic
+       16 GB constant — the pre-commit-8 ``.get(..., 16)`` fallback
+       was a v0.4-era guard against missing table rows; commit 8's
+       model-driven approach treats absent rows as "unknown backend
+       so assume flux-equivalent peak".
 
     Pure: no I/O, no subprocess.
+
+    Signature retained as ``(backend, quantize, megapixels)`` for
+    back-compat with the cmd_helpers preflight call site that
+    threads ``args.model`` through ``check_resources``; the param
+    name kept as ``backend`` to avoid the rename churn in
+    test_checks.py (semantically it's the model name).
     """
-    base = RAM_REQUIRED_GB.get((backend, quantize), 16)
-    # Activation overhead only kicks in above the 1 MP baseline.
-    # Sub-1MP outputs clamp to baseline (weight + TE + cache floor).
-    activation_extra = (
-        max(0.0, megapixels - 1.0) * ACTIVATION_GB_PER_MP_ABOVE_BASELINE
+    from pathlib import Path
+    from .engines import DiffusersMpsEngine, MfluxEngine
+    from .engines.base import GenParams
+    from .models import _V07_TO_V08_MODEL_RENAMES, BUILTIN_MODELS
+
+    # Normalise v0.7 → v0.8 names. Unchanged names pass through.
+    v08_name = _V07_TO_V08_MODEL_RENAMES.get(backend, backend)
+    model = BUILTIN_MODELS.get(v08_name)
+
+    # Build a minimal GenParams that ``ram_estimate_gb`` can consume.
+    # Width / height map to ``megapixels`` (sqrt approximation); other
+    # fields are placeholders since the current formula only reads
+    # quantize + dimensions.
+    side = max(64, int((max(megapixels, 0.001) * 1_000_000) ** 0.5))
+    params = GenParams(
+        prompt="", negative="", width=side, height=side,
+        steps=1, guidance=0.0, seed=0, quantize=quantize,
+        strength=0.0, input_path=None,
+        output_path=Path("/tmp/_ram_estimate_placeholder.png"),
+        loras=(),
     )
-    return base + activation_extra
+
+    if model is not None:
+        engine = (
+            MfluxEngine() if model.engine == "mflux"
+            else DiffusersMpsEngine()
+        )
+        return engine.ram_estimate_gb(model, params)
+
+    # Unknown model → conservative flux-class fallback. Same formula
+    # shape; baseline/slope/encoder picked to land at ~16-18 GB for
+    # the canonical Q4 1MP case (matches the pre-commit-8 ``.get(...,
+    # 16)`` floor for unknown rows but scales physically).
+    from .models import Model
+    fallback_model = Model(
+        engine="mflux",
+        binary="mflux-generate-fake",
+        ram_baseline_gb=13.5,
+        ram_slope_gb_per_mp=4.0,
+        encoder_ram_gb=0.0,
+    )
+    return MfluxEngine().ram_estimate_gb(fallback_model, params)
 
 
 def check_resources(

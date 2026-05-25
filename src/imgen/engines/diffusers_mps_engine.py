@@ -167,13 +167,18 @@ class DiffusersMpsEngine:
         return []
 
     def ram_estimate_gb(self, model, params: GenParams) -> float:
-        """Basic formula: baseline + slope × MP + encoder. Per-Model
-        ram fields are populated in BUILTIN_MODELS (commit 4b) and
-        user-TOML schema (commit 6+). Commit 8 wires this into the
-        doctor RAM table + preflight gate."""
-        mp = params.width * params.height / 1_000_000
-        return (
-            model.ram_baseline_gb
-            + model.ram_slope_gb_per_mp * mp
-            + model.encoder_ram_gb
-        )
+        """v0.8.0 commit 8 (§L): peak RAM estimate (GB) for the
+        diffusers_mps engine. Same shape as
+        :meth:`MfluxEngine.ram_estimate_gb` but with a heavier
+        overhead constant — diffusers + torch + transformers cold
+        import is ~1.5-2 GB vs mflux's ~0.5 GB.
+
+        Formula:
+          total = baseline * (quantize / 8) + slope * mp + encoder + 2.0
+        """
+        mp = params.width * params.height / 1_000_000.0
+        weights_gb = model.ram_baseline_gb * (params.quantize / 8.0)
+        activations_gb = model.ram_slope_gb_per_mp * mp
+        encoder_gb = model.encoder_ram_gb
+        overhead_gb = 2.0  # diffusers + torch import footprint
+        return weights_gb + activations_gb + encoder_gb + overhead_gb
