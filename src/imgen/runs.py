@@ -156,6 +156,25 @@ class Iteration:
     # field explicitly per the architect's "Iteration self-contained
     # for replay" guidance from the v0.7.3 pre-tag review.
     seed: int = 0
+    # v0.8.2 M-1A (Engine.run wire-up preparation): each Iteration
+    # carries its resolved Model + GenParams alongside the pre-built
+    # argv ``cmd``. v0.8.2's run_one_iteration dispatches via
+    # ``engine.run(it.model, it.params, ...)`` when it.model is non-None;
+    # legacy fallback (``run_with_stderr_redaction(it.cmd, ...)``)
+    # stays for the v0.8.x deprecation window per architect HIGH-1.
+    #
+    # Defaults None so legacy v0.7-shape constructors keep working
+    # through the migration; the cross-build assertion in tests
+    # (architect MEDIUM-2 lock-in) ensures all production build_*
+    # helpers populate them.
+    #
+    # Forward-typed strings to dodge import-cycle risk — Model lives
+    # in models.py (which doesn't import runs), GenParams lives in
+    # engines/base.py (which doesn't import runs). The actual
+    # annotation values are resolved at type-check time, not import
+    # time, thanks to ``from __future__ import annotations``.
+    model: "Model | None" = None  # noqa: F821 — late-resolved
+    params: "GenParams | None" = None  # noqa: F821 — late-resolved
 
     # Same opt-out reasoning as BatchContext: `cmd: list[str]` is not
     # hashable, so a caller using Iteration as a set/dict-key would

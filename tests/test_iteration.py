@@ -106,9 +106,13 @@ def test_iteration_field_order_matches_spec():
     ``loras`` (v0.6) and ``seed`` (v0.7.3 fix) were appended at the
     end with defaults so older positional construction stays valid:
     9 args (v0.5) → 10 args (v0.6 + loras=()) → 11 args (v0.7.3 +
-    seed=0). i2i callers (build_iterations) and t2i callers
-    (build_draw_iterations) set seed explicitly; the default exists
-    only for any unknown third-party programmatic caller.
+    seed=0). v0.8.2 M-1A added ``model`` + ``params`` (both
+    None-defaulted) for Engine.run wire-up; 11 → 13 args.
+
+    i2i callers (build_iterations) and t2i callers
+    (build_draw_iterations) set seed + model + params explicitly;
+    the defaults exist only for any unknown third-party programmatic
+    caller during the v0.8.x deprecation window.
     """
     import dataclasses
     fields = [f.name for f in dataclasses.fields(Iteration)]
@@ -124,6 +128,8 @@ def test_iteration_field_order_matches_spec():
         "cmd",
         "loras",
         "seed",
+        "model",
+        "params",
     ]
 
 

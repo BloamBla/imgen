@@ -672,7 +672,22 @@ def apply_enhance_results_to_iterations(
     for it, r in zip(iterations, enhance_results):
         if r.was_enhanced and r.final_prompt != it.prompt:
             new_cmd = replace_prompt_in_cmd(it.cmd, r.final_prompt)
-            out.append(_dataclass_replace(it, prompt=r.final_prompt, cmd=new_cmd))
+            # v0.8.2 M-1A architect CRITICAL-3 closure: also update
+            # ``it.params.prompt``. Pre-fix the rebuild patched only
+            # the legacy argv ``cmd``; after the M-1 dispatch flip,
+            # ``MfluxEngine.run`` would internally call
+            # ``self.build_cmd(model, params)`` and read
+            # ``params.prompt`` — the un-spliced ORIGINAL value, so the
+            # enhanced prompt would be silently dropped on Engine-
+            # dispatched iterations. Dual-update keeps both paths
+            # converged through the v0.8.x deprecation window.
+            new_params = (
+                _dataclass_replace(it.params, prompt=r.final_prompt)
+                if it.params is not None else None
+            )
+            out.append(_dataclass_replace(
+                it, prompt=r.final_prompt, cmd=new_cmd, params=new_params,
+            ))
         else:
             out.append(it)
     return out
@@ -1126,6 +1141,58 @@ def exit_code(
 
 
 # ── v0.8.0 commit 7 — Engine.validate wire-up ─────────────────────────
+
+
+def _genparams_from_iteration_inputs(
+    *,
+    prompt: str,
+    negative: str,
+    width: int,
+    height: int,
+    params,  # IterationParams (final_steps / final_quantize / etc.)
+    seed: int,
+    input_path,  # Path | None — i2i input, None for draw
+    output_path,
+    loras,  # tuple[LoraRef, ...]
+    merged_defaults: dict,
+):
+    """v0.8.2 M-1A: pack the per-iteration inputs into a GenParams
+    payload suitable for the Engine.run dispatch path.
+
+    Pure function. Both Iteration construction sites
+    (``_assemble_iteration_no_style`` + ``build_iterations``) call this
+    in parallel with their existing ``build_mflux_cmd`` invocation so
+    the Iteration carries BOTH shapes — the legacy ``cmd`` (consumed by
+    the pre-M-1 ``run_with_stderr_redaction(cmd, ...)`` path) and the
+    new ``params`` (consumed by the post-M-1 ``engine.run(model,
+    params, ...)`` path). Once the legacy fallback retires (post-
+    v0.8.x bake), the ``cmd`` field on Iteration can go.
+
+    ``loras`` should be the PRE-compat-filter stack (``effective_loras``
+    from ``LoraResolution``) — matches the input shape that
+    ``build_mflux_cmd`` accepts AND that ``MfluxEngine.build_cmd``
+    re-filters internally via ``filter_compatible_loras``. Symmetric
+    construction guarantees argv bit-identity between the legacy and
+    Engine paths (architect CRITICAL-2 lock-in: see
+    ``test_mflux_engine_build_cmd_matches_legacy_build_mflux_cmd``).
+    """
+    from .engines.base import GenParams
+    return GenParams(
+        prompt=prompt,
+        negative=negative,
+        width=width,
+        height=height,
+        steps=params.final_steps,
+        guidance=params.final_guidance,
+        seed=seed,
+        quantize=params.final_quantize,
+        strength=params.final_strength,
+        input_path=input_path,
+        output_path=output_path,
+        loras=loras,
+        mlx_cache_gb=merged_defaults["mlx_cache_gb"],
+        battery_stop=merged_defaults["battery_stop"],
+    )
 
 
 def _model_for_validate(args):
@@ -1628,6 +1695,27 @@ def _assemble_iteration_no_style(
         battery_stop=merged_defaults["battery_stop"],
         loras=lora_resolution.effective_loras,
     )
+    # v0.8.2 M-1A: alongside the pre-built mflux ``cmd``, attach the
+    # resolved Model + GenParams so the future Engine.run dispatch in
+    # ``run_one_iteration`` can route through ``engine.run(it.model,
+    # it.params, ...)``. Both fields are None for user-TOML names not
+    # in BUILTIN_MODELS today — v0.8.1 widened ``_model_for_validate``
+    # to also resolve user TOMLs, so ``model`` is non-None for
+    # every recognised --model; the None case remains a defensive
+    # default for any callable build_* helper invoked with an
+    # unrecognised name (the resolver dies upstream in production).
+    gen_params = _genparams_from_iteration_inputs(
+        prompt=lora_resolution.prompt_with_triggers,
+        negative=negative,
+        width=width,
+        height=height,
+        params=params,
+        seed=seed,
+        input_path=input_path,
+        output_path=output_path,
+        loras=lora_resolution.effective_loras,
+        merged_defaults=merged_defaults,
+    )
     return Iteration(
         style_name=style_name,
         prompt=lora_resolution.prompt_with_triggers,
@@ -1640,6 +1728,8 @@ def _assemble_iteration_no_style(
         cmd=cmd,
         loras=lora_resolution.compatible_loras,
         seed=seed,
+        model=model,
+        params=gen_params,
     )
 
 
@@ -2085,6 +2175,21 @@ def build_iterations(
             loras=lora_resolution.effective_loras,
         )
 
+        # v0.8.2 M-1A: build GenParams in parallel with the legacy
+        # argv ``cmd``. See identical block in
+        # ``_assemble_iteration_no_style`` for the rationale.
+        gen_params = _genparams_from_iteration_inputs(
+            prompt=prompt,
+            negative=negative,
+            width=width,
+            height=height,
+            params=params,
+            seed=seed,
+            input_path=input_path,
+            output_path=output_path,
+            loras=lora_resolution.effective_loras,
+            merged_defaults=merged_defaults,
+        )
         iterations.append(Iteration(
             style_name=style_name,
             prompt=prompt,
@@ -2107,6 +2212,8 @@ def build_iterations(
             # the run_one_iteration history serialiser reads from
             # ``it.seed`` (post-v0.7.3) uniformly across i2i + t2i.
             seed=seed,
+            model=model,
+            params=gen_params,
         ))
 
     # v0.6.x backlog python IMP-3: emit one warn per (backend_group, ref)
