@@ -253,6 +253,13 @@ BUILTIN_MODELS: dict[str, Model] = {
         ram_baseline_gb=9.0,
         ram_slope_gb_per_mp=5.0,
         encoder_ram_gb=0.0,
+        # v0.8.0 commit 7 (§M): per-Model param defaults applied
+        # through the resolver. FLUX.1-Kontext needs CFG > 0 to
+        # produce non-blurry output; min_guidance=1.0 hard-floor.
+        default_steps=20,
+        default_guidance=3.5,
+        min_guidance=1.0,
+        max_guidance=10.0,
     ),
 
     # Qwen-Image-Edit-2509 — open-license i2i (v0.7 name: qwen).
@@ -271,6 +278,13 @@ BUILTIN_MODELS: dict[str, Model] = {
         ram_baseline_gb=10.0,
         ram_slope_gb_per_mp=5.0,
         encoder_ram_gb=7.0,  # Qwen2.5-VL encoder ~7 GB peak
+        # Qwen-Image-Edit converges slower than FLUX (instruction-
+        # following architecture, denser cross-attention). 30 steps
+        # is the model-card recommended floor for quality.
+        default_steps=30,
+        default_guidance=4.0,
+        min_guidance=0.0,
+        max_guidance=10.0,
     ),
 
     # FLUX.1-dev — t2i default for `imgen draw` (name unchanged at 4b).
@@ -290,6 +304,12 @@ BUILTIN_MODELS: dict[str, Model] = {
         ram_baseline_gb=9.0,
         ram_slope_gb_per_mp=5.0,
         encoder_ram_gb=0.0,
+        # FLUX.1-dev canonical: 20 steps, 3.5 guidance. min_guidance=1.0
+        # because dev is NOT a distilled model — needs real CFG.
+        default_steps=20,
+        default_guidance=3.5,
+        min_guidance=1.0,
+        max_guidance=10.0,
     ),
 
     # FLUX.2-klein-edit-9b — Hires-Fix refine default (name unchanged at 4b).
@@ -308,6 +328,19 @@ BUILTIN_MODELS: dict[str, Model] = {
         ram_baseline_gb=14.0,
         ram_slope_gb_per_mp=5.5,
         encoder_ram_gb=0.0,
+        # v0.8.0 commit 7: FLUX.2-klein distilled — mflux 0.17.5's
+        # `mflux-generate-flux2-edit` ONLY accepts `--guidance 1.0`
+        # and dies with a usage error on anything else. Pre-commit-7
+        # cmd_refine had a hardcoded ``args.guidance = 1.0`` override
+        # (refine.py:238); commit 7 removes that pin and replaces it
+        # with min_guidance=max_guidance=1.0 → MfluxEngine.validate
+        # rejects mismatches. The new approach scales: any future
+        # FLUX.2 variant gets the same enforcement without per-binary
+        # cmd_* edits.
+        default_steps=20,
+        default_guidance=1.0,
+        min_guidance=1.0,
+        max_guidance=1.0,
     ),
 }
 

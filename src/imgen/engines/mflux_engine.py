@@ -64,10 +64,13 @@ class MfluxEngine:
             from ..paths import VENV_BIN
             binary = VENV_BIN / model.binary
 
-        cmd = [
-            str(binary),
-            "--quantize", str(params.quantize),
-        ]
+        # v0.8.0 commit 7 (§M): skip --quantize when the Model is a
+        # prequantized recipe (e.g. mlx-community/*-4bit). Built-ins
+        # at commit 7 ship with omit_quantize=False; the field is
+        # forward-compat for user TOMLs declaring prequant repos.
+        cmd = [str(binary)]
+        if not model.omit_quantize:
+            cmd += ["--quantize", str(params.quantize)]
         if params.input_path is not None:
             cmd += [model.image_flag, str(params.input_path)]
         cmd += [
@@ -111,11 +114,50 @@ class MfluxEngine:
         )
 
     def validate(self, model, params: GenParams) -> list[str]:
-        """Stub for commit 2 — returns empty list (no validation).
-        Real implementation in commit 7 enforces ``supported_quants``
-        / ``min_guidance`` / ``max_guidance`` / ``supports_negative``
-        from the Model fields."""
-        return []
+        """Return list of error messages for (Model, GenParams)
+        combinations that mflux would reject at argv-parse time.
+
+        v0.8.0 commit 7 (§M): real implementation. Replaces the
+        pre-commit-7 hardcoded special-cases scattered across cmd_*
+        (e.g. refine.py:238 `if backend == "flux2-klein-edit-9b":
+        args.guidance = 1.0`) with a centralised per-Model contract
+        that scales to any future backend without per-binary cmd_*
+        edits.
+
+        Checks:
+
+        * ``params.quantize ∈ model.supported_quants`` — built-ins
+          ship the full set (3,4,5,6,8); user TOMLs that restrict
+          quants get enforced here. Model rows with
+          ``supported_quants=()`` (engines that don't quantize at
+          all) skip this check.
+        * ``model.min_guidance ≤ params.guidance ≤ model.max_guidance``
+          — flux2-klein-edit-9b pins min=max=1.0 (mflux 0.17.5 rejects
+          anything else at argv); FLUX.1-Kontext / FLUX.1-dev hard-
+          floor at 1.0 (CFG=0 produces blurry/uninstructable output
+          on non-distilled FLUX).
+
+        Returns empty list when params pass — caller proceeds. Non-
+        empty list → caller dies with each error on its own line
+        (clean exit-2 path via the cmd_helpers validate-or-die
+        helper).
+        """
+        errors: list[str] = []
+        if model.supported_quants and params.quantize not in model.supported_quants:
+            allowed = sorted(model.supported_quants)
+            errors.append(
+                f"--quantize {params.quantize} not supported by "
+                f"{model.binary}; allowed: {allowed}"
+            )
+        if not (
+            model.min_guidance <= params.guidance <= model.max_guidance
+        ):
+            errors.append(
+                f"--guidance {params.guidance} out of range "
+                f"[{model.min_guidance}, {model.max_guidance}] "
+                f"for {model.binary}"
+            )
+        return errors
 
     def ram_estimate_gb(self, model, params: GenParams) -> float:
         """Stub for commit 2 — minimal formula using Model fields so

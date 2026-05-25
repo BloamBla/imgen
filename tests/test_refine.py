@@ -454,15 +454,21 @@ class TestCmdRefineDryRun:
         assert "deformed, blurry" not in out
         assert "-pixar.png" not in out
 
-    def test_flux2_klein_edit_pins_guidance_to_1(
+    def test_flux2_klein_edit_rejects_guidance_mismatch(
         self, tmp_path, monkeypatch, capsys,
     ):
-        """v0.7.6 hotfix: mflux-generate-flux2-edit refuses --guidance
-        != 1.0 on non-base FLUX.2 models (klein-9b is the distilled
-        edit variant). cmd_refine pins guidance=1.0 for this backend
-        regardless of what the user passed — model property, not user
-        knob. Lock-in: even an explicit --guidance 3.5 must collapse
-        to --guidance 1.0 in argv when this backend is selected."""
+        """v0.7.6 → v0.8.0 commit 7 contract pivot (§M): pre-commit-7
+        cmd_refine silently pinned ``args.guidance = 1.0`` when the
+        backend was ``flux2-klein-edit-9b``. Commit 7 removed that
+        hardcoded override in favour of per-Model
+        ``min_guidance=max_guidance=1.0`` + ``Engine.validate``
+        rejection.
+
+        New behaviour: passing ``--guidance 3.5`` with the FLUX.2-klein-
+        edit-9b model DIES with the validation error instead of
+        silently collapsing. The error names the offending argv flag
+        so the user can fix it explicitly.
+        """
         from imgen.backends import BACKENDS
         from imgen.commands.refine import cmd_refine
         from PIL import Image
@@ -478,18 +484,28 @@ class TestCmdRefineDryRun:
         )
 
         # User explicitly passes the FLUX.1-Kontext-shaped 3.5 default.
-        # Backend constraint must override.
+        # Commit 7 enforcement: die with a clean exit-2 + error
+        # naming the out-of-range value AND the model.
         args = _make_args(
             input=str(input_path),
             dry_run=True,
             output_dir=str(tmp_path),
             guidance=3.5,
+            # v0.8.0 commit 4b: args.model holds the v0.8 canonical
+            # name, which is what _model_for_validate looks up in
+            # BUILTIN_MODELS. flux2-klein-edit-9b is unchanged.
+            model="flux2-klein-edit-9b",
         )
-        rc = cmd_refine(args)
-        assert rc == 0
-        out = capsys.readouterr().out
-        assert "--guidance 1.0" in out
-        assert "--guidance 3.5" not in out
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_refine(args)
+        assert exc_info.value.code == 2
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "guidance" in combined
+        assert "3.5" in combined
+        # Error includes the model.binary so the user knows which
+        # mflux entry-point is doing the rejection.
+        assert "mflux-generate-flux2-edit" in combined
 
     def test_input_not_found_dies(self, tmp_path):
         from imgen.commands.refine import cmd_refine

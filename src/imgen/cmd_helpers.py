@@ -1112,6 +1112,83 @@ def exit_code(
 # ── Iteration plan + backend resolution + styles list ───────────────────
 
 
+# ── v0.8.0 commit 7 — Engine.validate wire-up ─────────────────────────
+
+
+def _model_for_validate(args):
+    """Return the v0.8 Model for ``args.model`` if it's a built-in,
+    or None for user-TOML names (which are Backend, not Model, and
+    don't carry v0.8 NEW fields like ``min_guidance`` at commit 7).
+
+    v0.8.0 commit 7 (§M): per-Model validation fires only for
+    built-ins; commit 6+ user-TOML schema extensions (to add v0.8
+    fields) will widen this lookup.
+    """
+    from .models import BUILTIN_MODELS
+    return BUILTIN_MODELS.get(getattr(args, "model", None))
+
+
+def _engine_for_model(model):
+    """Return the Engine implementation matching ``model.engine``.
+
+    At commit 7 only ``"mflux"`` is wired through validate;
+    ``"diffusers_mps"`` returns an empty validate list per commit 6
+    (full diffusers validate lands at commit 7+ via the runner's
+    own _validate_payload_shape — see _diffusers_runner.py).
+    """
+    from .engines import DiffusersMpsEngine, MfluxEngine
+    if model.engine == "mflux":
+        return MfluxEngine()
+    if model.engine == "diffusers_mps":
+        return DiffusersMpsEngine()
+    raise ValueError(
+        f"_engine_for_model: unknown engine {model.engine!r}"
+    )
+
+
+def validate_engine_params_or_die(
+    model,
+    *,
+    quantize: int,
+    guidance: float,
+) -> None:
+    """v0.8.0 commit 7 (§M): call ``Engine.validate(model, params)``
+    on the resolved per-iteration params; die with the error list on
+    any rejection. Centralised so the 4 cmd_* (generate / batch /
+    draw / refine) all hit the same gate.
+
+    Replaces the pre-commit-7 hardcoded special-cases scattered
+    across cmd_* (e.g. ``refine.py:238`` flux2-klein-edit-9b
+    guidance pin) with a per-Model contract that scales without
+    per-binary cmd_* edits.
+
+    No-op when ``model`` is None — user TOML lookups go through
+    Backend, which doesn't carry v0.8 validation surface. Commit 6+
+    user-TOML schema extension widens this to all Models.
+    """
+    if model is None:
+        return
+    from pathlib import Path
+    from .engines.base import GenParams
+    # Minimal GenParams — current validate() checks only quantize +
+    # guidance. Other fields filled with placeholder values so the
+    # dataclass instantiates cleanly. Future validate() checks (e.g.
+    # supports_negative + non-empty negative → reject) will need to
+    # extend this builder; refactor when that lands rather than
+    # speculating.
+    params = GenParams(
+        prompt="", negative="", width=64, height=64,
+        steps=1, guidance=guidance, seed=0, quantize=quantize,
+        strength=0.0, input_path=None,
+        output_path=Path("/tmp/_validate_placeholder.png"),
+        loras=(),
+    )
+    engine = _engine_for_model(model)
+    errors = engine.validate(model, params)
+    if errors:
+        die("\n".join(errors), code=2)
+
+
 @dataclass(frozen=True, slots=True)
 class IterationParams:
     """Resolved numeric params for one iteration after CLI > preset >
@@ -1157,17 +1234,27 @@ def _resolve_iteration_params(
     args,
     preset: Style,
     merged_defaults: dict,
+    model=None,
 ) -> IterationParams:
-    """Apply v0.3.x parameter precedence rules and return the resolved
-    numeric quartet (steps / quantize / guidance / strength).
+    """Apply v0.3.x + v0.8.0 commit 7 parameter precedence rules and
+    return the resolved numeric quartet (steps / quantize / guidance /
+    strength).
 
     Precedence (locked by tests):
-      * ``steps``    : CLI > preview > merged_defaults  (preset.steps
-                       intentionally NOT honoured — preview must win
-                       when the user picks it for speed)
+      * ``steps``    : CLI > preview > model.default_steps > merged_defaults
+                       (preset.steps intentionally NOT honoured —
+                       preview must win when the user picks it for speed)
       * ``quantize`` : CLI > preview > merged_defaults  (same reasoning)
-      * ``guidance`` : CLI > preset  > merged_defaults
+      * ``guidance`` : CLI > preset  > model.default_guidance > merged_defaults
       * ``strength`` : CLI > preset  > merged_defaults
+
+    v0.8.0 commit 7 (§M) added the ``model`` parameter as an OPTIONAL
+    layer in the steps/guidance precedence chain. When non-None (i.e.
+    a built-in Model from BUILTIN_MODELS), ``model.default_steps`` and
+    ``model.default_guidance`` slot between preview/preset and
+    merged_defaults. When None (user-TOML lookup or test fixture not
+    going through the Model layer), behavior reduces to the v0.7
+    chain — back-compat with the ~30 existing test fixtures.
 
     Extracted v0.6.4 from ``build_iterations`` per the v0.6.2 architect
     IMP-2 split. Pure: no I/O, no mutation.
@@ -1176,6 +1263,13 @@ def _resolve_iteration_params(
         final_steps = args.steps
     elif args.preview:
         final_steps = PREVIEW_OVERRIDES["steps"]
+    elif model is not None:
+        # Per-Model default (commit 7). Built-in models declare
+        # default_steps explicitly per §G.1; the dataclass default
+        # (20) matches DEFAULTS["steps"] so the fallback through
+        # this branch is a no-op for FLUX-family but lifts e.g.
+        # Qwen-Image-Edit to its 30-step recommendation.
+        final_steps = model.default_steps
     else:
         final_steps = merged_defaults["steps"]
 
@@ -1190,6 +1284,12 @@ def _resolve_iteration_params(
         final_guidance = args.guidance
     elif preset.guidance is not None:
         final_guidance = preset.guidance
+    elif model is not None:
+        # Per-Model default (commit 7). flux2-klein-edit-9b ships
+        # default_guidance=1.0 (the mflux-pinned value); FLUX.1
+        # family ships 3.5. Replaces the pre-commit-7 refine.py:238
+        # hardcoded `args.guidance = 1.0` override per §M.
+        final_guidance = model.default_guidance
     else:
         final_guidance = merged_defaults["guidance"]
 
@@ -1435,8 +1535,20 @@ def _assemble_iteration_no_style(
     cost is measured-negligible on N up to the 32 cap.
     """
     preset = Style()
+    model = _model_for_validate(args)
     params = _resolve_iteration_params(
         args=args, preset=preset, merged_defaults=merged_defaults,
+        model=model,
+    )
+    # v0.8.0 commit 7 (§M): die on per-Model param violations
+    # (quantize ∉ supported_quants, guidance out of [min, max]).
+    # Replaces pre-commit-7 hardcoded special-cases in cmd_refine
+    # (refine.py:238 flux2-klein-edit-9b guidance pin) and any
+    # future per-binary cmd_* edits.
+    validate_engine_params_or_die(
+        model,
+        quantize=params.final_quantize,
+        guidance=params.final_guidance,
     )
     # v0.7.11 (gap 1): draw now exposes --negative-prompt via CLI, so
     # the caller (`build_draw_iterations`) passes through args.negative_prompt
@@ -1867,8 +1979,18 @@ def build_iterations(
 
         # 2. Numeric parameter precedence (CLI > preview > preset >
         # defaults; rules vary per field — locked by tests).
+        # v0.8.0 commit 7: per-Model defaults layer in via the
+        # ``model`` argument; engine-level validation fires on the
+        # resolved values per §M.
+        model = _model_for_validate(args)
         params = _resolve_iteration_params(
             args=args, preset=preset, merged_defaults=merged_defaults,
+            model=model,
+        )
+        validate_engine_params_or_die(
+            model,
+            quantize=params.final_quantize,
+            guidance=params.final_guidance,
         )
 
         # 3. Output path: explicit --output FILE (legacy single-file

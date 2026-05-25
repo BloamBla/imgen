@@ -229,14 +229,16 @@ def cmd_refine(args) -> int:
     # 4) Backend + token
     backend, be, token, binary, backend_secret = load_backend_and_token(args)
 
-    # v0.7.6: mflux 0.17.5's `mflux-generate-flux2-edit` only accepts
-    # `--guidance 1.0` for non-base FLUX.2 models (klein-9b is a
-    # distilled edit variant, not a base) and exits with a usage
-    # error otherwise. The default DEFAULTS["guidance"]=3.5 is right
-    # for FLUX.1-Kontext but wrong here. Pin to 1.0 for this backend
-    # — it's a model property, not a user knob.
-    if backend == "flux2-klein-edit-9b":
-        args.guidance = 1.0
+    # v0.8.0 commit 7 (§M): the pre-commit-7 hardcoded
+    # ``if backend == "flux2-klein-edit-9b": args.guidance = 1.0`` pin
+    # was REMOVED here. mflux-generate-flux2-edit's `--guidance 1.0`
+    # contract is now enforced at the per-Model level via
+    # ``Model.min_guidance = Model.max_guidance = 1.0`` for the
+    # flux2-klein-edit-9b row; MfluxEngine.validate (called from
+    # ``validate_engine_params_or_die`` inside the iteration builder)
+    # rejects out-of-range guidance with a clean exit-2. The new
+    # approach scales: any future FLUX.2 variant inherits the same
+    # enforcement without per-binary cmd_* edits.
 
     # 5) Output layout
     explicit_output, run_dir = resolve_output_layout(args, config_output_dir)

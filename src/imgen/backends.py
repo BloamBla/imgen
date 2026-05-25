@@ -872,10 +872,17 @@ def build_mflux_cmd(
     run's params in ``~/.imgen/history.jsonl`` for replay, making the
     sidecars triply redundant.
     """
-    cmd = [
-        str(binary),
-        "--quantize", str(quantize),
-    ]
+    # v0.8.0 commit 7 (§M): respect ``model.omit_quantize=True`` for
+    # prequantized model repos (e.g. mlx-community/Qwen-Image-2512-4bit
+    # — weights are already int4-packed; mflux's --quantize 4 against
+    # them no-ops, but the contract is undocumented). Skipping the
+    # flag emission makes the contract explicit AT THE MODEL LEVEL,
+    # not at the per-binary cmd_* level. Built-ins at commit 7 ship
+    # with omit_quantize=False (default); user TOMLs gain the v0.8
+    # schema field at commit 6+ once the loader extension lands.
+    cmd = [str(binary)]
+    if not getattr(model, "omit_quantize", False):
+        cmd += ["--quantize", str(quantize)]
     if input_path is not None:
         cmd += [model.image_flag, str(input_path)]
     cmd += [
