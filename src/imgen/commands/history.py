@@ -270,12 +270,28 @@ def replay_entry(entry: dict) -> int:
             f"cannot replay.", code=1)
     info(f"Replaying #{entry.get('id')}: {entry.get('style')} on "
          f"{Path(image).name}")
-    # cmd_generate's args.style is list[str] | None as of v0.2.3 — history
-    # entries store a single string per generation (one entry per style in
-    # a multi-style invocation), so wrap into a 1-element list for replay.
-    # Default falls through to DEFAULTS["style"], not a hardcoded "pixar",
-    # so a future default-style change doesn't silently divert old replay.
-    # (python I2 from v0.2.3 review)
+    # cmd_generate's args.style is list[str] | None as of v0.2.3 —
+    # history entries store a single string per generation (one entry
+    # per style in a multi-style invocation), so wrap into a 1-element
+    # list for replay.
+    #
+    # v0.7.13 (gap 8 behaviour pivot) clarifies the routing:
+    #   * style truthy + no custom_prompt → preset replay (style_list
+    #     populated, cmd_generate goes through build_iterations).
+    #   * style truthy + custom_prompt → augmentation replay (same
+    #     preset path; build_iterations layers --custom-prompt on top).
+    #   * style=None + custom_prompt (pre-v0.7.13 augmentation entries
+    #     OR v0.7.13 bare entries) → style_list=None → cmd_generate
+    #     routes through bare mode. Pre-v0.7.13 augmented entries lose
+    #     the default-style baggage they originally carried; that's
+    #     intentional — the baggage was the bug we closed.
+    #   * style=None + no custom_prompt → unreachable via normal UI in
+    #     v0.7.13+ (would need a manually-edited history.jsonl); the
+    #     ``or DEFAULTS["style"]`` fallback below resurrects the
+    #     historical default rather than silently routing to bare with
+    #     an empty prompt (which would crash mflux). Documented as a
+    #     legacy-defence corner case; bare mode requires a non-empty
+    #     prompt by design.
     saved_style = entry.get("style") or DEFAULTS["style"]
     style_list = [saved_style] if (saved_style and not entry.get("custom_prompt")) else None
     # v0.6: rehydrate the LoRA stack from the entry's stored snapshot.

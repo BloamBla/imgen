@@ -94,12 +94,14 @@ from .tokens import load_token
 __all__ = [
     "apply_enhance_results_to_groups",
     "apply_enhance_results_to_iterations",
+    "build_bare_i2i_iteration",
     "build_draw_iteration",
     "build_draw_iterations",
     "build_iterations",
     "build_refine_iteration",
     "emit_gated_repo_hint_if_failed",
     "check_prompt_style_compat",
+    "require_style_or_prompt",
     "estimate_one_seconds",
     "exit_code",
     "format_duration",
@@ -337,6 +339,46 @@ def check_prompt_style_compat(
             code=2,
             hint="Param-only styles in ~/.imgen/styles.d/ need a "
                  "CLI-supplied prompt.")
+
+
+def require_style_or_prompt(
+    styles_list: list[str],
+    effective_custom_prompt: str | None,
+) -> None:
+    """v0.7.13 (gap 8 behaviour pivot, architect S1 helper extraction):
+    enforce the new contract that ``imgen generate`` / ``imgen batch``
+    require EITHER ``--style NAME`` (preset mode) OR ``--custom-prompt
+    TEXT`` / ``--prompt-file PATH`` (bare mode). Neither → die code 2
+    with actionable hint.
+
+    Pre-v0.7.13 bare ``imgen photo.jpg`` silently fell back to the
+    configured default style (usually "pixar"), which leaked the
+    preset's ``negative_prompt`` field into argv (the flux2-klein-edit-
+    9b crash that gap 7 closed at the backend side, plus general
+    "preset surprise" UX bugs). Now: explicit opt-in. The fallback
+    convenience is gone — explicit is better than implicit.
+
+    Single source of truth for the user-facing wording: both
+    cmd_generate (commands/generate.py) and cmd_batch
+    (commands/batch.py) call this so the migration message stays
+    consistent. Pattern matches v0.3.1's ``_check_output_style_mutex``
+    extraction (same architect IMP).
+
+    Raises SystemExit(2) on the invalid combination. Returns None on
+    success (caller routes through build_iterations OR
+    build_bare_i2i_iteration based on whether styles_list is truthy).
+    """
+    if not styles_list and effective_custom_prompt is None:
+        die(
+            "specify --style NAME (preset mode) or --custom-prompt "
+            "TEXT / --prompt-file PATH (bare mode, no preset baggage). "
+            "Pre-v0.7.13 imgen fell back to the default style — see "
+            "release notes for the migration.",
+            code=2,
+            hint="Run `imgen --list-styles` to see available presets, "
+                 "or pass --custom-prompt to use a raw prompt without "
+                 "any style preset applied.",
+        )
 
 
 # ── Output layout ───────────────────────────────────────────────────────
@@ -1615,6 +1657,87 @@ def build_refine_iteration(
     )
 
 
+def build_bare_i2i_iteration(
+    *,
+    args,
+    input_path: Path,
+    prompt: str,
+    merged_defaults: dict,
+    be,
+    binary: Path,
+    width: int,
+    height: int,
+    explicit_output: Path | None,
+    run_dir: Path | None,
+    seed: int,
+) -> Iteration:
+    """Build a single :class:`Iteration` for bare i2i (`imgen generate
+    <photo> --custom-prompt "..."` / `imgen batch <dir> --custom-prompt
+    "..."` without ``--style``).
+
+    v0.7.13 (gap 8 behaviour pivot): when the user omits ``--style``
+    and supplies a prompt source instead, run i2i with NO preset
+    baggage — empty :class:`Style` preset, no scope substitution, no
+    style-declared LoRA stacking, no preset ``negative_prompt`` field
+    bleeding into argv. This was the silent footgun pre-v0.7.13: a
+    bare ``imgen photo.jpg --custom "wearing red"`` augmented the
+    DEFAULT style (pixar) with the user's text, and pixar's
+    ``negative_prompt`` field then reached mflux argv — crashing on
+    backends that reject negatives (flux2-klein-edit-9b) and silently
+    biasing output on those that accept them.
+
+    Differences from :func:`build_refine_iteration` (the other i2i
+    "bare" path):
+      * Output naming: ``<run_dir>/<input.stem>-bare.png`` (refine
+        uses ``-refined`` suffix; bare uses ``-bare`` to mark the
+        no-preset variant).
+      * Prompt is user-supplied via ``--custom-prompt`` / ``--prompt-
+        file`` (refine has a baked-in default + override). Caller is
+        responsible for guaranteeing ``prompt`` is non-empty BEFORE
+        calling this — empty-prompt mflux runs are a programmer error.
+
+    Same shared core as :func:`build_draw_iterations` +
+    :func:`build_refine_iteration`: empty :class:`Style` via
+    :func:`_assemble_iteration_no_style`. CLI ``--lora REF`` still
+    flows through (user can stack LoRAs in bare mode without picking
+    a preset).
+
+    Pure: no subprocess, no I/O beyond the ``next_available_path``
+    probe.
+    """
+    if explicit_output is not None:
+        output_path = explicit_output
+    else:
+        if run_dir is None:
+            raise ValueError(
+                "build_bare_i2i_iteration: either explicit_output or "
+                "run_dir must be provided"
+            )
+        # `<input.stem>-bare.png`. next_available_path handles
+        # collisions if the user re-bare-runs into the same run-dir.
+        output_path = next_available_path(
+            run_dir, f"{input_path.stem}-bare", suffix=".png",
+        )
+
+    # v0.7.13: shared core with build_draw_iterations / build_refine
+    # _iteration. Style preset is intentionally empty — caller's
+    # `prompt` IS the prompt body verbatim, no scope rewrite, no
+    # preset negative.
+    return _assemble_iteration_no_style(
+        args=args,
+        prompt=prompt,
+        merged_defaults=merged_defaults,
+        be=be,
+        binary=binary,
+        input_path=input_path,
+        output_path=output_path,
+        width=width,
+        height=height,
+        seed=seed,
+        style_name="bare",
+    )
+
+
 def build_iterations(
     *,
     styles_list: list[str],
@@ -1901,33 +2024,31 @@ def resolve_styles_list(args, merged_defaults: dict) -> list[str]:
     """Resolve ``args.style`` into a list of preset names.
 
     ``args.style`` is either ``None`` (not passed) or a pre-validated,
-    de-duped list (parser already rejected unknown names). When unset,
-    fall back to the config-merged default style and verify it exists —
-    config.toml may point at a preset the user later removed from
-    ``styles.d/``.
+    de-duped list (parser already rejected unknown names).
+
+    v0.7.13 (gap 8 behaviour pivot): when ``--style`` is absent, return
+    an empty list to signal "bare mode". The caller (cmd_generate /
+    cmd_batch) routes the single bare iteration through
+    :func:`_assemble_iteration_no_style` for pure-prompt i2i without
+    preset baggage. Pre-v0.7.13 this fell back to
+    ``merged_defaults["style"]`` (usually "pixar"), which silently
+    leaked the preset's ``negative_prompt`` field into argv — the
+    flux2-klein-edit-9b crash that gap 7 fixed at the backend side,
+    plus the general "preset surprise" UX wart on every backend.
+
+    The config.toml ``[defaults] style = "X"`` key is kept for backwards
+    compatibility (won't fail schema validation) but is no longer
+    consulted for fallback. Documented as deprecated in v0.7.13 release
+    notes; targeted for removal in v0.8.
 
     **Pure**: this returns the resolved list and nothing else. The
     ``--output FILE`` + multi-style mutex check lives in
     ``commands/generate._check_output_style_mutex`` since
     ``imgen batch`` has no ``--output`` flag and the check would be a
-    silent no-op there. Pre-v0.3.1 the mutex check was inline here with
-    a ``getattr(args, "output", None)`` guard — that worked but was
-    surprising for batch readers; the split makes the generate-only
-    nature explicit. (v0.3.0 architect NIT-4 / NIT-6.)
+    silent no-op there. (v0.3.0 architect NIT-4 / NIT-6.) The "bare
+    mode" prompt-source check lives in cmd_generate / cmd_batch since
+    the helper has no view of ``effective_custom_prompt`` resolution.
     """
     if args.style:
         return list(args.style)
-    default_name = merged_defaults["style"]
-    try:
-        get_style(default_name)
-    except StyleNotFound:
-        # Narrowed from `except KeyError` in v0.3.6 — StyleNotFound is
-        # the only thing get_style can raise, and the narrower catch
-        # lets a future generic `except KeyError:` elsewhere flag a
-        # genuine bug instead of silently absorbing this path too.
-        # (architect NIT-2 from v0.3.6 review.)
-        die(f"Default style '{default_name}' not found",
-            code=2,
-            hint="Check ~/.imgen/config.toml [defaults] style, "
-                 "or run: imgen --list-styles")
-    return [default_name]
+    return []

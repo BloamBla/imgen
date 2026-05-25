@@ -131,25 +131,41 @@ def test_resolve_styles_list_single_explicit_style_preserved():
     assert result == ["pixar"]
 
 
-def test_resolve_styles_list_falls_back_to_default_when_unspecified():
+def test_resolve_styles_list_returns_empty_when_unspecified():
+    """v0.7.13 (gap 8) — behaviour pivot: when ``--style`` is absent,
+    return an empty list to signal "bare mode" (caller routes through
+    ``_assemble_iteration_no_style`` for pure-prompt i2i without preset
+    baggage). Pre-v0.7.13 this fell back to ``merged_defaults["style"]``
+    (usually "pixar"), which leaked the preset's ``negative_prompt``
+    field into argv — caused the flux2-klein-edit-9b crash that gap 7
+    fixed at the supports_negative side, and the general "preset
+    surprise" UX wart on every backend.
+
+    The caller (cmd_generate / cmd_batch) is responsible for:
+      * dying with a helpful hint if neither --style nor a prompt
+        source (--custom-prompt / --prompt-file) was provided, AND
+      * routing the single bare iteration through
+        ``_assemble_iteration_no_style`` when there IS a prompt source."""
     result = resolve_styles_list(
         _args(style=None),
         merged_defaults={"style": "anime"},
     )
-    assert result == ["anime"]
+    assert result == []
 
 
-def test_resolve_styles_list_unknown_default_exits_code_2(capsys):
-    """If [defaults] style in config.toml points at a missing preset,
-    fail fast with a clear hint mentioning the config path."""
-    with pytest.raises(SystemExit) as exc_info:
-        resolve_styles_list(
-            _args(style=None),
-            merged_defaults={"style": "nonexistent-preset"},
-        )
-    assert exc_info.value.code == 2
-    err = capsys.readouterr().err
-    assert "Default style 'nonexistent-preset' not found" in err
+def test_resolve_styles_list_ignores_merged_defaults_style_key():
+    """v0.7.13: even when config.toml ``[defaults] style = "X"`` is set,
+    we no longer fall back to it. ``--style`` becomes the EXPLICIT opt-in
+    for preset application. The config key is kept for backwards
+    compatibility (won't fail schema validation) but cmd_generate /
+    cmd_batch no longer consult it for fallback. Documented as
+    deprecated in v0.7.13 release notes."""
+    result = resolve_styles_list(
+        _args(style=None),
+        merged_defaults={"style": "nonexistent-preset"},
+    )
+    # No StyleNotFound die — we don't try to load the default at all now.
+    assert result == []
 
 
 # ── _check_output_style_mutex (generate-only, v0.3.1 split) ────────────

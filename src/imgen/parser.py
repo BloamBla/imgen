@@ -438,15 +438,20 @@ def _add_generate_args(
     p.add_argument(
         "-s", "--style", type=_style_list_type, default=None,
         metavar="STYLE[,STYLE,...]",
-        help=f"Style preset(s), comma-separated for multi-style "
-             f"(default: {defaults['style']}). See: imgen --list-styles",
+        help="Style preset(s), comma-separated for multi-style. "
+             "v0.7.13+: explicit opt-in. Omit --style AND pass "
+             "--custom-prompt TEXT (or --prompt-file PATH) for bare "
+             "mode (no preset baggage — raw prompt straight to mflux, "
+             "no preset prefix / negative_prompt leak / LoRA stack). "
+             "See: imgen --list-styles",
     )
-    p.add_argument("--custom-prompt",
+    p.add_argument("--custom-prompt", type=_clean_prompt_arg,
                    help="Custom prompt text. With an explicit --style and "
                         "a full preset, AUGMENTS the preset prompt (appended "
                         "as a final detail — v0.3.5+). Without --style, "
-                        "becomes the sole prompt. Pass '-' to read from "
-                        "stdin (hides the prompt from `ps auxww`).")
+                        "becomes the sole prompt and triggers bare mode "
+                        "(v0.7.13+: no preset baggage). Pass '-' to read "
+                        "from stdin (hides the prompt from `ps auxww`).")
     p.add_argument("--prompt-file", type=Path, default=None,
                    help="Read prompt from PATH instead of an argv string. "
                         "Mutually exclusive with --custom-prompt. Keeps "
@@ -520,8 +525,12 @@ def _add_batch_args(
     p.add_argument(
         "-s", "--style", type=_style_list_type, default=None,
         metavar="STYLE[,STYLE,...]",
-        help=f"Style preset(s), comma-separated for multi-style "
-             f"(default: {defaults['style']}). See: imgen --list-styles",
+        help="Style preset(s), comma-separated for multi-style. "
+             "v0.7.13+: explicit opt-in. Omit --style AND pass "
+             "--custom-prompt TEXT (or --prompt-file PATH) for bare "
+             "mode (no preset baggage — raw prompt straight to mflux, "
+             "no preset prefix / negative_prompt leak / LoRA stack). "
+             "See: imgen --list-styles",
     )
     p.add_argument("--custom-prompt",
                    help="Custom prompt text. With an explicit --style and "

@@ -201,6 +201,164 @@ def _make_stub_orchestrator(
 # ── Happy path: --enhance-prompt feeds enhanced prompt to mflux ─────────
 
 
+# ── v0.7.13 (gap 8): bare mode behaviour pivot ──────────────────────────
+
+
+def test_cmd_generate_no_style_no_prompt_dies_with_hint(
+    tmp_state_dir, tmp_path, stub_mflux, stub_backend, stub_dims,
+    stub_open, stub_sips, capsys,
+):
+    """v0.7.13 (gap 8 die path): bare `imgen generate <photo>` with no
+    --style AND no --custom-prompt / --prompt-file → die code 2 + hint
+    mentioning both opt-ins. Pre-v0.7.13 this fell back to the default
+    style (pixar) silently and leaked negative_prompt into argv."""
+    photo = tmp_path / "photo.jpg"
+    photo.write_bytes(b"jpeg")
+    args = _gen_args(image=photo, output_dir=str(tmp_path / "out"),
+                     style=None)
+    with pytest.raises(SystemExit) as exc:
+        cmd_generate(args)
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "--style" in err
+    assert "--custom-prompt" in err
+    # Died before backend / mflux work — no calls.
+    assert len(stub_mflux["calls"]) == 0
+
+
+def test_cmd_generate_no_style_with_custom_prompt_uses_bare_path(
+    tmp_state_dir, tmp_path, stub_mflux, stub_backend, stub_dims,
+    stub_open, stub_sips,
+):
+    """v0.7.13 (gap 8 happy path): bare mode produces one iteration
+    with style_name="bare", output named <stem>-bare.png, and no
+    preset negative_prompt leaks into argv. This is the principled
+    "raw i2i, no preset baggage" path the user wanted — closes the
+    silent pixar-default-fallback footgun."""
+    photo = tmp_path / "photo.jpg"
+    photo.write_bytes(b"jpeg")
+    args = _gen_args(image=photo, output_dir=str(tmp_path / "out"),
+                     style=None,
+                     custom_prompt="a samurai in dramatic lighting")
+    rc = cmd_generate(args)
+    assert rc == 0
+    assert len(stub_mflux["calls"]) == 1
+    cmd = stub_mflux["calls"][0]["cmd"]
+    # User prompt reaches mflux verbatim — no preset augmentation,
+    # no scope rewrite.
+    prompt_idx = cmd.index("--prompt") + 1
+    assert cmd[prompt_idx] == "a samurai in dramatic lighting"
+    # No negative — flux backend supports them but bare mode has no
+    # preset to source one from.
+    assert "--negative-prompt" not in cmd
+    # History records style=None (v0.3.5 semantics: custom_prompt
+    # truthy → style is None per the recording rule). v0.7.13 replay
+    # routes None-style-with-custom-prompt through bare mode anyway,
+    # so the existing schema covers bare entries without a v=4 bump.
+    # custom_prompt field carries the bare prompt verbatim.
+    from imgen.history import load_history
+    entries = load_history()
+    assert len(entries) == 1
+    assert entries[0]["style"] is None
+    assert entries[0]["custom_prompt"] == "a samurai in dramatic lighting"
+
+
+def test_cmd_generate_bare_mode_with_prompt_file_succeeds(
+    tmp_state_dir, tmp_path, stub_mflux, stub_backend, stub_dims,
+    stub_open, stub_sips,
+):
+    """v0.7.13 (gap 8): bare mode honours --prompt-file as an
+    alternative prompt source. Mirrors --custom-prompt behaviour but
+    keeps the prompt text out of `ps auxww`."""
+    photo = tmp_path / "photo.jpg"
+    photo.write_bytes(b"jpeg")
+    prompt_file = tmp_path / "prompt.txt"
+    prompt_file.write_text("a knight in shining armor\n")
+    args = _gen_args(image=photo, output_dir=str(tmp_path / "out"),
+                     style=None, prompt_file=prompt_file)
+    rc = cmd_generate(args)
+    assert rc == 0
+    assert len(stub_mflux["calls"]) == 1
+    cmd = stub_mflux["calls"][0]["cmd"]
+    prompt_idx = cmd.index("--prompt") + 1
+    # resolve_prompt strips trailing newline.
+    assert cmd[prompt_idx] == "a knight in shining armor"
+    assert "--negative-prompt" not in cmd
+
+
+def test_cmd_generate_bare_mode_with_lora_forwards_user_lora(
+    tmp_state_dir, tmp_path, stub_mflux, stub_backend, stub_dims,
+    stub_open, stub_sips,
+):
+    """v0.7.13 (gap 8 + python review #1 + architect S2): bare mode
+    with explicit --lora must forward the user's LoRA to argv. Closes
+    the test gap on the bare × LoRA cross-product. Pre-fix this
+    surface was only exercised through draw/refine helpers; bare i2i
+    is a new entrypoint into the same _assemble_iteration_no_style
+    core and deserves explicit coverage."""
+    from imgen.styles import LoraRef
+    photo = tmp_path / "photo.jpg"
+    photo.write_bytes(b"jpeg")
+    # --lora argparse shape is list[list[LoraRef]] (v0.7.0 comma-split).
+    # One repeated flag → one outer list element with the parsed refs.
+    user_lora = LoraRef(
+        ref="ostris/some-flux-lora",
+        weight=0.8,
+        trigger=None,
+        compatible_with=("flux-1",),
+    )
+    args = _gen_args(
+        image=photo, output_dir=str(tmp_path / "out"),
+        style=None, custom_prompt="a portrait",
+        lora=[[user_lora]],
+    )
+    rc = cmd_generate(args)
+    assert rc == 0
+    cmd = stub_mflux["calls"][0]["cmd"]
+    # CLI LoRA reaches mflux argv via --lora-paths / --lora-scales.
+    assert "--lora-paths" in cmd
+    paths_idx = cmd.index("--lora-paths")
+    assert cmd[paths_idx + 1] == "ostris/some-flux-lora"
+    assert "--lora-scales" in cmd
+    scales_idx = cmd.index("--lora-scales")
+    assert cmd[scales_idx + 1] == "0.8"
+
+
+def test_cmd_generate_bare_mode_with_enhance_prompt_succeeds(
+    tmp_state_dir, tmp_path, stub_mflux, stub_backend, stub_dims,
+    stub_open, stub_sips, monkeypatch,
+):
+    """v0.7.13 (gap 8 + architect S2): bare mode + --enhance-prompt
+    cross-product. Enhancer should expand the bare prompt the same way
+    it expands styled prompts — history records the pre-enhance text in
+    ``prompt_original`` and the post-enhance text in ``prompt``."""
+    transform = lambda p: f"[ENHANCED] expansive cinematic version of: {p}"  # noqa: E731
+    _make_stub_orchestrator(monkeypatch, transform=transform)
+    photo = tmp_path / "photo.jpg"
+    photo.write_bytes(b"jpeg")
+    args = _gen_args(
+        image=photo, output_dir=str(tmp_path / "out"),
+        style=None, custom_prompt="a samurai",
+        enhance=True,
+    )
+    rc = cmd_generate(args)
+    assert rc == 0
+    cmd = stub_mflux["calls"][0]["cmd"]
+    prompt_idx = cmd.index("--prompt") + 1
+    # mflux sees the enhanced version (transformer prefix landed).
+    assert cmd[prompt_idx].startswith("[ENHANCED]")
+    # History captures both pre- and post-enhance prompts.
+    from imgen.history import load_history
+    entries = load_history()
+    assert len(entries) == 1
+    assert entries[0]["prompt_original"] == "a samurai"
+    assert entries[0]["prompt"].startswith("[ENHANCED]")
+    assert entries[0]["style"] is None  # bare mode, no preset
+
+
+# ── Existing v0.5 enhancer integration tests ────────────────────────────
+
+
 def test_enhance_prompt_reaches_mflux(
     tmp_state_dir, tmp_path, stub_mflux, stub_backend, stub_dims,
     stub_open, stub_sips, monkeypatch,

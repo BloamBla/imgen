@@ -19,13 +19,17 @@ imgen refine winner.png --scale 2                             # 1024² → 2048�
 imgen refine winner.png --width 1920 --height 1080            # explicit dims (16-multiple rounding)
 
 # Photo restyle (v0.1+)
-imgen photo.jpg                              # Pixar style (default)
-imgen photo.jpg --style anime
-imgen photo.jpg --style simpsons --preview   # ~3 min fast test
-imgen photo.jpg --custom-prompt "Mona Lisa painting style"
-imgen photo.jpg --style anime --enhance-prompt   # smarter prompts → better results
-imgen photo.jpg --style anime --no-lora          # A/B vs the built-in LoRA (every non-simpsons style ships one in v0.6.3)
-imgen batch ~/Desktop/holiday --style anime,ghibli   # every photo in folder × every style
+imgen photo.jpg --style anime                            # preset mode
+imgen photo.jpg --style simpsons --preview               # ~3 min fast test
+imgen photo.jpg --custom-prompt "Mona Lisa painting style"  # bare mode (no preset baggage)
+imgen photo.jpg --style anime --enhance-prompt           # smarter prompts → better results
+imgen photo.jpg --style anime --no-lora                  # A/B vs the built-in LoRA (every non-simpsons style ships one in v0.6.3)
+imgen batch ~/Desktop/holiday --style anime,ghibli       # every photo in folder × every style
+```
+
+> **v0.7.13 behaviour change** (heads-up for upgraders): bare `imgen photo.jpg` (no `--style`, no `--custom-prompt`) now errors out with an actionable hint instead of silently falling back to the default style (pixar). Either pass `--style NAME` (preset mode) or `--custom-prompt TEXT` / `--prompt-file PATH` (bare mode — raw prompt, no preset baggage). The silent fallback caused a class of UX bugs (negative_prompt leaks into argv, etc.) that we've now closed. Pre-v0.7.13 `history.jsonl` entries replay correctly as bare-mode runs.
+
+```bash
 ```
 
 Every run creates a timestamped folder under `~/Desktop/imgen/` — e.g. `~/Desktop/imgen/2026-05-21-14-30-12/photo-pixar.png` (photo restyle) or `~/Desktop/imgen/2026-05-21-14-30-12/a-samurai-on-a-misty-mountain.png` (text-to-image, slug from the first 6 prompt-words). The result opens in Preview automatically. Change the parent with `--output-dir PATH` or pin an exact path with `--output FILE`.
@@ -144,8 +148,8 @@ If a user style's filename clashes with a built-in (e.g. `styles.d/anime.toml`),
 
 ```bash
 # Generation
-imgen <photo>                                  # default style (pixar)
-imgen <photo> --style anime                    # one preset
+imgen <photo> --style anime                    # preset mode (v0.7.13+: --style is explicit opt-in)
+imgen <photo> --custom-prompt "..."            # bare mode (no preset baggage; --style omitted)
 imgen <photo> --style anime,ghibli,pixar       # multi-style — M images into one timestamped folder (asks [y/N])
 imgen <photo> --style anime,ghibli --yes       # multi-style, skip the confirm gate
 imgen <photo> --output-dir ~/Pictures/runs     # change parent of the timestamped run folder

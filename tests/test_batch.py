@@ -206,6 +206,70 @@ def test_cmd_batch_two_inputs_one_style_returns_zero(
     assert len(_batch_env["calls"]) == 2
 
 
+# ── v0.7.13 (gap 8): bare mode behaviour pivot ──────────────────────────
+
+
+def test_cmd_batch_no_style_no_prompt_dies_with_hint(
+    tmp_path, _batch_env, capsys
+):
+    """v0.7.13 (gap 8 die path): bare `imgen batch <dir>` with no
+    --style AND no --custom-prompt / --prompt-file → die code 2 + hint
+    mentioning both opt-ins. Pre-v0.7.13 this fell back to the default
+    style (pixar) silently."""
+    d = _make_input_dir(tmp_path, "a.jpg", "b.jpg")
+    args = _args(directory=d, output_dir=tmp_path / "out")  # style=None default
+    with pytest.raises(SystemExit) as exc:
+        cmd_batch(args)
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "--style" in err
+    assert "--custom-prompt" in err
+    # No mflux invocations — we died before backend resolution.
+    assert len(_batch_env["calls"]) == 0
+
+
+def test_cmd_batch_no_style_with_custom_prompt_uses_bare_path(
+    tmp_path, _batch_env
+):
+    """v0.7.13 (gap 8 happy path): bare mode produces one iteration
+    per input with style_name="bare", output named <stem>-bare.png,
+    and no preset negative_prompt leaks into argv. Closes the silent
+    pixar-default-fallback footgun for i2i."""
+    d = _make_input_dir(tmp_path, "a.jpg", "b.jpg")
+    args = _args(
+        directory=d, output_dir=tmp_path / "out",
+        custom_prompt="a samurai portrait, dramatic lighting",
+    )
+    rc = cmd_batch(args)
+    assert rc == 0
+    assert len(_batch_env["calls"]) == 2
+    # Argv carries the user's bare prompt verbatim — no preset prefix /
+    # scope rewrite / negative-prompt leak. flux backend supports
+    # negatives, but with no preset there's no negative to emit.
+    for call in _batch_env["calls"]:
+        cmd = call["cmd"]
+        prompt_idx = cmd.index("--prompt") + 1
+        assert cmd[prompt_idx] == "a samurai portrait, dramatic lighting"
+        assert "--negative-prompt" not in cmd
+    # History records style=None (v0.3.5 semantics: when custom_prompt
+    # is set, the per-iteration style is recorded as None because the
+    # user's text drives the prompt content). v0.7.13 keeps this shape
+    # — replay routes None-style-with-custom-prompt through bare mode
+    # anyway (cleaner: schema v=3 needs no bump). custom_prompt field
+    # carries the actual prompt verbatim for replay correctness.
+    from imgen.history import load_history
+    entries = load_history()
+    assert len(entries) == 2
+    assert all(e["style"] is None for e in entries)
+    assert all(
+        e["custom_prompt"] == "a samurai portrait, dramatic lighting"
+        for e in entries
+    )
+    # All in same batch — bare mode still uses batch_id when N>1 inputs.
+    batch_ids = {e["batch_id"] for e in entries}
+    assert len(batch_ids) == 1
+
+
 def test_cmd_batch_two_inputs_two_styles_exit_0_and_4_invocations(
     tmp_path, _batch_env
 ):

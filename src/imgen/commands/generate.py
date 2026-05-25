@@ -29,7 +29,9 @@ from pathlib import Path
 
 from ..cmd_helpers import (
     apply_enhance_results_to_iterations,
+    build_bare_i2i_iteration,
     build_iterations,
+    require_style_or_prompt,
     check_prompt_style_compat,
     emit_gated_repo_hint_if_failed,
     estimate_one_seconds,
@@ -169,7 +171,14 @@ def cmd_generate(args) -> int:
         die(str(e), code=2)
 
     # 3a) Pre-flight mutex per style (multi-style: ALL items must agree).
+    # Empty styles_list = bare mode (gap 8) → loop is a no-op, which is
+    # correct: nothing to check compat against.
     check_prompt_style_compat(styles_list, effective_custom_prompt)
+
+    # 3b) v0.7.13 (gap 8) — bare mode validation. Shared with cmd_batch
+    # so the migration message stays in lockstep. Single source of
+    # truth in cmd_helpers; architect S1 extraction.
+    require_style_or_prompt(styles_list, effective_custom_prompt)
 
     # v0.3.5: scope semantics with --custom-prompt — applies to the
     # PRESET portion of an augmented prompt, NOT to the user's added
@@ -210,20 +219,43 @@ def cmd_generate(args) -> int:
 
         # 8) Pre-resolve each iteration's params + cmd so dry-run can show
         # all M and we can preflight resources against the heaviest one.
-        iterations = build_iterations(
-            styles_list=styles_list,
-            args=args,
-            effective_custom_prompt=effective_custom_prompt,
-            merged_defaults=merged_defaults,
-            be=be,
-            binary=binary,
-            input_path=mflux_input,
-            width=width,
-            height=height,
-            explicit_output=explicit_output,
-            run_dir=run_dir,
-            seed=seed,
-        )
+        # v0.7.13 (gap 8): bare mode (empty styles_list + non-None
+        # custom-prompt, validated at step 3b) routes through the
+        # shared `_assemble_iteration_no_style` core via
+        # `build_bare_i2i_iteration` — one iteration, no preset.
+        if styles_list:
+            iterations = build_iterations(
+                styles_list=styles_list,
+                args=args,
+                effective_custom_prompt=effective_custom_prompt,
+                merged_defaults=merged_defaults,
+                be=be,
+                binary=binary,
+                input_path=mflux_input,
+                width=width,
+                height=height,
+                explicit_output=explicit_output,
+                run_dir=run_dir,
+                seed=seed,
+            )
+        else:
+            # Bare mode: empty styles_list + we already die'd at step
+            # 3b if effective_custom_prompt is None, so the cast to
+            # str is safe here.
+            assert effective_custom_prompt is not None
+            iterations = [build_bare_i2i_iteration(
+                args=args,
+                input_path=mflux_input,
+                prompt=effective_custom_prompt,
+                merged_defaults=merged_defaults,
+                be=be,
+                binary=binary,
+                width=width,
+                height=height,
+                explicit_output=explicit_output,
+                run_dir=run_dir,
+                seed=seed,
+            )]
 
         # v0.5: optionally enhance prompts via local Qwen2.5-7B. Runs
         # BEFORE dry-run + before confirm gate so the displayed cmd

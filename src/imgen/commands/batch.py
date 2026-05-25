@@ -62,7 +62,9 @@ from ..runs import (
 )
 from ..cmd_helpers import (
     apply_enhance_results_to_groups,
+    build_bare_i2i_iteration,
     build_iterations,
+    require_style_or_prompt,
     check_prompt_style_compat,
     emit_gated_repo_hint_if_failed,
     estimate_one_seconds,
@@ -197,6 +199,11 @@ def cmd_batch(args) -> int:
 
     check_prompt_style_compat(styles_list, effective_custom_prompt)
 
+    # v0.7.13 (gap 8) — symmetric with cmd_generate via shared helper
+    # (architect S1 extraction). Single source of truth for the
+    # bare-mode migration message — drift-free across both subcommands.
+    require_style_or_prompt(styles_list, effective_custom_prompt)
+
     # v0.3.5: see commands/generate.py for the scope+custom semantics
     # commentary. Same applies here — augmentation = scope on preset
     # base; custom-only = no scope target. No noisy per-batch warn.
@@ -258,24 +265,43 @@ def cmd_batch(args) -> int:
             else:
                 width, height = detect_resolution(
                     mflux_input, preview=args.preview)
-            iters = build_iterations(
-                styles_list=styles_list,
-                args=args,
-                effective_custom_prompt=effective_custom_prompt,
-                merged_defaults=merged_defaults,
-                be=be,
-                binary=binary,
-                input_path=mflux_input,
-                width=width,
-                height=height,
-                explicit_output=None,
-                run_dir=run_dir,
-                seed=seed,
-                # v0.6.x backlog python IMP-3: share the dedup set across
-                # the N inputs so an incompatible CLI --lora warns ONCE
-                # for the whole batch instead of once per input.
-                warned_incompat_loras=warned_incompat_loras,
-            )
+            # v0.7.13 (gap 8): bare mode per input — empty styles_list
+            # (validated at step 3b above) + non-None custom_prompt →
+            # one bare iteration per input, no preset baggage.
+            if styles_list:
+                iters = build_iterations(
+                    styles_list=styles_list,
+                    args=args,
+                    effective_custom_prompt=effective_custom_prompt,
+                    merged_defaults=merged_defaults,
+                    be=be,
+                    binary=binary,
+                    input_path=mflux_input,
+                    width=width,
+                    height=height,
+                    explicit_output=None,
+                    run_dir=run_dir,
+                    seed=seed,
+                    # v0.6.x backlog python IMP-3: share the dedup set
+                    # across the N inputs so an incompatible CLI --lora
+                    # warns ONCE for the whole batch instead of N times.
+                    warned_incompat_loras=warned_incompat_loras,
+                )
+            else:
+                assert effective_custom_prompt is not None
+                iters = [build_bare_i2i_iteration(
+                    args=args,
+                    input_path=mflux_input,
+                    prompt=effective_custom_prompt,
+                    merged_defaults=merged_defaults,
+                    be=be,
+                    binary=binary,
+                    width=width,
+                    height=height,
+                    explicit_output=None,
+                    run_dir=run_dir,
+                    seed=seed,
+                )]
             per_input_iters.append(PerInputBatch(
                 input_path=input_path,
                 mflux_input=mflux_input,
