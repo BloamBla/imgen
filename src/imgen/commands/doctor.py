@@ -475,6 +475,8 @@ def _warn_shadowing_user_tomls() -> int:
     # module's local refs).
     from ..paths import BACKENDS_D, MODELS_D
 
+    from .._safe import safe_display, safe_path_display
+
     builtin_stems = set(BUILTIN_MODELS.keys())
     surface = 0
     for dir_path in (MODELS_D, BACKENDS_D):
@@ -493,11 +495,13 @@ def _warn_shadowing_user_tomls() -> int:
                 continue
             if path.stem not in builtin_stems:
                 continue
-            path_safe = repr(str(path))
+            # v0.8.1 LOW-3: route through shared _safe helpers (was inline
+            # ``repr(str(path))``; equivalent output but consistent with
+            # migrate_toml.py + the v0.4 IMP-2 pattern across imgen).
             warn(
-                f"user TOML {path_safe} SHADOWS built-in Model "
-                f"'{path.stem}' (your file registers as "
-                f"'{path.stem}_0001' due to collision)."
+                f"user TOML {safe_path_display(path)} SHADOWS built-in "
+                f"Model {safe_display(path.stem)} (your file registers as "
+                f"{safe_display(path.stem + '_0001')} due to collision)."
             )
             print(f"   {C.DIM}Run `imgen migrate-toml` to review/delete "
                   f"if the file was a v0.7 carryover.{C.END}")

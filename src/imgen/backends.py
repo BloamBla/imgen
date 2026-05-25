@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from ._safe import has_control_bytes as _has_control_bytes
 from ._schema import validate_against_schema
 
 __all__ = [
@@ -552,19 +553,6 @@ _USER_BACKEND_DEFAULTS: dict[str, Any] = {
     "supports_negative": False,
     "extra_args": (),
 }
-
-
-def _has_control_bytes(s: str) -> bool:
-    """C0 / DEL / C1 byte detector. Mirrors styles._is_safe_stem inverted
-    so backends.py can reject the same byte ranges in user-supplied
-    fields (binary path, env var name) without cross-module
-    underscore-imports. Tiny enough to duplicate per v0.4 design
-    decision (extract to a shared _safe.py module in v0.5 when a 3rd
-    surface appears)."""
-    return any(
-        c < ' ' or c == '\x7f' or '\x80' <= c <= '\x9f'
-        for c in s
-    )
 
 
 def _validate_binary_field(value: str, source: Path) -> None:

@@ -11,24 +11,12 @@ import fcntl
 import json
 import os
 
+from ._safe import has_control_bytes as _has_control_bytes
 from .colors import err, warn
 from .defaults import HISTORY_SCHEMA_VERSION
 from .paths import HISTORY_FILE, ensure_state_dir
 
 __all__ = ["append_history", "entry_model_name", "load_history"]
-
-
-def _has_control_bytes(s: str) -> bool:
-    """C0 / DEL / C1 byte detector. Local duplicate of the same helper
-    in ``backends.py`` / ``parser.py`` per the v0.4 design decision to
-    avoid a shared ``_safe.py`` module until a 3rd surface needs it.
-    A 4th surface (history-entry replay/list/ETA) has now appeared, so
-    the v0.9 extract is on the v0.8.x backlog. Until then, the helper
-    is small enough to inline."""
-    return any(
-        c < ' ' or c == '\x7f' or '\x80' <= c <= '\x9f'
-        for c in s
-    )
 
 
 def entry_model_name(entry: dict) -> str | None:

@@ -148,16 +148,11 @@ def _lora_ref_arg(s: str):
 
     # Inline byte caps + control-byte check matching the user-style
     # schema (styles._LORA_REF_MAX_LEN + styles._is_safe_stem).
-    # Cross-module duplication here is intentional — the v0.6 design
-    # memo flagged ``_safe.py`` extraction as v0.5+ candidate; until
-    # that lands, parser.py keeps its own copy of the two constants
-    # rather than reaching into styles.py's private names.
+    # v0.8.1 LOW-3 closure: control-byte filter extracted to
+    # ``imgen._safe.has_control_bytes`` (shared across 4+ call sites).
     _MAX_LEN = 4096
 
-    def _has_control_bytes(s: str) -> bool:
-        return any(
-            c < ' ' or c == '\x7f' or '\x80' <= c <= '\x9f' for c in s
-        )
+    from ._safe import has_control_bytes as _has_control_bytes
 
     raw = s.strip()
     if not raw:

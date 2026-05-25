@@ -201,3 +201,82 @@ def test_doctor_no_shadowing_warn_when_user_tomls_match_no_builtin(
 
     assert "SHADOWS" not in out
     assert "my-custom-runner" not in out
+
+
+# ── v0.8.1 LOW-2 lock-in: migrate-toml refuses dest symlink ──────────
+
+
+def test_migrate_toml_refuses_when_models_d_is_symlink(
+    tmp_state_dir, tmp_path, capsys,
+):
+    """v0.8.1 LOW-2 closure: ``cmd_migrate_toml`` checks
+    ``MODELS_D.is_symlink()`` before any mkdir / move. The loader
+    already refuses symlinks (backends.py:601 line); migrate-toml
+    now mirrors that policy on the destination side so a same-uid
+    attacker-planted symlink at ``~/.imgen/models.d/`` doesn't cause
+    user TOMLs to be moved THROUGH the link.
+    """
+    from imgen.paths import BACKENDS_D, MODELS_D
+
+    # Source: real directory with a file to migrate
+    BACKENDS_D.mkdir(mode=0o700)
+    (BACKENDS_D / "test.toml").write_text(
+        'binary = "mflux-generate-fake"\nimage_flag = "--image-path"\n'
+    )
+
+    # Destination: symlinked to an attacker-controlled dir
+    attacker = tmp_path / "attacker"
+    attacker.mkdir(mode=0o700)
+    assert not MODELS_D.exists()
+    MODELS_D.symlink_to(attacker)
+
+    rc = cmd_migrate_toml(argparse.Namespace(yes=True))
+    assert rc == 2, "must exit 2 (resource class) when dest is symlink"
+
+    # Source file UNTOUCHED — no move through the link.
+    assert (BACKENDS_D / "test.toml").exists()
+    # Attacker dir empty — no migration happened through the symlink.
+    assert list(attacker.iterdir()) == []
+
+    out = capsys.readouterr().out
+    combined = out + capsys.readouterr().err
+    assert "symlink" in out.lower()
+
+
+# ── v0.8.1 LOW-1 lock-in: migrate-toml wraps path.name via safe_display ─
+
+
+def test_migrate_toml_path_name_rendered_via_safe_display(
+    tmp_state_dir, capsys,
+):
+    """v0.8.1 LOW-1 closure: header + per-file prompt lines in
+    migrate-toml render the filename via _safe.safe_display so any
+    control bytes in the filename would be escaped to ``\\xNN``
+    literals rather than written raw to the terminal.
+
+    Filesystem-injected control bytes are hard to set up portably
+    (most filesystems strip them); this test verifies the STRUCTURAL
+    invariant that the rendered name is quoted (which only happens
+    via repr() / safe_display). A regression to raw ``{path.name}``
+    interpolation would drop the quotes.
+    """
+    from imgen.paths import BACKENDS_D
+
+    BACKENDS_D.mkdir(mode=0o700)
+    (BACKENDS_D / "my-custom-runner.toml").write_text(
+        'binary = "mflux-generate-fake"\nimage_flag = "--image-path"\n'
+    )
+
+    cmd_migrate_toml(argparse.Namespace(yes=True))
+    out = capsys.readouterr().out
+
+    # safe_display always quotes — so the filename appears wrapped in
+    # single or double quotes (Python repr's rule). A pre-LOW-1 raw
+    # f"{path.name}" interpolation would NOT have quotes.
+    import re
+    assert re.search(
+        r"['\"]my-custom-runner\.toml['\"]", out
+    ), (
+        "migrate-toml must wrap path.name via safe_display — pattern "
+        f"not found in output: {out!r}"
+    )
