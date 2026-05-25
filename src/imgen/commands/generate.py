@@ -305,13 +305,18 @@ def cmd_generate(args) -> int:
                 print()
             return 0
 
-        # 10) Resource preflight — check against the heaviest quant in the
-        # batch (all iterations share a backend + quantize today since neither
-        # is per-style; verifying the first is sufficient and future-proof
-        # via max() if per-style quantize is ever added).
+        # 10) Resource preflight — check against the heaviest quant +
+        # output megapixels. v0.7.14 (gap 6): max_megapixels scales the
+        # RAM estimate above the 1 MP baseline so 1024² runs aren't
+        # blocked by the worst-case 2K² envelope the pre-v0.7.14 table
+        # baked in. cmd_generate has one input photo → all M style
+        # iterations share width/height; one value covers the whole
+        # batch.
         heaviest_quant = max(it.final_quantize for it in iterations)
+        max_megapixels = (width * height) / 1_000_000
         preflight_resources(
-            backend=backend, heaviest_quant=heaviest_quant, force=args.force
+            backend=backend, heaviest_quant=heaviest_quant,
+            force=args.force, max_megapixels=max_megapixels,
         )
 
         # 11) Confirm gate (multi-style only — single-style keeps v0.2.x's

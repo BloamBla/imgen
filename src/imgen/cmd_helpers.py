@@ -972,9 +972,10 @@ def preflight_resources(
     backend: str,
     heaviest_quant: int,
     force: bool,
+    max_megapixels: float = 1.0,
 ) -> None:
     """Check RAM / disk / battery / parallel-mflux against the heaviest
-    quant in the batch.
+    quant + largest output resolution in the batch.
 
     --force skips the entire check (caller already opted into the risk
     of swap thrashing). Otherwise:
@@ -986,10 +987,18 @@ def preflight_resources(
 
     The two hard failures share exit code 4 (resource class) so callers
     can grep by code without parsing messages.
+
+    v0.7.14 (gap 6): ``max_megapixels`` argument added — caller computes
+    ``max(it.width * it.height for it in iterations) / 1_000_000`` and
+    passes it so RAM estimate scales with actual output resolution
+    instead of the worst-case 2K² that pre-v0.7.14 baked into the
+    table. Default 1.0 preserves pre-v0.7.14 behaviour for callers
+    that haven't been updated yet (none in this codebase, but
+    documented for forward-compat).
     """
     if force:
         return
-    res = check_resources(backend, heaviest_quant)
+    res = check_resources(backend, heaviest_quant, max_megapixels)
 
     if res["other_mflux_pid"] is not None:
         die(f"Another mflux process is already running (PID "
@@ -1000,7 +1009,13 @@ def preflight_resources(
                  f"{res['other_mflux_pid']}), or pass --force.")
 
     if not res["ram_ok"]:
-        die(f"Not enough RAM: need ~{res['ram_required_gb']} GB peak "
+        # v0.7.14 python NIT closure: format ram_required_gb to one
+        # decimal — pre-v0.7.14 the value was a dict-int; now it's a
+        # float from `ram_required_gb()` and the default __str__ would
+        # surface "14.239999999999999 GB" garbage in user-facing
+        # output. Matches the existing :.1f formatting on the
+        # available/total lines for visual symmetry.
+        die(f"Not enough RAM: need ~{res['ram_required_gb']:.1f} GB peak "
             f"for {backend} q{heaviest_quant}, only "
             f"{res['ram_available_gb']:.1f} GB available "
             f"(of {res['ram_total_gb']:.0f} GB total).",

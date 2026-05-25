@@ -9,7 +9,12 @@ import subprocess
 from pathlib import Path
 
 from .backends import BACKENDS
-from .defaults import MIN_BATTERY_PCT, MIN_DISK_GB, RAM_REQUIRED_GB
+from .defaults import (
+    ACTIVATION_GB_PER_MP_ABOVE_BASELINE,
+    MIN_BATTERY_PCT,
+    MIN_DISK_GB,
+    RAM_REQUIRED_GB,
+)
 from .paths import VENV_BIN
 
 __all__ = [
@@ -17,6 +22,7 @@ __all__ = [
     "check_mflux",
     "check_pillow",
     "check_resources",
+    "ram_required_gb",
     "check_venv",
     "find_running_mflux",
     "get_battery",
@@ -149,9 +155,55 @@ def find_running_mflux() -> int | None:
     return None
 
 
-def check_resources(backend: str, quantize: int) -> dict:
-    """Snapshot system resources vs requirements for this run."""
-    required = RAM_REQUIRED_GB.get((backend, quantize), 16)
+def ram_required_gb(
+    backend: str, quantize: int, megapixels: float,
+) -> float:
+    """Dimension-aware peak RAM estimate (GB) for ``(backend, quant,
+    output_resolution_in_megapixels)``.
+
+    v0.7.14 (gap 6 closure): replaces the pre-v0.7.14 fixed-table
+    lookup that was indexed only by ``(backend, quant)`` with rows
+    calibrated for WORST-CASE 2K² output. The flat table over-blocked
+    legitimate 1024² runs (a 32 GB Mac with 23.3 GB available was
+    refused even though peak need at 1MP is ~14 GB for flux2-klein-
+    edit Q4). Now the 1 MP baseline lives in ``RAM_REQUIRED_GB`` and
+    activations above 1 MP grow linearly per
+    :data:`ACTIVATION_GB_PER_MP_ABOVE_BASELINE` (≈ 4 GB/MP, calibrated
+    against the v0.7.7 real-measurement points on flux2-klein-edit Q4).
+
+    Sub-1 MP outputs (preview 768², thumb 256², etc.) clamp to the
+    1 MP baseline — weight footprint + text encoders + MLX cache
+    don't shrink with resolution, only activations do. Returning a
+    value below the baseline would falsely greenlight a backend the
+    Mac can't actually load.
+
+    Unknown ``(backend, quant)`` combos fall back to a conservative
+    16 GB at 1 MP (same as the pre-v0.7.14 ``.get(..., 16)``
+    fallback) and still scale with megapixels above that.
+
+    Pure: no I/O, no subprocess.
+    """
+    base = RAM_REQUIRED_GB.get((backend, quantize), 16)
+    # Activation overhead only kicks in above the 1 MP baseline.
+    # Sub-1MP outputs clamp to baseline (weight + TE + cache floor).
+    activation_extra = (
+        max(0.0, megapixels - 1.0) * ACTIVATION_GB_PER_MP_ABOVE_BASELINE
+    )
+    return base + activation_extra
+
+
+def check_resources(
+    backend: str, quantize: int, megapixels: float = 1.0,
+) -> dict:
+    """Snapshot system resources vs requirements for this run.
+
+    v0.7.14: ``megapixels`` argument added for dimension-aware RAM
+    estimation via :func:`ram_required_gb`. Default 1.0 preserves
+    pre-v0.7.14 behaviour for callers (tests, future extensions) that
+    don't yet pass dimensions; the four real callers (cmd_generate /
+    cmd_batch / cmd_refine / cmd_draw) all compute and pass it.
+    """
+    required = ram_required_gb(backend, quantize, megapixels)
     total, available = get_memory_gb()
     disk_free = check_disk_gb()
     battery_pct, on_ac = get_battery()

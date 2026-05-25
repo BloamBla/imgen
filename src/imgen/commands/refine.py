@@ -278,10 +278,16 @@ def cmd_refine(args) -> int:
         print()
         return 0
 
-    # 9) Preflight
+    # 9) Preflight. v0.7.14 (gap 6): pass max_megapixels so refine at
+    # 1024² no longer hits the 2K²-calibrated ceiling. width/height
+    # are already in scope (computed at step 6 from --scale or
+    # explicit --width/--height) — refine has exactly one iteration
+    # so one value covers it.
     heaviest_quant = iteration.final_quantize
+    max_megapixels = (width * height) / 1_000_000
     preflight_resources(
-        backend=backend, heaviest_quant=heaviest_quant, force=args.force,
+        backend=backend, heaviest_quant=heaviest_quant,
+        force=args.force, max_megapixels=max_megapixels,
     )
 
     # 10) Confirm gate (--yes skips)

@@ -1584,11 +1584,16 @@ def _clean_res() -> dict:
 @pytest.fixture
 def stub_check_resources(monkeypatch):
     """Return a dict the caller can mutate before preflight_resources
-    invokes check_resources. Lets each test stage a specific failure."""
+    invokes check_resources. Lets each test stage a specific failure.
+
+    v0.7.14 (gap 6): fixture signature widened to accept the new
+    ``megapixels`` argument that preflight_resources now forwards
+    (default 1.0 keeps single-arg callers working). ``last_call``
+    captures the 3-tuple so tests can assert dim forwarding."""
     state = {"res": _clean_res()}
 
-    def fake_check(backend, quant):
-        state["last_call"] = (backend, quant)
+    def fake_check(backend, quant, megapixels=1.0):
+        state["last_call"] = (backend, quant, megapixels)
         return state["res"]
 
     monkeypatch.setattr(
@@ -1604,7 +1609,7 @@ def test_preflight_resources_force_skips_check(monkeypatch):
     called = []
     monkeypatch.setattr(
         "imgen.cmd_helpers.check_resources",
-        lambda b, q: called.append((b, q)) or _clean_res(),
+        lambda b, q, mp=1.0: called.append((b, q, mp)) or _clean_res(),
     )
 
     preflight_resources(backend="flux", heaviest_quant=8, force=True)
@@ -1615,8 +1620,21 @@ def test_preflight_resources_force_skips_check(monkeypatch):
 def test_preflight_resources_clean_passes(stub_check_resources):
     """All green → returns None (no SystemExit, no warning crash)."""
     preflight_resources(backend="flux", heaviest_quant=8, force=False)
-    # Confirms helper passed backend + quant through.
-    assert stub_check_resources["last_call"] == ("flux", 8)
+    # Confirms helper passed backend + quant + megapixels through.
+    assert stub_check_resources["last_call"] == ("flux", 8, 1.0)
+
+
+def test_preflight_resources_forwards_max_megapixels(stub_check_resources):
+    """v0.7.14 (gap 6): max_megapixels argument flows through to
+    check_resources so dimension-aware RAM estimation actually fires
+    in the caller chain. Lock against accidental signature regression."""
+    preflight_resources(
+        backend="flux2-klein-edit-9b", heaviest_quant=4,
+        force=False, max_megapixels=4.19,
+    )
+    assert stub_check_resources["last_call"] == (
+        "flux2-klein-edit-9b", 4, 4.19,
+    )
 
 
 def test_preflight_resources_other_mflux_running_exits_4(

@@ -483,10 +483,18 @@ def cmd_doctor(_args) -> int:
     else:
         ok("No other mflux process running")
 
-    # RAM forecast per backend/quant
+    # RAM forecast per backend/quant. v0.7.14 (architect NIT closure):
+    # column header now says "@1MP" because pre-v0.7.14 the table
+    # value was the 2K²-worst-case peak; post-v0.7.14 it is the 1 MP
+    # canonical baseline (peak grows by ~5 GB/MP above 1 MP per
+    # ACTIVATION_GB_PER_MP_ABOVE_BASELINE — see checks.ram_required_gb
+    # for the dimension-aware estimate the actual preflight uses).
+    # Colleagues reading the table would otherwise misread the 1MP
+    # baseline as the operational ceiling.
     print()
-    info("Will this fit in RAM?")
-    headers = ["backend × quant", "needs", "have", "verdict"]
+    info("Will this fit in RAM? (peak at 1024² output — larger "
+         "resolutions need ~5 GB more per megapixel)")
+    headers = ["backend × quant", "@1MP", "have", "verdict"]
     print(f"   {C.DIM}{headers[0]:<18} {headers[1]:>6}  "
           f"{headers[2]:>6}  {headers[3]}{C.END}")
     if total_ram:

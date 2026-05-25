@@ -368,11 +368,19 @@ def cmd_batch(args) -> int:
                 print()
             return 0
 
-        # 10) Preflight against the heaviest quant. Done once for the
-        # whole N×M grid, not per-input.
+        # 10) Preflight against the heaviest quant + largest output
+        # resolution. v0.7.14 (gap 6): max_megapixels is per-input
+        # max because batch may carry mixed-aspect inputs (per-input
+        # detect_resolution at step 8). Each PerInputBatch carries
+        # its own width/height — take the largest area for the
+        # conservative estimate.
         heaviest_quant = max(it.final_quantize for it in all_iters)
+        max_megapixels = (
+            max(pi.width * pi.height for pi in per_input_iters) / 1_000_000
+        )
         preflight_resources(
-            backend=backend, heaviest_quant=heaviest_quant, force=args.force
+            backend=backend, heaviest_quant=heaviest_quant,
+            force=args.force, max_megapixels=max_megapixels,
         )
 
         # 11) Confirm gate. --yes skips. ETA hidden if no matching

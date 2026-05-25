@@ -294,12 +294,15 @@ def cmd_draw(args) -> int:
             print()
         return 0
 
-    # 8) Resource preflight — heaviest quant in the batch (all N share
-    # the same backend + quant today, but max() keeps it future-proof
-    # if per-iteration quant ever lands).
+    # 8) Resource preflight — heaviest quant + largest resolution.
+    # v0.7.14 (gap 6): max_megapixels scales the RAM estimate above
+    # 1 MP. t2i width/height come from CLI (--width/--height with
+    # 1024² default), constant across the N iterations.
     heaviest_quant = max(it.final_quantize for it in iterations)
+    max_megapixels = (args.width * args.height) / 1_000_000
     preflight_resources(
-        backend=backend, heaviest_quant=heaviest_quant, force=args.force,
+        backend=backend, heaviest_quant=heaviest_quant,
+        force=args.force, max_megapixels=max_megapixels,
     )
 
     # 9) Confirm gate (unless --yes). Shows count + ETA × N for N>=2.
