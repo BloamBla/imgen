@@ -18,6 +18,8 @@ from ..paths import (
     DEFAULT_OUTPUT_DIR,
     IMGEN_HOME,
     LEGACY_TOKEN_FILE,
+    MODELS_D,
+    MODELS_D_EXAMPLE,
     STATE_DIR,
     STYLES_D,
     TOKEN_FILE,
@@ -30,6 +32,44 @@ from ..tokens import (
     sync_token_to_hf_cli_store,
     validate_token,
 )
+
+
+# v0.8.0 commit 10 (§G.2): opt-in template for the diffusers_mps engine
+# path. Shipped to ~/.imgen/models.d.example/ by `imgen setup` —
+# colleagues with 64+ GB Macs move it to ~/.imgen/models.d/ to activate.
+# NOT a built-in: 32 GB Macs (the project's primary supported hardware)
+# swap-thrash on this model per [[project-qwen-2512-findings-2026-05-25]].
+_QWEN_BF16_TEMPLATE = '''\
+# qwen-image-2512-bf16.toml — HIGH-MEMORY MODEL, opt-in template
+#
+# ⚠️  HARDWARE REQUIREMENT: 64+ GB unified memory (M3 Max / M3 Ultra /
+#     M4 Max). On M2 Pro 32 GB this WILL swap-thrash (2h+ per gen,
+#     possibly OOM). See project_qwen_2512_findings_2026_05_25.
+#
+# Activate by moving this file from models.d.example/ to models.d/.
+# `imgen setup` ships it to models.d.example/ but does NOT auto-activate.
+#
+# NOTE: v0.8.0 ships this template but the user-TOML schema does NOT
+# yet accept the v0.8 fields below (engine, repo, ram_*, etc.) —
+# v0.8.x cleanup extends the schema. Until then, copying this to
+# models.d/ produces "unknown field — ignored" warns and the model
+# routes through the default mflux engine rather than diffusers_mps.
+# Track via project_v08x_backlog.md (HIGH-2).
+
+engine = "diffusers_mps"
+repo = "Qwen/Qwen-Image-2512"
+supports_negative = true
+lora_compat_group = "qwen"
+default_steps = 50
+default_guidance = 4.0
+ram_baseline_gb = 24.0          # bf16 at 1 MP
+ram_slope_gb_per_mp = 8.0
+encoder_ram_gb = 14.0           # Qwen3-VL larger than v1
+cpu_offload_threshold_mp = 1.0  # any non-trivial resolution offloads
+param_overrides = [
+    ["true_cfg_scale", 4.0],
+]
+'''
 
 
 _STARTER_CONFIG_TEMPLATE = f"""\
@@ -211,6 +251,34 @@ def cmd_setup(_args) -> int:
             "  guidance = 4.5\n"
             "  strength = 0.65\n"
         )
+
+    # v0.8.0 commit 10 (§G.2 + §H): ensure ~/.imgen/models.d/ exists and
+    # ship the opt-in qwen-image-2512-bf16 template into
+    # ~/.imgen/models.d.example/. The example dir is NOT loader-
+    # scanned — the user moves the file into models.d/ to activate.
+    # Idempotent: directories with exist_ok=True; template file never
+    # overwritten (only created when missing).
+    if not MODELS_D.exists():
+        MODELS_D.mkdir(mode=0o700)
+        (MODELS_D / "README.txt").write_text(
+            "Drop *.toml files here to add models beyond the built-in set.\n"
+            "Filename (without .toml) becomes the --model NAME.\n"
+            "\n"
+            "v0.8.0+ canonical path. Files under ~/.imgen/backends.d/ are\n"
+            "still read but emit a DEPRECATED warn on every imgen run.\n"
+            "Migrate with: imgen migrate-toml\n"
+            "\n"
+            "SECURITY: `binary = ...` is executed as a subprocess by imgen.\n"
+            "Treat models.d/ files like shell scripts — only drop in files\n"
+            "you wrote yourself or got from a source you trust.\n"
+            "\n"
+            "Schema: see ~/.imgen/backends.d/README.txt (same shape).\n"
+            "Verify with: imgen --list-models   /   imgen doctor\n"
+        )
+    MODELS_D_EXAMPLE.mkdir(mode=0o700, exist_ok=True)
+    bf16_template_path = MODELS_D_EXAMPLE / "qwen-image-2512-bf16.toml"
+    if not bf16_template_path.exists():
+        bf16_template_path.write_text(_QWEN_BF16_TEMPLATE)
 
     # User-backends directory (v0.4 — same pattern as styles.d).
     # 0o700 + README that doubles as schema docs + an explicit security

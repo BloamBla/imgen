@@ -28,14 +28,17 @@ from ..config import (
 from ..defaults import MIN_BATTERY_PCT, MIN_DISK_GB
 from ..history import load_history
 from ..paths import (
+    BACKENDS_D,
     CONFIG_FILE,
     HF_CACHE,
     IMGEN_HOME,
+    MODELS_D,
     STATE_DIR,
     STYLES_D,
     VENV_BIN,
 )
 from ..backends import BUILTIN_BACKENDS, get_backend, list_backends
+from ..models import BUILTIN_MODELS
 from ..shell_rc import ALL_RC_FILES_REL
 from ..styles import BUILTIN_STYLES, list_styles, load_user_styles_dir
 from ..tokens import (
@@ -452,6 +455,58 @@ def warn_deprecated_defaults_style(defaults_section: dict) -> None:
     return None
 
 
+def _warn_shadowing_user_tomls() -> int:
+    """v0.8.0 commit 10 (§G.3): warn when a user TOML stem matches a
+    v0.8 built-in Model. Returns 0 — these are nudges, not blocking
+    issues, per the round-2 architect IMPORTANT (the recipe is still
+    usable under the auto-suffixed name).
+
+    Scans BOTH ~/.imgen/models.d/ AND ~/.imgen/backends.d/ — colleagues
+    mid-migration may have user files in either directory.
+
+    Path rendered via ``repr()`` so any C0/DEL/C1 byte that snuck onto
+    disk via a hand-crafted name renders as a ``\\xNN`` literal
+    instead of escaping into the terminal (round-3 security LOW
+    closure; mirrors the v0.4 IMP-2 pattern used for binary paths).
+    """
+    # Late import so per-test monkeypatched paths take effect — the
+    # module-top imports capture the real ~/.imgen/ paths at import
+    # time (conftest rebinds the paths module's attrs but not this
+    # module's local refs).
+    from ..paths import BACKENDS_D, MODELS_D
+
+    builtin_stems = set(BUILTIN_MODELS.keys())
+    surface = 0
+    for dir_path in (MODELS_D, BACKENDS_D):
+        if not dir_path.exists() or not dir_path.is_dir():
+            continue
+        if dir_path.is_symlink():
+            # Symlinks are refused at the loader; skip here so doctor's
+            # surface stays consistent with the loader's policy.
+            continue
+        try:
+            entries = sorted(dir_path.iterdir())
+        except OSError:
+            continue
+        for path in entries:
+            if path.suffix != ".toml" or not path.is_file():
+                continue
+            if path.stem not in builtin_stems:
+                continue
+            path_safe = repr(str(path))
+            warn(
+                f"user TOML {path_safe} SHADOWS built-in Model "
+                f"'{path.stem}' (your file registers as "
+                f"'{path.stem}_0001' due to collision)."
+            )
+            print(f"   {C.DIM}Run `imgen migrate-toml` to review/delete "
+                  f"if the file was a v0.7 carryover.{C.END}")
+            surface += 1
+    return 0  # nudge, not a blocking issue (return value is the
+              # add-to-issues delta; 0 means doctor still passes when
+              # this is the only concern).
+
+
 def cmd_doctor(_args) -> int:
     issues = 0  # count blocking problems; return non-zero if any
     step("Checking environment")
@@ -686,6 +741,17 @@ def cmd_doctor(_args) -> int:
                 dim(f"   secret ${health.secret_env_var} (optional) "
                     "not set — best-effort forward, backend handles "
                     "its own auth")
+
+    # v0.8.0 commit 10 (§G.3 architect IMPORTANT): user-TOML-shadows-
+    # built-in warn. A user file at ~/.imgen/models.d/<stem>.toml OR
+    # ~/.imgen/backends.d/<stem>.toml where <stem> matches a v0.8
+    # built-in Model name is almost always a stale v0.7 carryover
+    # (e.g. an old qwen-image-2512.toml whose recipe is now covered
+    # by the built-in). The v0.4 collision policy renames the user's
+    # entry to <stem>_0001 (with a load-time warn), but the user
+    # rarely notices the rename hint mid-batch. Doctor surfaces it
+    # as a standalone item with a concrete next-step.
+    issues += _warn_shadowing_user_tomls()
 
     # Enhance — LLM prompt enhancer readiness. Reports whether mlx-lm
     # is importable, whether the configured model is in HF cache,

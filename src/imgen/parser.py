@@ -478,6 +478,17 @@ def build_parser(
                    help="Install newest mflux instead of pinned version "
                         "(may have breaking changes)")
 
+    # migrate-toml (v0.8.0 commit 10 — one-shot helper). Moves user
+    # TOMLs from ~/.imgen/backends.d/ → ~/.imgen/models.d/. Confirms
+    # before each move unless --yes is passed.
+    m = sub.add_parser(
+        "migrate-toml",
+        help="Move user TOMLs from ~/.imgen/backends.d/ → "
+             "~/.imgen/models.d/ (v0.8.0 file-location migration)",
+    )
+    m.add_argument("--yes", "-y", action="store_true",
+                   help="Skip per-file confirm gate")
+
     # clean
     c = sub.add_parser("clean", help="Cleanup HuggingFace cache")
     c.add_argument("--all", action="store_true",

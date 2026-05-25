@@ -34,6 +34,7 @@ __all__ = [
     "LEGACY_TOKEN_FILE",
     "MFLUX_LORAS_CACHE",
     "MODELS_D",
+    "MODELS_D_EXAMPLE",
     "SAFE_OUTPUT_EXTS",
     "STATE_DIR",
     "STYLES_D",
@@ -173,6 +174,11 @@ BACKENDS_D = STATE_DIR / "backends.d"
 # warn on BACKENDS_D entries lands in v0.8.0 commit 4a — not at commit 3,
 # which only adds the second read path. See [[project-v080-design]] §H.
 MODELS_D = STATE_DIR / "models.d"
+# v0.8.0 commit 10 (§G.2): opt-in template directory. ``imgen setup``
+# (and bootstrap.sh by extension) drops example TOMLs here; the user
+# moves a file into ``models.d/`` to activate. NOT scanned by the
+# loader — that's the whole point of the demotion per §G.2.
+MODELS_D_EXAMPLE = STATE_DIR / "models.d.example"
 
 # Output extensions allowed for --output and auto-`open`. macOS `open`
 # delegates to the registered app for the extension, so .terminal /

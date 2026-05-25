@@ -133,6 +133,21 @@ echo
 step "Running 'imgen setup' for shell alias and HF token"
 ./imgen setup
 
+# ── 6b. v0.8.0 file-location migration nudge ──────────────────────────────
+# Detects legacy ~/.imgen/backends.d/ TOMLs left over from a v0.7.x
+# install. Nudge — not a hard error; the loader still reads the legacy
+# path with a DEPRECATED warn through the v0.8.x window. (See
+# project_v080_design.md §H.)
+LEGACY_BACKENDS_D="$HOME/.imgen/backends.d"
+if [[ -d "$LEGACY_BACKENDS_D" ]] && compgen -G "$LEGACY_BACKENDS_D/*.toml" >/dev/null 2>&1; then
+  echo
+  warn "Legacy ~/.imgen/backends.d/ TOMLs detected"
+  echo "${D}v0.8.0 renamed the user-TOML directory to ~/.imgen/models.d/.${N}"
+  echo "${D}Files in backends.d/ keep working through v0.8.x but emit a${N}"
+  echo "${D}DEPRECATED warn on every imgen run. To move them now:${N}"
+  echo "${D}  imgen migrate-toml${N}"
+fi
+
 echo
 step "Bootstrap complete!"
 printf "${D}Try: ${N}imgen photo.jpg --preview\n"

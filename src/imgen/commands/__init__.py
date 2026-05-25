@@ -15,6 +15,7 @@ from .doctor import cmd_doctor
 from .draw import cmd_draw
 from .generate import cmd_generate
 from .history import cmd_history, cmd_last, cmd_replay
+from .migrate_toml import cmd_migrate_toml
 from .refine import cmd_refine
 from .setup import cmd_setup
 from .upgrade import cmd_upgrade
@@ -27,6 +28,7 @@ __all__ = [
     "cmd_generate",
     "cmd_history",
     "cmd_last",
+    "cmd_migrate_toml",
     "cmd_refine",
     "cmd_replay",
     "cmd_setup",

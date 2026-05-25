@@ -27,6 +27,23 @@ imgen photo.jpg --style anime --no-lora                  # A/B vs the built-in L
 imgen batch ~/Desktop/holiday --style anime,ghibli       # every photo in folder × every style
 ```
 
+> **v0.8.0 BREAKING — migration from v0.7.x**
+>
+> `--backend` → `--model`. Shell scripts using `--backend` now hard-error with an actionable hint. Quick migration:
+>
+> ```text
+> Old:  imgen photo.jpg --backend flux --quantize 8
+> New:  imgen photo.jpg --model flux-kontext --quantize 8
+> ```
+>
+> Some model names also changed (`flux` → `flux-kontext`, `qwen` → `qwen-image-edit-v1`). Run `imgen --list-models` for the current canonical names.
+>
+> User TOMLs in `~/.imgen/backends.d/` keep working in v0.8.x but emit a DEPRECATED warn on every run. Run `imgen migrate-toml` to move them to `~/.imgen/models.d/`. v0.9.0 drops the `backends.d/` fallback. The helper also detects redundant files (where a user TOML's stem matches a new v0.8 built-in Model) and offers to delete them.
+>
+> `[defaults] style` in `~/.imgen/config.toml` — REMOVED. Pass `--style NAME` per invocation instead. (Soft-deprecated since v0.7.13.)
+>
+> `~/.imgen/history.jsonl` entries from v0.7 keep replaying — the schema bumped v=3 → v=4 with a `backend` → `model` key rename, but the reader handles both shapes transparently.
+
 > **v0.7.13 behaviour change** (heads-up for upgraders): bare `imgen photo.jpg` (no `--style`, no `--custom-prompt`) now errors out with an actionable hint instead of silently falling back to the default style (pixar). Either pass `--style NAME` (preset mode) or `--custom-prompt TEXT` / `--prompt-file PATH` (bare mode — raw prompt, no preset baggage). The silent fallback caused a class of UX bugs (negative_prompt leaks into argv, etc.) that we've now closed. Pre-v0.7.13 `history.jsonl` entries replay correctly as bare-mode runs.
 
 ```bash
