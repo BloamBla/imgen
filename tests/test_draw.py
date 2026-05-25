@@ -802,12 +802,16 @@ class TestCmdDrawRefineHint:
         monkeypatch.setattr(
             "imgen.commands.draw.load_backend_and_token", fake_load,
         )
+        _touch_and_zero = lambda cmd, *a, **kw: (
+            Path(cmd[cmd.index("--output") + 1]).touch(),
+            0,
+        )[1]
+        # v0.8.2 M-1C-prep dual-patch — see test_batch.py for rationale.
         monkeypatch.setattr(
-            "imgen.cmd_helpers.run_with_stderr_redaction",
-            lambda cmd, **kw: (
-                Path(cmd[cmd.index("--output") + 1]).touch(),
-                0,
-            )[1],
+            "imgen.cmd_helpers.run_with_stderr_redaction", _touch_and_zero,
+        )
+        monkeypatch.setattr(
+            "imgen.subprocess_helpers.run_with_stderr_redaction", _touch_and_zero,
         )
         monkeypatch.setattr(
             "imgen.cmd_helpers.preflight_resources",
@@ -977,9 +981,13 @@ class TestCmdDrawEnhancer:
         # Force mflux subprocess to "fail" (return non-zero rc) so
         # cmd_draw routes through the failure-summary path with the
         # hint block.
+        _nonzero_rc = lambda cmd, *a, **kw: 1
+        # v0.8.2 M-1C-prep dual-patch — see test_batch.py for rationale.
         monkeypatch.setattr(
-            "imgen.cmd_helpers.run_with_stderr_redaction",
-            lambda cmd, **kw: 1,  # non-zero rc
+            "imgen.cmd_helpers.run_with_stderr_redaction", _nonzero_rc,
+        )
+        monkeypatch.setattr(
+            "imgen.subprocess_helpers.run_with_stderr_redaction", _nonzero_rc,
         )
         monkeypatch.setattr(
             "imgen.cmd_helpers.preflight_resources",

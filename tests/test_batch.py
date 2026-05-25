@@ -48,8 +48,16 @@ def stub_mflux(monkeypatch):
             raise state["raise"]
         return state["returncode"]
 
+    # v0.8.2 M-1C-prep: dual-patch both layers (legacy cmd_helpers
+    # binding + canonical subprocess_helpers) so the fixture covers
+    # both run_one_iteration paths post-M-1C-flip. Without the second
+    # patch, engine.run iterations would slip past the stub and spawn
+    # real mflux subprocesses — v0.8.2 ops post-mortem 2026-05-26.
     monkeypatch.setattr(
         "imgen.cmd_helpers.run_with_stderr_redaction", fake_run
+    )
+    monkeypatch.setattr(
+        "imgen.subprocess_helpers.run_with_stderr_redaction", fake_run
     )
     return state
 

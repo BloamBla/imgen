@@ -799,12 +799,16 @@ def test_history_entry_carries_command_field_for_draw(
         for arg in args[0]:
             pass
         return 0
+    _touch_and_zero = lambda cmd, *a, **kw: (
+        Path(cmd[cmd.index("--output") + 1]).touch(),
+        0,
+    )[1]
+    # v0.8.2 M-1C-prep dual-patch — see test_batch.py fixture for rationale.
     monkeypatch.setattr(
-        "imgen.cmd_helpers.run_with_stderr_redaction",
-        lambda cmd, **kw: (
-            Path(cmd[cmd.index("--output") + 1]).touch(),
-            0,
-        )[1],
+        "imgen.cmd_helpers.run_with_stderr_redaction", _touch_and_zero,
+    )
+    monkeypatch.setattr(
+        "imgen.subprocess_helpers.run_with_stderr_redaction", _touch_and_zero,
     )
     monkeypatch.setattr(
         "imgen.cmd_helpers.preflight_resources",
@@ -872,12 +876,16 @@ def test_history_n_iterations_records_per_row_seed_ladder(
     monkeypatch.setattr(
         "imgen.commands.draw.load_backend_and_token", fake_load,
     )
+    _touch_and_zero2 = lambda cmd, *a, **kw: (
+        Path(cmd[cmd.index("--output") + 1]).touch(),
+        0,
+    )[1]
+    # v0.8.2 M-1C-prep dual-patch — see test_batch.py fixture for rationale.
     monkeypatch.setattr(
-        "imgen.cmd_helpers.run_with_stderr_redaction",
-        lambda cmd, **kw: (
-            Path(cmd[cmd.index("--output") + 1]).touch(),
-            0,
-        )[1],
+        "imgen.cmd_helpers.run_with_stderr_redaction", _touch_and_zero2,
+    )
+    monkeypatch.setattr(
+        "imgen.subprocess_helpers.run_with_stderr_redaction", _touch_and_zero2,
     )
     monkeypatch.setattr(
         "imgen.cmd_helpers.preflight_resources", lambda **kw: None,
