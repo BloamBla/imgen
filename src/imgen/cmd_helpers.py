@@ -75,7 +75,7 @@ from .enhance import (
     enhance_iteration_prompts,
     replace_prompt_in_cmd,
 )
-from .history import append_history
+from .history import append_history, entry_model_name
 from .images import apply_scope
 from .paths import DEFAULT_OUTPUT_DIR, SAFE_OUTPUT_EXTS, VENV_BIN
 from .runs import (
@@ -278,11 +278,22 @@ def estimate_one_seconds(
     Returns None when no matching successes — caller suppresses ETA display
     rather than guessing from a coarse fallback table that would be wildly
     off across M1/M2/M3/M4 hardware variance.
+
+    v0.8.0 commit 9 (§R.3 HIGH-1 fix): the matcher compares ``backend``
+    (the resolver-translated v0.8 canonical name, e.g. ``"flux-kontext"``)
+    against ``entry_model_name(e)`` — which handles BOTH the v=4 ``model``
+    key AND the v=3 ``backend`` key fallback AND the v0.7→v0.8 rename
+    map. Pre-fix the matcher compared ``e.get("backend") == backend``
+    directly; for any user upgrading from v0.7 (history.jsonl full of
+    v=3 ``"backend":"flux"`` entries), the v0.8 caller value
+    ``"flux-kontext"`` never matched, so ETA went cold until 5 new
+    post-upgrade entries accumulated. Pure UX regression, lock-in test
+    in tests/test_v080_history_migration.py.
     """
     matching = [
         e for e in history_entries
         if e.get("status") == "success"
-        and e.get("backend") == backend
+        and entry_model_name(e) == backend
         and e.get("quantize") == quantize
         and e.get("preview") == preview
         and isinstance(e.get("duration_sec"), int)
@@ -809,11 +820,13 @@ def run_one_iteration(
         "steps": it.final_steps,
         "guidance": it.final_guidance,
         "strength": it.final_strength,
-        # v0.8.0 commit 4b: ctx field is now `model` (v0.8 canonical
-        # name). History entry key stays "backend" — schema v=3 → v=4
-        # bump is commit 9 per §Q. Until then, the value shifts from
-        # v0.7 to v0.8 form but the key is unchanged.
-        "backend": ctx.model,
+        # v0.8.0 commit 9 (§K + §Q): history schema v=3 → v=4 KEY
+        # RENAME — ``backend`` → ``model``. Value is the v0.8 canonical
+        # name (translated by the parser resolver at commit 4a/4b
+        # before reaching ctx). Dual-shape READ dispatch lives in
+        # ``history.entry_model_name(entry)`` — old v=3 rows on disk
+        # are still readable; new v=4 rows write the renamed key only.
+        "model": ctx.model,
         "quantize": it.final_quantize,
         "width": ctx.width,
         "height": ctx.height,

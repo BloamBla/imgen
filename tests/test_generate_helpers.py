@@ -2030,7 +2030,10 @@ def test_run_one_iteration_writes_history_on_success(
     e = entries[0]
     assert e["status"] == "success"
     assert e["style"] == "anime"
-    assert e["backend"] == "flux"
+    # v0.8.0 commit 9 (§K + §Q): schema v=3 → v=4 key rename. New entries
+    # write the "model" key only; v=3 "backend" key is read-side fallback.
+    assert e["model"] == "flux"
+    assert "backend" not in e
     assert e["seed"] == 42
 
 

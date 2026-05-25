@@ -136,7 +136,7 @@ MFLUX_PIN = "mflux==0.17.5"
 #                          Absent on v0.6.x and earlier entries; the
 #                          reader uses ``entry.get("command", "generate")``
 #                          so old rows replay through cmd_generate.
-#                          Read-compatible additive; NO v=4 bump
+#                          Read-compatible additive; NO v=4 bump at v0.7
 #                          (additive fields don't bump version per
 #                          the v0.6.5 IMP-1 precedent).
 #
@@ -147,4 +147,20 @@ MFLUX_PIN = "mflux==0.17.5"
 #                          unchanged. Readers using ``.get`` already
 #                          tolerate absence; the None case is the
 #                          v0.7.0 net change.
-HISTORY_SCHEMA_VERSION = 3
+#
+# v=4 (v0.8.0 commit 9, §K + §Q): KEY RENAME — ``backend`` → ``model``.
+# Not additive: the meaning of the "what was used to generate this row"
+# slot moved from the v0.7 ``backend`` identifier ("flux", "flux-kontext",
+# "qwen", ...) to the v0.8 ``model`` identifier ("flux-kontext",
+# "flux-dev", ...). The two spaces overlap heavily but the rename is
+# semantic — v0.8 ``flux-kontext`` was v0.7 ``flux`` — so a version
+# bump is required to disambiguate readers.
+#
+# Dual-shape READ dispatch lives in ``history.entry_model_name(entry)``:
+# the helper resolves either key (v=4 ``model`` wins; v=3 ``backend``
+# fallback) and runs the value through the v0.7→v0.8 rename map so
+# old rows render their v0.8 canonical name in list/replay/ETA paths.
+# v0.9 may drop the v=3 ``backend`` key fallback after a deprecation
+# window; until then, the helper is the single source of truth for
+# resolving the model identifier from any history-entry shape.
+HISTORY_SCHEMA_VERSION = 4

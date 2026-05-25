@@ -418,11 +418,12 @@ def test_history_entry_persists_loras_field(tmp_state_dir):
 # ── v=2 schema migration (v0.5 — LLM prompt enhancer) ──────────────────
 
 
-def test_history_schema_version_is_3(tmp_state_dir):
-    """v0.6 bumps the schema to 3 for the new ``loras`` field (replay
-    determinism — Architect-CRITICAL #1 from the v0.6 pre-tag review).
+def test_history_schema_version_is_4(tmp_state_dir):
+    """v0.8.0 commit 9 (§K + §Q) bumps the schema to 4 for the
+    ``backend`` → ``model`` key rename. Dual-shape read dispatch in
+    ``history.entry_model_name`` keeps v=3 rows on disk readable.
     Lock-in against accidental downgrade in a future commit."""
-    assert HISTORY_SCHEMA_VERSION == 3
+    assert HISTORY_SCHEMA_VERSION == 4
 
 
 def test_v1_entries_still_pass_replay_schema_gate(tmp_state_dir, monkeypatch):

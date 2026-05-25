@@ -15,7 +15,62 @@ from .colors import err, warn
 from .defaults import HISTORY_SCHEMA_VERSION
 from .paths import HISTORY_FILE, ensure_state_dir
 
-__all__ = ["append_history", "load_history"]
+__all__ = ["append_history", "entry_model_name", "load_history"]
+
+
+def _has_control_bytes(s: str) -> bool:
+    """C0 / DEL / C1 byte detector. Local duplicate of the same helper
+    in ``backends.py`` / ``parser.py`` per the v0.4 design decision to
+    avoid a shared ``_safe.py`` module until a 3rd surface needs it.
+    A 4th surface (history-entry replay/list/ETA) has now appeared, so
+    the v0.9 extract is on the v0.8.x backlog. Until then, the helper
+    is small enough to inline."""
+    return any(
+        c < ' ' or c == '\x7f' or '\x80' <= c <= '\x9f'
+        for c in s
+    )
+
+
+def entry_model_name(entry: dict) -> str | None:
+    """Resolve the v0.8 canonical model name from a history entry,
+    regardless of schema version.
+
+    Dispatch order (v=4 wins, v=3 fallback):
+      * v=4 entries carry ``model`` (commit 9 schema rename).
+      * v=3 entries carry ``backend`` (v0.7.x and earlier shape).
+      * Value runs through ``_V07_TO_V08_MODEL_RENAMES`` so a v=3
+        ``"flux"`` entry renders / replays / ETA-matches as
+        ``"flux-kontext"`` (the v0.8 canonical name).
+
+    Returns ``None`` when:
+      * neither key is present (very old entries, hand-edited rows);
+      * the stored value is not a string (defensive — hand-edited
+        JSONL with a typo'd shape);
+      * the value contains C0/DEL/C1 control bytes (§A.5 security:
+        replay must not feed a dirty string into argv; list/ETA
+        callers downgrade to "no match" rather than rendering
+        garbage in the user's terminal).
+
+    Pure: no I/O, no registry lookup. Deliberately does NOT call
+    ``get_backend()`` — architect 4b pre-vet M-3: a registry lookup
+    at history-read time would crash ``imgen history --last`` if a
+    referenced user TOML was deleted. Display/listing must not
+    require a live registry.
+
+    Replaces the v0.8.0 commit 4b-era ``_normalize_backend_value``
+    helper in ``commands/history.py``: that one only handled the
+    rename map; this one folds in the dual-shape read AND the §A.5
+    filter. HIGH-1 fix (cmd_helpers ETA matcher, §R.3) lives here.
+    """
+    from .models import _V07_TO_V08_MODEL_RENAMES
+    raw = entry.get("model")
+    if raw is None:
+        raw = entry.get("backend")
+    if raw is None or not isinstance(raw, str):
+        return None
+    if _has_control_bytes(raw):
+        return None
+    return _V07_TO_V08_MODEL_RENAMES.get(raw, raw)
 
 
 def load_history() -> list[dict]:

@@ -22,10 +22,14 @@ from imgen.runs import Iteration
 
 # ── _estimate_one_seconds ───────────────────────────────────────────────
 
-def _ok_entry(backend: str, quant: int, preview: bool, duration: int) -> dict:
+def _ok_entry(model: str, quant: int, preview: bool, duration: int) -> dict:
+    """v0.8.0 commit 9: schema v=3 → v=4 key rename ``backend`` →
+    ``model``. New fixtures write the v=4 key. The HIGH-1 regression
+    lock-in (v=3 "backend" reads matching v0.8 query) lives in
+    ``tests/test_v080_history_migration.py``."""
     return {
         "status": "success",
-        "backend": backend,
+        "model": model,
         "quantize": quant,
         "preview": preview,
         "duration_sec": duration,
@@ -33,60 +37,60 @@ def _ok_entry(backend: str, quant: int, preview: bool, duration: int) -> dict:
 
 
 def test_estimate_one_seconds_returns_none_on_empty_history():
-    assert _estimate_one_seconds([], "flux", 4, False) is None
+    assert _estimate_one_seconds([], "flux-kontext", 4, False) is None
 
 
 def test_estimate_one_seconds_returns_none_when_no_match():
-    """History has entries, but none matching the backend/quant combo."""
-    entries = [_ok_entry("flux", 8, False, 3000)]
-    assert _estimate_one_seconds(entries, "flux", 4, False) is None
+    """History has entries, but none matching the model/quant combo."""
+    entries = [_ok_entry("flux-kontext", 8, False, 3000)]
+    assert _estimate_one_seconds(entries, "flux-kontext", 4, False) is None
 
 
 def test_estimate_one_seconds_uses_average_of_matching_successes():
     entries = [
-        _ok_entry("flux", 4, False, 300),
-        _ok_entry("flux", 4, False, 360),
-        _ok_entry("flux", 4, False, 420),
+        _ok_entry("flux-kontext", 4, False, 300),
+        _ok_entry("flux-kontext", 4, False, 360),
+        _ok_entry("flux-kontext", 4, False, 420),
     ]
     # avg(300, 360, 420) = 360
-    assert _estimate_one_seconds(entries, "flux", 4, False) == 360
+    assert _estimate_one_seconds(entries, "flux-kontext", 4, False) == 360
 
 
 def test_estimate_one_seconds_caps_at_last_five():
     """A long history should only average the 5 most-recent matching successes."""
-    entries = [_ok_entry("flux", 4, False, 1000)] * 10
-    entries += [_ok_entry("flux", 4, False, 60)] * 5
+    entries = [_ok_entry("flux-kontext", 4, False, 1000)] * 10
+    entries += [_ok_entry("flux-kontext", 4, False, 60)] * 5
     # Last 5 are all 60s
-    assert _estimate_one_seconds(entries, "flux", 4, False) == 60
+    assert _estimate_one_seconds(entries, "flux-kontext", 4, False) == 60
 
 
 def test_estimate_one_seconds_ignores_failed_runs():
     """A failed run with duration_sec must not skew the estimate."""
     entries = [
-        {"status": "failed", "backend": "flux", "quantize": 4,
+        {"status": "failed", "model": "flux-kontext", "quantize": 4,
          "preview": False, "duration_sec": 999999},
-        _ok_entry("flux", 4, False, 300),
+        _ok_entry("flux-kontext", 4, False, 300),
     ]
-    assert _estimate_one_seconds(entries, "flux", 4, False) == 300
+    assert _estimate_one_seconds(entries, "flux-kontext", 4, False) == 300
 
 
 def test_estimate_one_seconds_ignores_cancelled_runs():
     entries = [
-        {"status": "cancelled", "backend": "flux", "quantize": 4,
+        {"status": "cancelled", "model": "flux-kontext", "quantize": 4,
          "preview": False, "duration_sec": 50},
-        _ok_entry("flux", 4, False, 300),
+        _ok_entry("flux-kontext", 4, False, 300),
     ]
-    assert _estimate_one_seconds(entries, "flux", 4, False) == 300
+    assert _estimate_one_seconds(entries, "flux-kontext", 4, False) == 300
 
 
 def test_estimate_one_seconds_distinguishes_preview_mode():
     """--preview generations are 5-10x faster — don't conflate."""
     entries = [
-        _ok_entry("flux", 4, True, 180),   # preview run
-        _ok_entry("flux", 4, False, 1800),
+        _ok_entry("flux-kontext", 4, True, 180),   # preview run
+        _ok_entry("flux-kontext", 4, False, 1800),
     ]
-    assert _estimate_one_seconds(entries, "flux", 4, True) == 180
-    assert _estimate_one_seconds(entries, "flux", 4, False) == 1800
+    assert _estimate_one_seconds(entries, "flux-kontext", 4, True) == 180
+    assert _estimate_one_seconds(entries, "flux-kontext", 4, False) == 1800
 
 
 def test_estimate_one_seconds_ignores_zero_duration_runs():
@@ -95,19 +99,19 @@ def test_estimate_one_seconds_ignores_zero_duration_runs():
     print '0s per image' nonsense.
     (python I4 from v0.2.3 review)"""
     entries = [
-        _ok_entry("flux", 4, False, 0),    # 0-duration garbage
-        _ok_entry("flux", 4, False, 300),
-        _ok_entry("flux", 4, False, 360),
+        _ok_entry("flux-kontext", 4, False, 0),    # 0-duration garbage
+        _ok_entry("flux-kontext", 4, False, 300),
+        _ok_entry("flux-kontext", 4, False, 360),
     ]
     # avg(300, 360) = 330, not avg(0, 300, 360) = 220
-    assert _estimate_one_seconds(entries, "flux", 4, False) == 330
+    assert _estimate_one_seconds(entries, "flux-kontext", 4, False) == 330
 
 
 def test_estimate_one_seconds_returns_none_when_all_zero():
     """If the only successes are 0-duration, treat as 'no data' — don't
     show a misleading 0s/image ETA."""
-    entries = [_ok_entry("flux", 4, False, 0)] * 3
-    assert _estimate_one_seconds(entries, "flux", 4, False) is None
+    entries = [_ok_entry("flux-kontext", 4, False, 0)] * 3
+    assert _estimate_one_seconds(entries, "flux-kontext", 4, False) is None
 
 
 # ── _format_duration ────────────────────────────────────────────────────
