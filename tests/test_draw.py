@@ -197,6 +197,36 @@ class TestDrawParser:
         with pytest.raises(SystemExit):
             _parse_draw("a samurai", "--num-iterations", "33")
 
+    # ── v0.7.11 (gap 1): --negative-prompt parser stanza ──────────────
+
+    def test_negative_prompt_default_none(self):
+        """No CLI flag → args.negative_prompt is None (sentinel for "no
+        CLI override"). Pre-v0.7.11 the attribute didn't exist at all;
+        gap 1 closure adds it."""
+        args = _parse_draw("a samurai")
+        assert args.negative_prompt is None
+
+    def test_negative_prompt_explicit(self):
+        """`--negative-prompt "low quality"` parses through to argv.
+        Z-Image and FLUX.1-dev model cards recommend negatives;
+        pre-v0.7.11 imgen had no way to expose this through `imgen draw`."""
+        args = _parse_draw("a samurai", "--negative-prompt", "low quality, blurry")
+        assert args.negative_prompt == "low quality, blurry"
+
+    # ── v0.7.11 (gap 2): --guidance accepts 0.0 for distilled models ──
+
+    def test_guidance_zero_accepted(self):
+        """Distilled models (Z-Image-Turbo, FLUX-schnell) train with
+        classifier-free guidance disabled — argv must accept 0.0.
+        Pre-v0.7.11 the parser floor was 0.5, blocking these backends."""
+        args = _parse_draw("a samurai", "--guidance", "0.0")
+        assert args.guidance == 0.0
+
+    def test_guidance_below_zero_rejected(self):
+        """0.0 is the new floor — negative guidance has no physical meaning."""
+        with pytest.raises(SystemExit):
+            _parse_draw("a samurai", "--guidance", "-0.1")
+
 
 # ── v0.7.3: build_draw_iterations (plural) ───────────────────────────
 
@@ -276,6 +306,82 @@ class TestBuildDrawIterations:
             "a-samurai-2.png",
             "a-samurai-3.png",
         ]
+
+    # ── v0.7.11 (gap 1): negative-prompt propagation ──────────────────
+
+    def test_negative_prompt_propagates_to_iteration_and_argv(self, tmp_path):
+        """`--negative-prompt "low quality"` on the CLI → Iteration.negative
+        carries the string AND argv emits `--negative-prompt low quality`
+        for backends with supports_negative=True (flux-dev qualifies)."""
+        from imgen.backends import BACKENDS
+        from imgen.cmd_helpers import build_draw_iterations
+        out = build_draw_iterations(
+            args=_make_args(negative_prompt="low quality, blurry"),
+            prompt="a samurai",
+            merged_defaults=DEFAULTS,
+            be=BACKENDS["flux-dev"],
+            binary=Path("/fake/mflux-generate"),
+            width=1024,
+            height=1024,
+            explicit_output=None,
+            run_dir=tmp_path,
+            base_seed=42,
+            num_iterations=1,
+        )
+        assert out[0].negative == "low quality, blurry"
+        assert "--negative-prompt" in out[0].cmd
+        idx = out[0].cmd.index("--negative-prompt")
+        assert out[0].cmd[idx + 1] == "low quality, blurry"
+
+    def test_negative_prompt_absent_preserves_empty_default(self, tmp_path):
+        """No `--negative-prompt` CLI → Iteration.negative == "" and argv
+        omits the flag. Locks the v0.7.0 → v0.7.10 behaviour against
+        accidental regression now that the plumbing accepts the value."""
+        from imgen.backends import BACKENDS
+        from imgen.cmd_helpers import build_draw_iterations
+        out = build_draw_iterations(
+            args=_make_args(),  # negative_prompt=None per fixture default
+            prompt="a samurai",
+            merged_defaults=DEFAULTS,
+            be=BACKENDS["flux-dev"],
+            binary=Path("/fake/mflux-generate"),
+            width=1024,
+            height=1024,
+            explicit_output=None,
+            run_dir=tmp_path,
+            base_seed=42,
+            num_iterations=1,
+        )
+        assert out[0].negative == ""
+        assert "--negative-prompt" not in out[0].cmd
+
+    def test_negative_prompt_dropped_on_flux2_klein_edit_9b(self, tmp_path):
+        """v0.7.11 cross-product defence-in-depth (gap 7 × gap 1 interaction):
+        even when the user explicitly passes `--negative-prompt "X"` on
+        the CLI, the flag must NOT reach argv when targeting a backend
+        with ``supports_negative=False``. The existing gap-7 test in
+        test_generate_cmd.py guards the build_mflux_cmd seam; this test
+        closes the end-to-end loop from the draw entrypoint."""
+        from imgen.backends import BACKENDS
+        from imgen.cmd_helpers import build_draw_iterations
+        out = build_draw_iterations(
+            args=_make_args(negative_prompt="low quality, blurry"),
+            prompt="a portrait",
+            merged_defaults=DEFAULTS,
+            be=BACKENDS["flux2-klein-edit-9b"],
+            binary=Path("/fake/mflux-generate-flux2-edit"),
+            width=1024,
+            height=1024,
+            explicit_output=None,
+            run_dir=tmp_path,
+            base_seed=42,
+            num_iterations=1,
+        )
+        # Iteration still records the user's intent (for replay /
+        # history), but argv-level emission is gated by
+        # backend.supports_negative=False.
+        assert out[0].negative == "low quality, blurry"
+        assert "--negative-prompt" not in out[0].cmd
 
     def test_seed_ladder_wraps_at_2_32(self, tmp_path):
         """base_seed near the cap: ladder modulo 2^32 keeps every
@@ -488,6 +594,13 @@ def _make_args(**overrides):
         output_dir=None,
         lora=None,
         no_lora=False,
+        # v0.7.11 (gap 1): argparse always populates this attribute
+        # (default=None from the parser stanza), so the fixture
+        # mirrors that to keep test args shape-consistent with real
+        # parser output. Tests that exercise the absent case can
+        # explicitly override via _make_args(negative_prompt=None)
+        # or rely on the getattr fallback in build_draw_iterations.
+        negative_prompt=None,
         imgen_merged_defaults=DEFAULTS,
         imgen_config_output_dir=None,
     )

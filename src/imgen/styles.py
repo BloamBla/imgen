@@ -566,8 +566,10 @@ _USER_STYLE_SCHEMA: dict[str, tuple[str, Callable[[Any], bool]]] = {
     "prompt": ("string", lambda v: isinstance(v, str) and v.strip() != ""),
     "negative": ("string", lambda v: isinstance(v, str)),
     "guidance": (
-        "number 0.5..15.0",
-        lambda v: _is_number_not_bool(v) and 0.5 <= v <= 15.0,
+        # v0.7.11 (gap 2): symmetric with [defaults] guidance schema —
+        # user styles for distilled backends may legitimately set 0.0.
+        "number 0.0..15.0",
+        lambda v: _is_number_not_bool(v) and 0.0 <= v <= 15.0,
     ),
     "strength": (
         "number 0.0..1.0",

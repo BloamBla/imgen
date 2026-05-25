@@ -89,8 +89,11 @@ DEFAULTS_SCHEMA: dict[str, _SchemaEntry] = {
         lambda v: _is_int_not_bool(v) and 1 <= v <= 200,
     ),
     "guidance": (
-        "number 0.5..15.0",
-        lambda v: _is_number_not_bool(v) and 0.5 <= v <= 15.0,
+        # v0.7.11 (gap 2): lower bound dropped 0.5 → 0.0 so distilled
+        # models (Z-Image-Turbo, FLUX-schnell) can run with CFG fully
+        # disabled, which is the regime they were trained for.
+        "number 0.0..15.0",
+        lambda v: _is_number_not_bool(v) and 0.0 <= v <= 15.0,
     ),
     "strength": (
         "number 0.0..1.0",

@@ -70,12 +70,24 @@ def test_load_user_style_file_rejects_invalid_toml(tmp_path):
     assert "broken.toml" in str(exc_info.value)
 
 
-@pytest.mark.parametrize("bad_g", [0.4, 15.1, -1.0])
+@pytest.mark.parametrize("bad_g", [-0.1, 15.1, -1.0])
 def test_load_user_style_file_rejects_bad_guidance(tmp_path, bad_g):
+    """v0.7.11 (gap 2): lower bound is now 0.0 (was 0.5 pre-v0.7.11)
+    so distilled-model user styles can set ``guidance = 0.0``."""
     p = tmp_path / "bad.toml"
     p.write_text(f"prompt = \"x\"\nguidance = {bad_g}\n")
     with pytest.raises(UserStyleError):
         load_user_style_file(p)
+
+
+def test_load_user_style_file_accepts_guidance_zero(tmp_path):
+    """v0.7.11 (gap 2): user styles for distilled backends may set
+    ``guidance = 0.0``. Pre-v0.7.11 the 0.5 floor silently rejected
+    these as 'bad guidance'."""
+    p = tmp_path / "z_image_turbo.toml"
+    p.write_text("prompt = \"placeholder\"\nguidance = 0.0\n")
+    style = load_user_style_file(p)
+    assert style.guidance == 0.0
 
 
 @pytest.mark.parametrize("bad_s", [-0.1, 1.1, 2.0])

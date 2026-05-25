@@ -471,8 +471,10 @@ def _add_generate_args(
     p.add_argument("--steps", type=_int_range(1, 200), default=None,
                    help=f"Inference steps 1..200 (default {defaults['steps']}, "
                         f"preview {PREVIEW_OVERRIDES['steps']})")
-    p.add_argument("-g", "--guidance", type=_float_range(0.5, 15.0), default=None,
-                   help=f"Guidance scale 0.5..15 (default {defaults['guidance']}, "
+    p.add_argument("-g", "--guidance", type=_float_range(0.0, 15.0), default=None,
+                   help=f"Guidance scale 0..15 (default {defaults['guidance']}; "
+                        f"0 disables guidance — required for distilled models "
+                        f"like FLUX-schnell/Z-Image-Turbo, "
                         "style preset may override)")
     p.add_argument("--strength", type=_float_range(0.0, 1.0), default=None,
                    help=f"Image strength 0..1 (default {defaults['strength']}, "
@@ -539,10 +541,12 @@ def _add_batch_args(
     p.add_argument("--steps", type=_int_range(1, 200), default=None,
                    help=f"Inference steps 1..200 (default {defaults['steps']}, "
                         f"preview {PREVIEW_OVERRIDES['steps']})")
-    p.add_argument("-g", "--guidance", type=_float_range(0.5, 15.0),
+    p.add_argument("-g", "--guidance", type=_float_range(0.0, 15.0),
                    default=None,
-                   help=f"Guidance scale 0.5..15 (default "
-                        f"{defaults['guidance']}, style preset may override)")
+                   help=f"Guidance scale 0..15 (default {defaults['guidance']}; "
+                        f"0 disables guidance — required for distilled models "
+                        f"like FLUX-schnell/Z-Image-Turbo, "
+                        "style preset may override)")
     p.add_argument("--strength", type=_float_range(0.0, 1.0), default=None,
                    help=f"Image strength 0..1 (default {defaults['strength']}, "
                         "style preset may override)")
@@ -622,10 +626,26 @@ def _add_draw_args(
              f"preview {PREVIEW_OVERRIDES['steps']})",
     )
     p.add_argument(
-        "-g", "--guidance", type=_float_range(0.5, 15.0), default=None,
-        help=f"Guidance scale 0.5..15 (default {defaults['guidance']}; "
+        "-g", "--guidance", type=_float_range(0.0, 15.0), default=None,
+        help=f"Guidance scale 0..15 (default {defaults['guidance']}; "
              f"FLUX.1-dev canonical is 3.5 — pass explicitly if you "
-             f"want the tighter scale)",
+             f"want the tighter scale. Pass 0 to disable guidance — "
+             f"required for distilled backends like Z-Image-Turbo).",
+    )
+    # v0.7.11 (gap 1): expose --negative-prompt to imgen draw.
+    # Pre-v0.7.11 the CLI had no way to set a negative prompt for t2i,
+    # even though :func:`backends.build_mflux_cmd` emits it when present
+    # on backends with ``supports_negative=True`` (flux-dev qualifies).
+    # Z-Image and FLUX.1-dev model cards both recommend negatives for
+    # quality steering; this closes that gap. Reuses the existing
+    # ``_clean_prompt_arg`` validator (control-byte stripping — same
+    # discipline as refine's `--prompt`).
+    p.add_argument(
+        "--negative-prompt", type=_clean_prompt_arg, default=None,
+        help="Negative prompt — concepts to steer the model AWAY from "
+             "(e.g. 'low quality, blurry, deformed'). Only honoured on "
+             "backends with supports_negative=True (flux, flux-dev, etc.; "
+             "qwen + flux2-klein-edit-9b silently drop it).",
     )
     p.add_argument(
         "--seed", type=_int_range(0, 2**32 - 1), default=None,
@@ -732,7 +752,7 @@ def _add_refine_args(
              f"distilled converges fast; 20-25 is typical for refine.",
     )
     p.add_argument(
-        "-g", "--guidance", type=_float_range(0.5, 15.0), default=None,
+        "-g", "--guidance", type=_float_range(0.0, 15.0), default=None,
         help=f"Guidance scale (default {defaults['guidance']}). Ignored "
              f"on the default flux2-klein-edit-9b backend — mflux pins "
              f"guidance to 1.0 for non-base FLUX.2 models.",

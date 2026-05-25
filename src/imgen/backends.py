@@ -301,7 +301,13 @@ BUILTIN_BACKENDS: dict[str, Backend] = {
         needs_token=True,
         image_flag="--image-paths",
         supports_strength=False,
-        supports_negative=True,
+        # v0.7.11 (gap 7 fix): FLUX.2 family deliberately removed
+        # CFG/negative-prompt support per BFL docs. mflux-generate-
+        # flux2-edit errors with `--negative-prompt is not supported
+        # for FLUX.2` if argv carries the flag. Pre-v0.7.11 this was
+        # ``True``; every default-style invocation (pixar, etc.) crashed
+        # because the style's ``negative_prompt`` field bled into argv.
+        supports_negative=False,
         # `-m` (short form of `--model`) is the canonical selector
         # for bundled models per `mflux-generate-flux2-edit --help`
         # (v0.7.7 Sec #S4 verification). `--base-model {enum}` is

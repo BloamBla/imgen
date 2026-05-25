@@ -1317,6 +1317,7 @@ def _assemble_iteration_no_style(
     height: int,
     seed: int,
     style_name: str,
+    negative: str = "",
 ) -> Iteration:
     """Shared core for `build_draw_iterations` + `build_refine_iteration`
     (v0.7.8 refactor — closes python NIT #5 + architect NIT #F from
@@ -1355,9 +1356,11 @@ def _assemble_iteration_no_style(
     params = _resolve_iteration_params(
         args=args, preset=preset, merged_defaults=merged_defaults,
     )
-    negative = ""  # empty preset has no negative; refine intentionally
-    #                drops style-inherited negatives that would fight
-    #                the Hires-Fix goal of preserving input.
+    # v0.7.11 (gap 1): draw now exposes --negative-prompt via CLI, so
+    # the caller (`build_draw_iterations`) passes through args.negative_prompt
+    # via the `negative` parameter. Refine intentionally passes "" (empty)
+    # because style-inherited negatives fight the Hires-Fix goal of
+    # preserving input. Default "" keeps refine's pre-v0.7.11 behaviour.
     lora_resolution = _resolve_iteration_loras(
         preset=preset, args=args, be=be, prompt=prompt,
     )
@@ -1481,6 +1484,11 @@ def build_draw_iterations(
 
         # v0.7.8: shared core with build_refine_iteration. Naked
         # iteration (empty Style preset, no incompat accumulator).
+        # v0.7.11 (gap 1): forward --negative-prompt CLI value via the
+        # `negative` parameter. `getattr(..., None)` keeps the helper
+        # safe against older callers / Namespaces without the field
+        # (mirrors the v0.6.5 args.scope `getattr` pattern). None or
+        # empty → empty string (mflux argv emission gated on truthy).
         iterations.append(_assemble_iteration_no_style(
             args=args,
             prompt=prompt,
@@ -1493,6 +1501,7 @@ def build_draw_iterations(
             height=height,
             seed=iter_seed,
             style_name="draw",
+            negative=getattr(args, "negative_prompt", None) or "",
         ))
 
     return iterations

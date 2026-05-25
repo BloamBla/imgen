@@ -124,10 +124,20 @@ def test_validate_section_rejects_steps_out_of_range(bad_steps):
         validate_section("defaults", {"steps": bad_steps}, DEFAULTS_SCHEMA)
 
 
-@pytest.mark.parametrize("bad_g", [0.4, 15.1, -1.0, 100.0])
+@pytest.mark.parametrize("bad_g", [-0.1, 15.1, -1.0, 100.0])
 def test_validate_section_rejects_guidance_out_of_range(bad_g):
+    """v0.7.11 (gap 2): lower bound is now 0.0 (was 0.5 pre-v0.7.11).
+    Distilled models like Z-Image-Turbo / FLUX-schnell train with CFG
+    disabled and require ``guidance=0.0``."""
     with pytest.raises(ConfigError):
         validate_section("defaults", {"guidance": bad_g}, DEFAULTS_SCHEMA)
+
+
+def test_validate_section_accepts_guidance_zero():
+    """v0.7.11 (gap 2): guidance=0.0 must validate. The 0.5 floor
+    pre-v0.7.11 silently blocked distilled-model configs."""
+    out = validate_section("defaults", {"guidance": 0.0}, DEFAULTS_SCHEMA)
+    assert out["guidance"] == 0.0
 
 
 @pytest.mark.parametrize("bad_s", [-0.1, 1.1, 2.0])

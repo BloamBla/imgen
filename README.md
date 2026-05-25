@@ -233,7 +233,7 @@ If you want to re-run with the same args, re-invoke `imgen` with the same flags 
 | Flag                | Range  | Effect |
 |---------------------|--------|--------|
 | `--steps`           | 1-200  | More = better, slower. Sweet spot 15-30 |
-| `--guidance` / `-g` | 0.5-15 | How strictly to follow prompt. 3.5-4.5 |
+| `--guidance` / `-g` | 0-15   | How strictly to follow prompt. 3.5-4.5 (0 = no CFG, for distilled models) |
 | `--strength`        | 0-1    | How much to keep from original. 0.5-0.7 |
 | `--quantize` / `-q` | 3,4,5,6,8 | Lower = smaller/faster, more artifacts |
 | `--preview` / `-p`  | flag   | Q4, 8 steps, 768x — ~5x faster |

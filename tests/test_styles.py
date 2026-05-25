@@ -26,10 +26,12 @@ def test_preset_has_required_keys(name):
 
 @pytest.mark.parametrize("name", ALL_STYLES)
 def test_preset_guidance_in_argparse_range(name):
-    """Argparse validator allows 0.5..15.0 — preset overrides must be in range."""
+    """Argparse validator allows 0.0..15.0 (v0.7.11 gap 2: lower bound
+    dropped from 0.5 → 0.0 so distilled models like Z-Image-Turbo can
+    use CFG=0.0 as designed). Preset overrides must be in range."""
     g = STYLES[name].guidance
     if g is not None:
-        assert 0.5 <= g <= 15.0, f"{name}: guidance {g} out of [0.5, 15.0]"
+        assert 0.0 <= g <= 15.0, f"{name}: guidance {g} out of [0.0, 15.0]"
 
 
 @pytest.mark.parametrize("name", ALL_STYLES)

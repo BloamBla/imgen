@@ -206,6 +206,19 @@ def test_qwen_omits_negative_prompt_even_when_set(params):
     assert "--negative-prompt" not in cmd
 
 
+def test_flux2_klein_edit_9b_omits_negative_prompt_even_when_set(params):
+    """v0.7.11 (gap 7 fix): mflux-generate-flux2-edit errors out with
+    ``--negative-prompt is not supported for FLUX.2`` if argv carries
+    the flag. FLUX.2 family removed CFG/negative entirely. Even though
+    the caller passes a non-empty negative (typically leaked from the
+    default ``pixar`` style preset's ``negative_prompt`` field), argv
+    must not contain ``--negative-prompt``. Mirrors the qwen guard."""
+    params["backend"] = BACKENDS["flux2-klein-edit-9b"]
+    params["negative"] = "low quality, blurry"
+    cmd = build_mflux_cmd(**params)
+    assert "--negative-prompt" not in cmd
+
+
 def test_qwen_appends_model_qwen(params):
     params["backend"] = BACKENDS["qwen"]
     cmd = build_mflux_cmd(**params)

@@ -36,7 +36,7 @@ _STARTER_CONFIG_TEMPLATE = f"""\
 # backend = "{DEFAULTS['backend']}"             # "flux" (needs HF token) | "qwen" (open)
 # quantize = {DEFAULTS['quantize']}                  # 3, 4, 5, 6, or 8
 # steps = {DEFAULTS['steps']}                    # 1..200
-# guidance = {DEFAULTS['guidance']}                # 0.5..15.0  (preset may override)
+# guidance = {DEFAULTS['guidance']}                # 0.0..15.0  (preset may override; 0 = no CFG, for distilled models)
 # strength = {DEFAULTS['strength']}               # 0.0..1.0   (preset may override)
 # output_dir = "~/Desktop/imgen"  # env IMGEN_OUTPUT_DIR still wins over this
 
@@ -161,7 +161,7 @@ def cmd_setup(_args) -> int:
             "Filename (without .toml) becomes the style name.\n"
             "Required fields: none — but if `prompt` is missing, you'll\n"
             "need to pass --custom-prompt at run time.\n"
-            "Optional fields: prompt, negative, guidance (0.5-15),\n"
+            "Optional fields: prompt, negative, guidance (0-15),\n"
             "                 strength (0-1).\n"
             "\n"
             "Example: ~/.imgen/styles.d/noir.toml\n"

@@ -66,6 +66,25 @@ def test_qwen_backend_config_locked():
     assert qwen.extra_args == ("--model", "qwen")
 
 
+def test_flux2_klein_edit_9b_backend_config_locked():
+    """v0.7.11: ``supports_negative=False`` — FLUX.2 family deliberately
+    removed CFG/negative-prompt support per BFL docs. mflux-generate-
+    flux2-edit errors with ``--negative-prompt is not supported for
+    FLUX.2. Focus on describing what you want.`` if argv carries it.
+    Pre-v0.7.11 this was ``True`` (closes the v0.7-backlog gap 7 bug:
+    default ``pixar`` style's ``negative_prompt`` field bled into argv
+    and crashed every flux2-klein-edit-9b invocation that hit a preset
+    with negatives)."""
+    be = BACKENDS["flux2-klein-edit-9b"]
+    assert be.binary == "mflux-generate-flux2-edit"
+    assert be.needs_token is True
+    assert be.image_flag == "--image-paths"
+    assert be.supports_strength is False
+    assert be.supports_negative is False
+    assert be.extra_args == ("-m", "flux2-klein-9b")
+    assert be.hf_gated_repo == "black-forest-labs/FLUX.2-klein-9B"
+
+
 # ── v0.4: secret_env_var / secret_required (custom-backend support) ─────
 
 
