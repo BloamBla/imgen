@@ -202,6 +202,14 @@ def _replay_draw_entry(entry: dict) -> int:
         preview=entry.get("preview", False),
         width=entry.get("width", 1024),
         height=entry.get("height", 1024),
+        # v0.8.2 M-2 closure: replay must round-trip the negative prompt.
+        # The v=3/v=4 history-entry stores it under the "negative" key
+        # (see cmd_helpers.py run_one_iteration's entry construction).
+        # Pre-v0.8.2 the replay Namespace omitted this field; build_draw_
+        # iterations resolved it via ``getattr(args, "negative_prompt",
+        # None) or ""`` so the gap silently dropped the negative on
+        # replay — bit-divergent reconstruction. Now explicit.
+        negative_prompt=entry.get("negative") or None,
         no_open=False,
         dry_run=False,
         force=False,

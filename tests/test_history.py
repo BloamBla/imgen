@@ -572,6 +572,84 @@ def test_replay_entry_routes_draw_to_cmd_draw(tmp_state_dir, monkeypatch):
     assert args.height == 1024
 
 
+def test_replay_draw_entry_round_trips_negative_prompt(
+    tmp_state_dir, monkeypatch,
+):
+    """v0.8.2 M-2 closure: ``_replay_draw_entry`` must round-trip the
+    ``"negative"`` field from the history entry into ``args.negative_prompt``
+    on the Namespace it builds for cmd_draw. Pre-fix the field was
+    silently dropped — ``build_draw_iterations`` resolved it via
+    ``getattr(args, "negative_prompt", None) or ""`` so replays of
+    entries with a negative produced argv without it, bit-divergent
+    from the original run. Lock-in against regression."""
+    import imgen.commands.history as history_cmd
+    captured = {}
+
+    def fake_cmd_draw(args):
+        captured["args"] = args
+        return 0
+
+    monkeypatch.setattr(history_cmd, "cmd_draw", fake_cmd_draw)
+
+    entry = {
+        "id": 43,
+        "v": HISTORY_SCHEMA_VERSION,
+        "input": None,
+        "command": "draw",
+        "prompt": "samurai",
+        "negative": "blurry, low quality, jpeg artifacts",
+        "model": "flux-dev",
+        "quantize": 8,
+        "steps": 20,
+        "guidance": 3.5,
+        "width": 1024,
+        "height": 1024,
+    }
+    rc = history_cmd.replay_entry(entry)
+    assert rc == 0
+    args = captured["args"]
+    assert args.negative_prompt == "blurry, low quality, jpeg artifacts"
+
+
+def test_replay_draw_entry_missing_negative_yields_none(
+    tmp_state_dir, monkeypatch,
+):
+    """v0.8.2 M-2 boundary case: an entry with no ``"negative"`` field
+    (pre-v0.7.11 entries) round-trips to ``args.negative_prompt = None``,
+    not an empty string. Empty-string vs None matters downstream in
+    build_draw_iterations (`getattr or ""` collapses both, but other
+    surfaces — replay history list, future replay diff — may treat
+    them differently). Explicit None preserves the "no negative was
+    set" semantic."""
+    import imgen.commands.history as history_cmd
+    captured = {}
+
+    def fake_cmd_draw(args):
+        captured["args"] = args
+        return 0
+
+    monkeypatch.setattr(history_cmd, "cmd_draw", fake_cmd_draw)
+
+    entry = {
+        "id": 44,
+        "v": HISTORY_SCHEMA_VERSION,
+        "input": None,
+        "command": "draw",
+        "prompt": "samurai",
+        # no "negative" key — pre-v0.7.11 shape
+        "model": "flux-dev",
+        "quantize": 8,
+        "steps": 20,
+        "guidance": 3.5,
+        "width": 1024,
+        "height": 1024,
+    }
+    rc = history_cmd.replay_entry(entry)
+    assert rc == 0
+    args = captured["args"]
+    assert args.negative_prompt is None
+
+
 def test_replay_entry_routes_refine_to_cmd_refine(
     tmp_state_dir, monkeypatch,
 ):
