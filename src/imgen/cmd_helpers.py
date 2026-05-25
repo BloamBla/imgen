@@ -907,11 +907,41 @@ def run_one_iteration(
         logger.iteration_start(idx, total, style_name, started)
 
     try:
-        returncode = run_with_stderr_redaction(
-            cmd,
-            env=ctx.env,
-            log_file=logger.borrow_fd() if logger else None,
-        )
+        # v0.8.2 M-1C dispatch flip: when the iteration carries a
+        # resolved v0.8 Model (every production iteration post-M-1A
+        # does), route through Engine.run. Legacy fallback below
+        # stays for the v0.8.x deprecation window per architect
+        # HIGH-1 — unreachable in production today, kept for direct-
+        # construct test iterations (model=None) until v0.8.3
+        # cleanup retires it.
+        #
+        # Argv byte-identity between paths is locked by
+        # tests/test_v082_engine_run_prep.py
+        # ``test_mflux_engine_build_cmd_matches_legacy_*`` (CRITICAL-2
+        # property tests across negative-prompt / LoRA / no-input
+        # axes). The dispatch flip is a behaviour-preserving refactor
+        # for mflux models.
+        #
+        # Diffusers_mps Models route through DiffusersMpsEngine.run
+        # — implemented since v0.8.0 commit 6 but never reached by
+        # production code before this flip. v0.8.1 HIGH-2 closure +
+        # this commit are what make user-TOML diffusers_mps actually
+        # reachable end-to-end.
+        if it.model is not None and it.params is not None:
+            engine = _engine_for_model(it.model)
+            returncode = engine.run(
+                it.model, it.params,
+                env=ctx.env,
+                log_file=logger.borrow_fd() if logger else None,
+            )
+        else:
+            # Legacy fallback (architect HIGH-1). Unreachable in
+            # production; retained for the v0.8.x deprecation window.
+            returncode = run_with_stderr_redaction(
+                cmd,
+                env=ctx.env,
+                log_file=logger.borrow_fd() if logger else None,
+            )
     except KeyboardInterrupt:
         warn("Cancelled by user")
         cancel_duration = int(

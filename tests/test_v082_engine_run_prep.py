@@ -481,3 +481,55 @@ def test_mflux_engine_run_propagates_keyboard_interrupt_unwrapped(
 
     with pytest.raises(KeyboardInterrupt):
         me.MfluxEngine().run(model, params, env={"PATH": "/usr/bin"})
+
+
+def test_mflux_engine_run_delegates_to_subprocess_helpers_with_correct_args(
+    monkeypatch,
+):
+    """v0.8.2 architect MEDIUM-1 lock-in: MfluxEngine.run is a thin
+    delegation shim over ``subprocess_helpers.run_with_stderr_redaction``.
+    This test asserts the delegation contract:
+      * cmd argv comes from self.build_cmd(model, params)
+      * env passes through verbatim
+      * log_file passes through verbatim
+
+    Transitive HF_TOKEN redaction coverage: by proving MfluxEngine.run
+    routes through run_with_stderr_redaction, all existing redaction
+    tests in tests/test_subprocess_helpers.py apply to the engine
+    path too. No need to duplicate the spawn-real-subprocess E2E
+    here — the trust boundary is the SAME function.
+    """
+    from imgen.engines import mflux_engine as me
+    from imgen.models import BUILTIN_MODELS
+
+    captured = {}
+
+    def fake_run_with_stderr_redaction(cmd, env, log_file=None):
+        captured["cmd"] = cmd
+        captured["env"] = env
+        captured["log_file"] = log_file
+        return 0
+
+    monkeypatch.setattr(
+        "imgen.subprocess_helpers.run_with_stderr_redaction",
+        fake_run_with_stderr_redaction,
+    )
+
+    model = BUILTIN_MODELS["flux-dev"]
+    params = _gen_params_with(input_path=None)
+    env = {"PATH": "/usr/bin", "HF_TOKEN": "hf_test_token_should_be_passed_through"}
+    log_sentinel = object()  # any non-None marker
+
+    rc = me.MfluxEngine().run(
+        model, params, env=env, log_file=log_sentinel,
+    )
+    assert rc == 0
+
+    # Delegation contract
+    assert captured["cmd"][0] is not None  # build_cmd was called
+    assert "--prompt" in captured["cmd"]   # mflux argv shape preserved
+    # env passes through (dict() conversion preserves contents)
+    assert captured["env"]["HF_TOKEN"] == "hf_test_token_should_be_passed_through"
+    assert captured["env"]["PATH"] == "/usr/bin"
+    # log_file passes through unchanged
+    assert captured["log_file"] is log_sentinel
