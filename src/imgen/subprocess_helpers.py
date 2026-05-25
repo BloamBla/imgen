@@ -16,11 +16,91 @@ import sys
 from typing import BinaryIO
 
 __all__ = [
+    "InsufficientRAMError",
     "build_enhance_env",
     "build_mflux_env",
     "format_cmd",
     "run_with_stderr_redaction",
 ]
+
+
+# v0.8.2 safety net — hard-floor RAM check below which we refuse to
+# spawn ML subprocesses (mflux / diffusers / enhance). Defence-in-depth
+# against preflight bypass scenarios (architect HIGH-3 + v0.8.2 ops
+# post-mortem):
+#
+# * ``--force`` flag at CLI entry skips preflight_resources entirely.
+# * System state changed between preflight (at CLI entry) and the
+#   spawn (later in the iteration loop) — user opened Chrome between.
+# * Race between parallel ``imgen`` invocations: ``find_running_mflux``
+#   only catches PIDs ALREADY running, not the one about to start.
+# * User TOML lying about ``ram_baseline_gb`` post-v0.8.1 schema.
+# * External code calling ``Engine.run`` directly (post-M-1B real
+#   impl) bypasses the entire CLI layer.
+# * Test infrastructure bugs that miss the engine.run path (the
+#   v0.8.2 M-1C scare on 2026-05-26 — multiple parallel mflux Popens
+#   loaded FLUX weights into memory before the user could Ctrl-C).
+#
+# 4.0 GB floor: even FLUX Q4 wants ~11 GB peak and ~9 GB baseline; with
+# less than 4 GB free, the spawn is guaranteed to swap-thrash or OOM
+# the parent shell. Hard refuse > silent attempt.
+#
+# Escape hatch: ``IMGEN_BYPASS_RAM_FLOOR=1`` skips the check. For CI /
+# power users who knowingly accept OOM risk; documented in the error
+# message itself so an end user always knows how to opt out.
+_MIN_SAFE_AVAILABLE_RAM_GB: float = 4.0
+
+
+class InsufficientRAMError(RuntimeError):
+    """Raised by ``run_with_stderr_redaction`` when available RAM falls
+    below ``_MIN_SAFE_AVAILABLE_RAM_GB``. Caller (``run_one_iteration``
+    via the ``except`` block) catches and writes a failure history
+    entry — no real subprocess ever spawns into a dangerous state.
+    """
+
+
+def _assert_safe_ram_or_raise(
+    min_available_gb: float = _MIN_SAFE_AVAILABLE_RAM_GB,
+) -> None:
+    """Hard-floor RAM check fired BEFORE any ``subprocess.Popen``.
+
+    Pure check + raise pattern. No side effects when the floor is
+    satisfied. ``get_memory_gb()`` returning ``(0, 0)`` means parse
+    failure (non-Darwin, sysctl unavailable, etc.) — we skip the check
+    in that case rather than false-positive on legit CI / Linux smoke
+    runs.
+
+    Escape hatch: ``IMGEN_BYPASS_RAM_FLOOR=1`` env var bypasses
+    unconditionally. Documented in the error message so an end user
+    knows how to override.
+    """
+    if os.environ.get("IMGEN_BYPASS_RAM_FLOOR") == "1":
+        return
+    # Local import to dodge the circular: checks.py imports
+    # subprocess_helpers's allowlist for its own subprocess work
+    # (find_running_mflux uses pgrep via subprocess directly, not
+    # through this wrapper, so no cycle in practice — but the late
+    # import keeps the dependency graph one-directional in the
+    # source).
+    from .checks import get_memory_gb
+    total_gb, available_gb = get_memory_gb()
+    if total_gb == 0.0:
+        # parse failure / non-Darwin — let the call proceed without
+        # the floor check. Production target is Apple Silicon Macs
+        # where get_memory_gb is well-tested; the (0, 0) branch is
+        # a defence-in-depth fallback, not an expected path.
+        return
+    if available_gb < min_available_gb:
+        raise InsufficientRAMError(
+            f"Refusing to spawn ML subprocess: only "
+            f"{available_gb:.1f} GB RAM available "
+            f"(safety floor: {min_available_gb:.1f} GB). "
+            f"mflux needs ~11 GB peak (Q4) or ~18 GB (Q8) for "
+            f"FLUX-class models — spawning now would swap-thrash or "
+            f"OOM your machine. Close apps and retry, OR set "
+            f"IMGEN_BYPASS_RAM_FLOOR=1 to bypass this check at your "
+            f"own OOM risk."
+        )
 
 
 # Single source of truth for the env allow-list reaching the mflux
@@ -250,7 +330,20 @@ def run_with_stderr_redaction(
     deadlock risk. Keyword-only so the legacy positional/log_file
     call sites stay binary-compatible (architect commit-6 pre-vet
     CRITICAL C3 lock-in).
+
+    v0.8.2 safety net: hard-floor RAM check fires FIRST, BEFORE any
+    ``subprocess.Popen``. If the system has less than
+    ``_MIN_SAFE_AVAILABLE_RAM_GB`` available, raises
+    :class:`InsufficientRAMError` — caller (typically
+    ``run_one_iteration``) catches and writes a failure history entry.
+    See ``_assert_safe_ram_or_raise`` for the rationale + opt-out
+    escape hatch.
     """
+    # Defence-in-depth pre-spawn RAM check. Catches 6+ preflight-bypass
+    # scenarios (see ``_assert_safe_ram_or_raise`` docstring). Raises
+    # BEFORE Popen so no ML weights get loaded into a dangerous memory
+    # state.
+    _assert_safe_ram_or_raise()
     popen_kwargs = dict(env=env, stderr=subprocess.PIPE, bufsize=0)
     if stdin_data is not None:
         popen_kwargs["stdin"] = subprocess.PIPE

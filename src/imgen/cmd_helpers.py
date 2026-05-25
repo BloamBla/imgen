@@ -88,7 +88,10 @@ from .runs import (
     next_available_run_dir,
 )
 from .styles import LoraRef, Style, StyleNotFound, get_style
-from .subprocess_helpers import run_with_stderr_redaction
+from .subprocess_helpers import (
+    InsufficientRAMError,
+    run_with_stderr_redaction,
+)
 from .tokens import load_token
 
 __all__ = [
@@ -919,6 +922,28 @@ def run_one_iteration(
         if logger is not None:
             logger.iteration_cancelled(idx, total, style_name, cancel_duration)
         return False
+    except InsufficientRAMError as e:
+        # v0.8.2 safety net hit BEFORE any mflux Popen. Defence-in-depth
+        # against preflight bypass — see subprocess_helpers
+        # ``_assert_safe_ram_or_raise`` docstring for the 6 scenarios
+        # this catches.
+        #
+        # Continue the batch loop (return True) so the user sees ALL
+        # affected iterations in the summary; an abrupt early-exit on
+        # the first per-iteration RAM-safety failure would hide the
+        # scope of the issue. Status="failed" + duration=0 records the
+        # refusal in history.jsonl for replay diagnostics.
+        err(f"RAM safety: {e}")
+        fail_duration = int(
+            (datetime.datetime.now() - started).total_seconds())
+        history_entry["status"] = "failed"
+        history_entry["duration_sec"] = fail_duration
+        safe_append_history(history_entry)
+        if logger is not None:
+            logger.iteration_end(idx, total, style_name, -1, fail_duration)
+        failed.append((style_name, -1, output_path))
+        print()
+        return True
 
     duration = int((datetime.datetime.now() - started).total_seconds())
     history_entry["duration_sec"] = duration
