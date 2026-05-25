@@ -598,6 +598,54 @@ def _validate_binary_field(value: str, source: Path) -> None:
         # (v0.4 security-reviewer NIT-1.)
 
 
+# v0.8.2 NIT-B: per-engine "field doesn't apply here" sets. Used by the
+# load-time warn surface. Conservative — only fields the engine has NO
+# conceivable use for, not "engine probably doesn't care". Adding to
+# these sets without testing is a UX regression risk (over-warning is
+# almost as bad as silent ignore).
+_INAPPLICABLE_FIELDS_FOR_ENGINE: dict[str, frozenset[str]] = {
+    "mflux": frozenset({
+        # diffusers_mps-only routing fields
+        "repo",
+        "cpu_offload_threshold_mp",
+        # param_overrides is currently a diffusers_mps-only feature
+        # (allowlist-keyed at the runner trust boundary); mflux argv
+        # composition has no consumer for it.
+        "param_overrides",
+    }),
+    "diffusers_mps": frozenset({
+        # mflux argv-composition fields — diffusers_mps doesn't have
+        # an argv layer at all (JSON-stdin transport via
+        # _diffusers_runner).
+        "binary",
+        "image_flag",
+        "extra_args",
+    }),
+}
+
+
+def _warn_inapplicable_fields_per_engine(
+    engine: str, data: dict, source: Path,
+) -> None:
+    """Emit a per-field warn for fields SET in ``data`` but
+    inapplicable for the declared ``engine``. Caller: load-time
+    validator, AFTER schema gate, BEFORE Backend construction.
+
+    Pure side-effect (prints warn lines). The inapplicable fields
+    still flow into Backend storage (with their TOML-declared
+    values); this just surfaces the dead-field UX gap to the user.
+    """
+    from .colors import warn as _warn
+
+    inapplicable = _INAPPLICABLE_FIELDS_FOR_ENGINE.get(engine, frozenset())
+    for field in sorted(inapplicable & set(data.keys())):
+        _warn(
+            f"{source}: {field!r} is set but inapplicable for "
+            f"engine={engine!r} — field will be stored but never "
+            f"consulted at runtime. Safe to delete from the TOML."
+        )
+
+
 def validate_user_backend_schema(data: dict, source: Path) -> Backend:
     """Turn a parsed TOML dict into a Backend instance, enforcing schema.
 
@@ -680,6 +728,21 @@ def validate_user_backend_schema(data: dict, source: Path) -> Backend:
     # engine-conditional required-field gate above.
     if engine == "mflux":
         _validate_binary_field(validated["binary"], source)
+
+    # v0.8.2 NIT-B closure: warn on fields that pass schema validation
+    # but are INAPPLICABLE for the declared engine. A common confusion
+    # source: colleague copies an mflux template, switches
+    # ``engine = "diffusers_mps"`` + adds ``repo = ...``, but forgets
+    # to delete ``binary = ...`` or ``image_flag = ...``. Pre-NIT-B
+    # those fields silently flowed into Backend storage and got
+    # ignored at runtime — no signal to the user that they were dead.
+    # Now we emit a per-field warn at load time naming the engine
+    # context. Warns don't reject the file; the inapplicable fields
+    # are still stored on Backend (defaults match v0.7) but the user
+    # knows to clean them up. Per-engine inapplicability sets are
+    # intentionally conservative — only fields that the engine has
+    # NO conceivable use for, not "engine probably doesn't care".
+    _warn_inapplicable_fields_per_engine(engine, data, source)
 
     # [secret] section — optional whole-section opt-in.
     secret_env_var: str | None = None

@@ -470,6 +470,109 @@ def test_user_toml_v07_shape_loads_unchanged_via_v081_schema(tmp_state_dir):
     assert be.param_overrides == ()
 
 
+# ── v0.8.2 NIT-B: warn on inapplicable fields per engine ─────────────
+
+
+def test_diffusers_mps_user_toml_warns_when_binary_is_set(
+    tmp_state_dir, capsys,
+):
+    """v0.8.2 NIT-B closure: a colleague who copies an mflux template,
+    switches ``engine = "diffusers_mps"``, but forgets to delete
+    ``binary = "..."`` gets a friendly warn naming the dead field
+    + the engine context. Pre-fix the field was silently stored on
+    Backend and ignored at runtime — no signal to the user."""
+    import imgen.backends as backends_mod
+    import imgen.paths as paths_mod
+
+    paths_mod.MODELS_D.mkdir()
+    (paths_mod.MODELS_D / "qwen-mixed.toml").write_text(
+        'engine = "diffusers_mps"\n'
+        'repo = "Qwen/Qwen-Image-2512"\n'
+        # Leftover mflux fields — should warn on each:
+        'binary = "mflux-generate-qwen"\n'
+        'image_flag = "--image-path"\n'
+        'extra_args = ["--something"]\n'
+    )
+    backends_mod.reset_backends_cache()
+    try:
+        # Trigger load (warn fires once at load time, per-process
+        # cache means it doesn't fire again on the same file).
+        backends_mod._load_merged_backends()
+    finally:
+        backends_mod.reset_backends_cache()
+
+    out = capsys.readouterr().out + capsys.readouterr().err
+    # Each inapplicable field gets its own warn line.
+    assert "'binary'" in out, "binary warn missing"
+    assert "'image_flag'" in out, "image_flag warn missing"
+    assert "'extra_args'" in out, "extra_args warn missing"
+    assert "diffusers_mps" in out, "engine name missing from warn"
+
+
+def test_mflux_user_toml_warns_when_diffusers_only_fields_set(
+    tmp_state_dir, capsys,
+):
+    """Mirror of the above for the opposite direction: an mflux user
+    TOML declaring diffusers-only fields (repo, cpu_offload_threshold_mp,
+    param_overrides) gets per-field warns. Same UX rationale: the
+    fields flow into Backend but get ignored at runtime; surface the
+    gap at load time."""
+    import imgen.backends as backends_mod
+    import imgen.paths as paths_mod
+
+    paths_mod.MODELS_D.mkdir()
+    (paths_mod.MODELS_D / "weird-mflux.toml").write_text(
+        'engine = "mflux"\n'
+        'binary = "mflux-generate-fake"\n'
+        'image_flag = "--image-path"\n'
+        # Leftover diffusers fields — should warn:
+        'repo = "fake/repo"\n'
+        'cpu_offload_threshold_mp = 1.0\n'
+        'param_overrides = [["true_cfg_scale", 4.0]]\n'
+    )
+    backends_mod.reset_backends_cache()
+    try:
+        backends_mod._load_merged_backends()
+    finally:
+        backends_mod.reset_backends_cache()
+
+    out = capsys.readouterr().out + capsys.readouterr().err
+    assert "'repo'" in out, "repo warn missing"
+    assert "'cpu_offload_threshold_mp'" in out, (
+        "cpu_offload_threshold_mp warn missing"
+    )
+    assert "'param_overrides'" in out, "param_overrides warn missing"
+    assert "mflux" in out, "engine name missing from warn"
+
+
+def test_user_toml_no_warn_when_fields_match_engine(
+    tmp_state_dir, capsys,
+):
+    """Negative test: a TOML with ONLY engine-appropriate fields
+    produces no NIT-B warn. Guards against an overeager future
+    "warn on every optional field" regression."""
+    import imgen.backends as backends_mod
+    import imgen.paths as paths_mod
+
+    paths_mod.MODELS_D.mkdir()
+    (paths_mod.MODELS_D / "clean-mflux.toml").write_text(
+        'engine = "mflux"\n'
+        'binary = "mflux-generate-fake"\n'
+        'image_flag = "--image-path"\n'
+        'extra_args = ["--model", "sdxl"]\n'
+        'default_steps = 25\n'
+    )
+    backends_mod.reset_backends_cache()
+    try:
+        backends_mod._load_merged_backends()
+    finally:
+        backends_mod.reset_backends_cache()
+
+    out = capsys.readouterr().out + capsys.readouterr().err
+    # No "inapplicable" warn should fire.
+    assert "inapplicable" not in out.lower()
+
+
 def test_user_model_routes_through_engine_for_validate(tmp_state_dir):
     """``_model_for_validate(args)`` resolves user TOMLs (not just
     BUILTIN_MODELS) post-v0.8.1. Locked-in so a future refactor of
