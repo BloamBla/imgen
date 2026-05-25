@@ -146,9 +146,9 @@ def cmd_generate(args) -> int:
     # instead of letting load_backend_and_token build a doomed cmd.
     if args.backend == "flux-dev":
         die(
-            "--backend flux-dev is text-to-image; cmd_generate requires "
+            "--model flux-dev is text-to-image; cmd_generate requires "
             "a source photo. Use `imgen draw \"<prompt>\"` instead "
-            "(same backend, no --image input).",
+            "(same model, no --image input).",
             code=2,
         )
 

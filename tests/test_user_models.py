@@ -43,16 +43,23 @@ def test_user_toml_loaded_from_models_d(tmp_state_dir):
         backends_mod.reset_backends_cache()
 
 
-# ── Test 2: backends.d/ still loads, NO deprecation warn at commit 3 ───
+# ── Test 2: backends.d/ still loads AND emits DEPRECATED warn ─────────
+#
+# Cross-commit history: this test was added at commit 3 asserting NO
+# DEPRECATED in stderr (deprecation warn was deferred to commit 4a per
+# §Q split rationale). Commit 4a flipped the assertions per CLAUDE.md
+# cross-commit invariant — backends.d/ entries now load AND emit a
+# per-file warn pointing at the `mv` migration command.
 
 
-def test_user_toml_loaded_from_backends_d_still_works(
+def test_user_toml_warns_on_backends_d_load(
     tmp_state_dir, capsys,
 ):
-    """Commit 3: legacy ~/.imgen/backends.d/ stays a valid load path.
-    Deprecation warn is commit 4a, not here — assert stderr is clean
-    of DEPRECATED so a future grep-bisect can find this assertion if
-    commit 4a accidentally leaks its warn into commit 3.
+    """v0.8.0 commit 4a: per-file DEPRECATED warn on backends.d/ load.
+    Loading still works (deprecation window stays open through
+    v0.8.x; v0.9.0 drops the read entirely), but each file surfaces
+    a one-line migration nudge with the concrete mv command so a
+    colleague can fix it without consulting docs.
     """
     import imgen.backends as backends_mod
     import imgen.paths as paths_mod
@@ -71,8 +78,10 @@ def test_user_toml_loaded_from_backends_d_still_works(
 
     captured = capsys.readouterr()
     combined = captured.out + captured.err
-    assert "DEPRECATED" not in combined
-    assert "deprecated" not in combined.lower()
+    assert "DEPRECATED" in combined
+    # mv-command guidance present so the user can act without docs
+    assert "mv ~/.imgen/backends.d/legacy.toml" in combined
+    assert "~/.imgen/models.d/legacy.toml" in combined
 
 
 # ── Test 3: same stem in both dirs → models.d/ wins ────────────────────

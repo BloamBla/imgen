@@ -220,12 +220,17 @@ def cmd_setup(_args) -> int:
     if not backends_dir.exists():
         backends_dir.mkdir(mode=0o700)
         (backends_dir / "README.txt").write_text(
-            "Drop *.toml files here to add image-gen backends beyond\n"
-            "the built-in flux + qwen. Filename (without .toml) becomes\n"
-            "the --backend NAME.\n"
+            "v0.8.0: this directory was renamed to ~/.imgen/models.d/.\n"
+            "Files here still load BUT each emits a DEPRECATED warn;\n"
+            "v0.9.0 will drop the backends.d/ read entirely. Run:\n"
+            "  mv ~/.imgen/backends.d/<NAME>.toml ~/.imgen/models.d/<NAME>.toml\n"
+            "\n"
+            "Drop *.toml files into ~/.imgen/models.d/ to add models\n"
+            "beyond the built-in set. Filename (without .toml) becomes\n"
+            "the --model NAME.\n"
             "\n"
             "SECURITY: `binary = ...` is executed as a subprocess by imgen.\n"
-            "Treat backends.d/ files like shell scripts — only drop in files\n"
+            "Treat models.d/ files like shell scripts — only drop in files\n"
             "you wrote yourself or got from a source you trust.\n"
             "\n"
             "Required fields:\n"

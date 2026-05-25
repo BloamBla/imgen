@@ -6,13 +6,15 @@ adding/changing a flag is one edit in this file.
 from __future__ import annotations
 
 import argparse
+import difflib
 from pathlib import Path
+from types import MappingProxyType
 
-from typing import Any
+from typing import Any, Mapping
 
 from . import __version__
 from .backends import BUILTIN_BACKENDS, get_backend, list_backends
-from .colors import C, step
+from .colors import C, die, step
 from .defaults import DEFAULTS, MFLUX_PIN, PREVIEW_OVERRIDES
 from .paths import DEFAULT_OUTPUT_DIR, HF_CACHE, SAFE_OUTPUT_EXTS
 from .styles import get_style, list_styles, parse_style_list
@@ -279,6 +281,153 @@ def _lora_refs_arg(s: str):
     return [_lora_ref_arg(p) for p in parts]
 
 
+# ── v0.8.0 — CLI rename helpers (commit 4a) ─────────────────────────────
+#
+# Per [[project-v080-design]] §I + §Q commit 4a. The user-facing flag
+# `--backend NAME` becomes `--model NAME` across every subcommand, and
+# two built-in names move to honest v0.8 spellings:
+#
+#   v0.7   →  v0.8
+#   flux   →  flux-kontext        (FLUX.1-Kontext-dev, i2i)
+#   qwen   →  qwen-image-edit-v1  (Qwen-Image-Edit v1, distinct from 2512)
+#
+# Other names (flux-dev, flux2-klein-edit-9b, user TOML stems) are
+# unchanged. The registry source-of-truth STAYS at ``BUILTIN_BACKENDS``
+# (keyed by v0.7 names) through commit 4a — commit 4b flips it to
+# ``BUILTIN_MODELS`` (keyed by v0.8 names), at which point the inverse
+# translation in ``_resolve_v07_alias`` becomes identity and the
+# ``_V08_TO_V07_REGISTRY_KEY`` constant goes away (see TODO marker).
+
+# MappingProxyType for runtime immutability — matches the project
+# discipline of `frozenset` for `_DANGEROUS_ENV_VARS` in backends.py.
+_V07_TO_V08_MODEL_RENAMES: Mapping[str, str] = MappingProxyType({
+    "flux": "flux-kontext",
+    "qwen": "qwen-image-edit-v1",
+})
+
+# Inverse map: v0.8 canonical name → v0.7 registry key. USED ONLY AT
+# COMMIT 4a while ``BUILTIN_BACKENDS`` is the live registry. Commit 4b
+# flips the registry to ``BUILTIN_MODELS`` (keyed by v0.8 names), at
+# which point this constant + the inverse-map branch of
+# ``_resolve_v07_alias`` collapse to identity and should be deleted.
+# TODO commit 4b: remove _V08_TO_V07_REGISTRY_KEY + the .get() call
+# inside _resolve_v07_alias once registry source-of-truth flips.
+_V08_TO_V07_REGISTRY_KEY: Mapping[str, str] = MappingProxyType({
+    v08: v07 for v07, v08 in _V07_TO_V08_MODEL_RENAMES.items()
+})
+
+
+def _check_for_deprecated_backend_flag(argv: list[str]) -> None:
+    """Pre-argparse hook: detect ``--backend`` (space form) and
+    ``--backend=VALUE`` (equals form), die with a STATIC migration
+    hint.
+
+    Called from ``cli.py`` BEFORE ``build_parser().parse_args(argv)`` —
+    argparse alone would die with the uninformative "unrecognized
+    arguments: --backend" once we drop the flag. This hook gives the
+    user an actionable message naming the new flag.
+
+    Security: the hint is STATIC text. The user's typed value is never
+    echoed back, even via ``repr()``. This matches the
+    ``backends.py:_validate_binary_field`` discipline (round-1 security
+    MEDIUM) — if the user typed ``--backend=$'\\x1b[2J'``, echoing the
+    value into stderr would leak the escape sequence to the terminal.
+
+    Equals-form coverage: ``a.startswith("--backend=")`` matches the
+    full ``--backend=foo`` token. A hypothetical future flag like
+    ``--backend-something`` would NOT match because we check
+    ``a == "--backend"`` (exact) and the equals-form prefix is
+    ``--backend=`` (with the equals sign), not ``--backend``.
+    """
+    has_backend = any(
+        a == "--backend" or a.startswith("--backend=") for a in argv
+    )
+    if has_backend:
+        die(
+            "imgen v0.8.0 renamed --backend → --model. Update your "
+            "command:\n"
+            "  Old: imgen photo.jpg --backend flux\n"
+            "  New: imgen photo.jpg --model flux-kontext\n"
+            "Some model names also changed; run `imgen --list-models` "
+            "for the current registry."
+        )
+
+
+def _resolve_v07_alias(name: str) -> str:
+    """argparse ``type=`` validator for ``--model``. Returns the v0.7
+    registry key (suitable for ``get_backend()`` at commit 4a; becomes
+    near-identity at commit 4b when registry flips to v0.8 names).
+
+    Three branches:
+
+    1. v0.7-typed name (``flux``, ``qwen``) → ``ArgumentTypeError``
+       with rename hint. argparse converts this into a clean exit-2
+       error message scoped to the ``--model`` argument.
+    2. v0.8 canonical name in the rename map's inverse (``flux-kontext``
+       → ``flux``) → translate to v0.7 registry key for lookup.
+    3. Unchanged name (``flux-dev``, ``flux2-klein-edit-9b``, user TOML
+       stems like ``z-image``) → pass through. Validated against
+       ``list_backends()`` with a difflib closest-match hint on miss,
+       which strictly beats argparse's default ``invalid choice``
+       output (no fuzzy-match suggestion there).
+
+    Note: argparse passes string ``default=`` values through ``type=``
+    too — see ``build_parser`` where each i2i subcommand pre-translates
+    ``defaults["backend"]`` through ``_V07_TO_V08_MODEL_RENAMES`` so
+    the no-flag invocation path doesn't trip branch 1.
+    """
+    if name in _V07_TO_V08_MODEL_RENAMES:
+        v08 = _V07_TO_V08_MODEL_RENAMES[name]
+        raise argparse.ArgumentTypeError(
+            f"{name!r} is the v0.7 model name. Use {v08!r} instead. "
+            f"(--backend → --model rename in v0.8.0; some names also "
+            f"changed.)"
+        )
+    resolved = _V08_TO_V07_REGISTRY_KEY.get(name, name)
+    available = list_backends()
+    if resolved not in available:
+        # Show v0.8 canonical names in the hint so a typo on the new
+        # spelling gets matched against the new spelling, not the
+        # registry's still-v0.7 keys.
+        v08_canonical = sorted({
+            _V07_TO_V08_MODEL_RENAMES.get(n, n) for n in available
+        })
+        closest = difflib.get_close_matches(name, v08_canonical, n=1)
+        hint = f" Did you mean {closest[0]!r}?" if closest else ""
+        raise argparse.ArgumentTypeError(
+            f"Unknown model {name!r}.{hint}"
+        )
+    return resolved
+
+
+def _v07_default_to_v08_for_i2i(name: str) -> str:
+    """Translate a v0.7 i2i backend default to its v0.8 canonical name
+    for use as an argparse ``default=`` value.
+
+    argparse runs ``type=`` on string defaults too — see the Python
+    docs caveat on "default parsed as if it were a command-line
+    argument". Without this pre-translation, ``default="flux"`` would
+    crash on ``_resolve_v07_alias("flux")``'s v0.7-rename branch when
+    the user invokes a subcommand without ``--model``.
+
+    The rename map is applied ONLY to i2i defaults (generate / batch's
+    ``defaults["backend"]``). Draw's ``defaults["backend_draw"]``
+    default is ``flux-dev`` (already v0.8 canonical, not in the map)
+    AND deliberately kept OUT of the translation — a user with
+    ``[defaults] backend_draw = "flux"`` in their config was already
+    broken on v0.7 (FLUX.1-Kontext is i2i, not t2i), and silently
+    migrating to ``flux-kontext`` for the t2i subcommand would replace
+    one wrong with a different wrong. Better to surface the
+    v0.7-rename error via ``_resolve_v07_alias`` and let the user fix
+    their config explicitly. (Architect HIGH-1 from v0.8.0 commit 4a
+    design review.)
+
+    Refine's hardcoded ``default="flux2-klein-edit-9b"`` is not in the
+    rename map either, so passes through without translation.
+    """
+    return _V07_TO_V08_MODEL_RENAMES.get(name, name)
+
+
 # ── Parser ───────────────────────────────────────────────────────────────
 
 def build_parser(
@@ -486,9 +635,18 @@ def _add_generate_args(
                         "style preset may override)")
     p.add_argument("--seed", type=_int_range(0, 2**32 - 1),
                    help="Seed (default: random)")
-    p.add_argument("--backend", choices=list_backends(),
-                   default=defaults["backend"],
-                   help=f"Backend (default {defaults['backend']})")
+    # v0.8.0 commit 4a: --backend → --model. `dest="backend"` keeps the
+    # args attribute name unchanged at this commit (registry source-of-
+    # truth flip is commit 4b — don't pre-empt). Default pre-translated
+    # to v0.8 canonical name so argparse's default-passes-through-type=
+    # behaviour doesn't crash on the v0.7 rename in _resolve_v07_alias.
+    _v08_default = _v07_default_to_v08_for_i2i(defaults["backend"])
+    p.add_argument(
+        "--model", type=_resolve_v07_alias, dest="backend",
+        default=_v08_default, metavar="NAME",
+        help=f"Model (default {_v08_default}). "
+             f"Run --list-backends for the full set.",
+    )
     p.add_argument("-q", "--quantize", type=int, choices=[3, 4, 5, 6, 8],
                    default=None,
                    help=f"Quantization (default {defaults['quantize']}, "
@@ -562,9 +720,15 @@ def _add_batch_args(
     p.add_argument("--seed", type=_int_range(0, 2**32 - 1),
                    help="Seed shared across the whole N×M batch "
                         "(default: random)")
-    p.add_argument("--backend", choices=list_backends(),
-                   default=defaults["backend"],
-                   help=f"Backend (default {defaults['backend']})")
+    # v0.8.0 commit 4a: same --backend → --model rename as generate.
+    # Shares the same i2i default (defaults["backend"]) → pre-translate.
+    _v08_default = _v07_default_to_v08_for_i2i(defaults["backend"])
+    p.add_argument(
+        "--model", type=_resolve_v07_alias, dest="backend",
+        default=_v08_default, metavar="NAME",
+        help=f"Model (default {_v08_default}). "
+             f"Run --list-backends for the full set.",
+    )
     p.add_argument("-q", "--quantize", type=int, choices=[3, 4, 5, 6, 8],
                    default=None,
                    help=f"Quantization (default {defaults['quantize']}, "
@@ -682,11 +846,22 @@ def _add_draw_args(
     # ``[defaults] backend_draw = "..."`` can override per-subcommand
     # without crossing i2i's default. Architect IMP-3 from pre-tag
     # review.
+    #
+    # v0.8.0 commit 4a: --backend → --model. ``backend_draw`` default
+    # (``flux-dev``) is already v0.8 canonical, so it does NOT go
+    # through ``_v07_default_to_v08_for_i2i`` — that helper translates
+    # i2i defaults only. Architect HIGH-1 from 4a design review: a
+    # user with ``[defaults] backend_draw = "flux"`` was already broken
+    # on v0.7 (Kontext is i2i, not t2i); silently migrating to
+    # ``flux-kontext`` would replace one wrong with a different wrong.
+    # The ``_resolve_v07_alias`` ArgumentTypeError surfaces the rename
+    # explicitly so the user fixes their config.
+    _draw_default = defaults.get("backend_draw", "flux-dev")
     p.add_argument(
-        "--backend", choices=list_backends(),
-        default=defaults.get("backend_draw", "flux-dev"),
-        help=f"Backend (default {defaults.get('backend_draw', 'flux-dev')}). "
-             f"Use --list-backends to see all.",
+        "--model", type=_resolve_v07_alias, dest="backend",
+        default=_draw_default, metavar="NAME",
+        help=f"Model (default {_draw_default}). "
+             f"Run --list-backends to see all.",
     )
     p.add_argument(
         "-q", "--quantize", type=int, choices=[3, 4, 5, 6, 8], default=None,
@@ -777,12 +952,16 @@ def _add_refine_args(
         "--seed", type=_int_range(0, 2**32 - 1), default=None,
         help="Seed (default: random)",
     )
+    # v0.8.0 commit 4a: --backend → --model. Refine's hardcoded default
+    # ``flux2-klein-edit-9b`` is already v0.8 canonical (not in the
+    # rename map) so passes through ``_resolve_v07_alias`` unchanged.
     p.add_argument(
-        "--backend", choices=list_backends(),
-        default="flux2-klein-edit-9b",
-        help="Backend (default flux2-klein-edit-9b — FLUX.2-klein-9B distilled "
-             "edit variant). Override with --backend flux to use FLUX.1-Kontext-"
-             "dev (faster, already cached, lower native res ceiling).",
+        "--model", type=_resolve_v07_alias, dest="backend",
+        default="flux2-klein-edit-9b", metavar="NAME",
+        help="Model (default flux2-klein-edit-9b — FLUX.2-klein-9B distilled "
+             "edit variant). Override with --model flux-kontext to use "
+             "FLUX.1-Kontext-dev (faster, already cached, lower native res "
+             "ceiling).",
     )
     p.add_argument(
         "-q", "--quantize", type=int, choices=[3, 4, 5, 6, 8],

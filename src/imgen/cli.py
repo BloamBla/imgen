@@ -11,7 +11,7 @@ Usage:
     imgen photo.jpg --custom-prompt -            # prompt from stdin (hidden from ps)
     imgen photo.jpg --prompt-file ~/p.txt        # prompt from file (hidden from ps)
     imgen photo.jpg -s simpsons --steps 30 --strength 0.7
-    imgen photo.jpg --backend qwen               # use Qwen Edit instead of FLUX
+    imgen photo.jpg --model qwen-image-edit-v1   # use Qwen Edit instead of FLUX
     imgen vacation.heic                          # HEIC auto-converted via sips (v0.3.0)
 
     imgen batch ~/Desktop/holiday                # v0.3.0: every photo in folder, default style
@@ -53,7 +53,13 @@ from .commands import (
 )
 from .config import ConfigError, effective_defaults, load_validated_config
 from .defaults import DEFAULTS
-from .parser import build_parser, print_backends, print_loras, print_styles
+from .parser import (
+    _check_for_deprecated_backend_flag,
+    build_parser,
+    print_backends,
+    print_loras,
+    print_styles,
+)
 from .paths import CONFIG_FILE
 
 _KNOWN_SUBCOMMANDS = {
@@ -83,6 +89,13 @@ def main() -> int:
     #   - an --option value that happens to match a subcommand name
     #     blocking the shorthand dispatch
     argv = sys.argv[1:]
+    # v0.8.0 commit 4a: pre-argparse hook — surface a clear rename
+    # message for the deprecated --backend flag BEFORE the implicit-
+    # generate prepend or argparse's "unrecognized arguments" error.
+    # Runs on the raw sys.argv tail so both forms `imgen photo.jpg
+    # --backend flux` and `imgen generate photo.jpg --backend flux`
+    # get the same hint.
+    _check_for_deprecated_backend_flag(argv)
     first_positional = next((a for a in argv if not a.startswith("-")), None)
     if first_positional and first_positional not in _KNOWN_SUBCOMMANDS:
         argv = ["generate"] + argv

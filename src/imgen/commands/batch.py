@@ -162,7 +162,7 @@ def cmd_batch(args) -> int:
     # construction; t2i prompts don't have a discovery directory.
     if args.backend == "flux-dev":
         die(
-            "--backend flux-dev is text-to-image; cmd_batch requires "
+            "--model flux-dev is text-to-image; cmd_batch requires "
             "input photos. Use `imgen draw \"<prompt>\"` for single-shot "
             "t2i (batch t2i over a prompt file is v0.7.x).",
             code=2,

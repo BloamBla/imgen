@@ -659,7 +659,7 @@ def cmd_doctor(_args) -> int:
             elif health.secret_required:
                 warn(f"   secret ${health.secret_env_var} (required) "
                      f"NOT set in environment — "
-                     f"`imgen --backend {health.name}` will die")
+                     f"`imgen --model {health.name}` will die")
                 issues += 1
             else:
                 dim(f"   secret ${health.secret_env_var} (optional) "

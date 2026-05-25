@@ -803,10 +803,6 @@ def _load_merged_backends() -> dict[str, Backend]:
     (per [[project-v080-design]] §H). Reads BOTH directories during the
     v0.8.x deprecation window:
 
-    * ``backends.d/`` loads exactly as it did in v0.7.x — no DEPRECATED
-      warn at commit 3 (the warn lands at commit 4a alongside the CLI
-      ``--backend`` → ``--model`` rename, so the migration message hits
-      colleagues once, not split across two commits).
     * ``models.d/`` overlays ``backends.d/`` for same-stem TOMLs:
       ``{**from_backends_d, **from_models_d}`` lets a colleague drop
       the new copy in ``models.d/`` and see it win immediately without
@@ -817,15 +813,39 @@ def _load_merged_backends() -> dict[str, Backend]:
     * Symlinked directories on either side are refused with a warn —
       protection mirrored from v0.4 IMP-3 for ``backends.d/``.
 
-    Cached per process; ``reset_backends_cache()`` clears it (tests use
-    that to swap fixtures cleanly).
+    v0.8.0 commit 4a: per-file DEPRECATED warn for ``backends.d/``
+    entries. The migration window stays open through v0.8.x; v0.9.0
+    drops the ``backends.d/`` read entirely. Warn message points at
+    the concrete ``mv`` command so a colleague can fix it without
+    consulting docs.
+
+    Cache means the warn fires ONCE per process — the ``_cached_merged``
+    short-circuit avoids re-firing on every ``get_backend()`` or
+    ``list_backends()`` call. This is the intended UX (one migration
+    nudge per CLI invocation, not one per call site). Tests reset the
+    cache between cases via ``reset_backends_cache()`` so each test
+    sees the warn fresh.
     """
     global _cached_merged
     if _cached_merged is None:
+        from .colors import warn as _warn
         # Local import to avoid module-load circularity with paths.py.
         from .paths import BACKENDS_D, MODELS_D
         from_backends_d = load_user_backends_dir(BACKENDS_D)
         from_models_d = load_user_backends_dir(MODELS_D)
+        # v0.8.0 commit 4a: DEPRECATED warn per file in legacy dir.
+        # Lives at the orchestration layer (not inside
+        # ``load_user_backends_dir``) so the loader stays a pure
+        # "read this directory, return dict" helper. Test:
+        # tests/test_user_models.py::test_user_toml_warns_on_backends_d_load
+        for name in sorted(from_backends_d):
+            _warn(
+                f"~/.imgen/backends.d/{name}.toml: DEPRECATED — "
+                f"v0.8.0 renamed this directory to ~/.imgen/models.d/. "
+                f"Run `mv ~/.imgen/backends.d/{name}.toml "
+                f"~/.imgen/models.d/{name}.toml`. "
+                f"backends.d/ read removed in v0.9.0."
+            )
         # `**` overlay — models.d entries replace same-stem backends.d
         # entries before the built-in collision pass. Test:
         # tests/test_user_models.py::test_user_toml_models_d_wins_on_collision

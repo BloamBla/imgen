@@ -10,6 +10,7 @@ import argparse
 
 import pytest
 
+from imgen.defaults import DEFAULTS
 from imgen.parser import _float_range, _int_range, _safe_output_path
 
 
@@ -177,12 +178,16 @@ def test_short_v_and_long_version_both_print_same(capsys):
 
 
 def test_parser_loads_user_backends_before_choices(tmp_path, monkeypatch):
-    """v0.4 design decision 3: --backend choices are loaded at parse
-    time via list_backends(), so a TOML in ~/.imgen/backends.d/ shows
-    up as a valid --backend argument without code changes.
+    """v0.4 design decision 3: --model choices are loaded at parse
+    time via list_backends(), so a TOML in ~/.imgen/backends.d/
+    (or v0.8+ ~/.imgen/models.d/) shows up as a valid --model
+    argument without code changes.
 
-    Without this, `imgen --backend custom_thing` died with "invalid
-    choice" even when the TOML was valid — defeating the registry."""
+    v0.8.0 commit 4a: flag renamed --backend → --model, but registry
+    keys ARE NOT in the v0.7-rename map for user backends (only the
+    two built-ins `flux` + `qwen` got renamed), so a user stem like
+    'mythical' passes through `_resolve_v07_alias` unchanged.
+    """
     import imgen.backends as backends_mod
     import imgen.paths as paths_mod
     state = tmp_path / ".imgen"
@@ -198,16 +203,19 @@ def test_parser_loads_user_backends_before_choices(tmp_path, monkeypatch):
     try:
         parser = build_parser()
         args = parser.parse_args(
-            ["generate", "photo.jpg", "--backend", "mythical"]
+            ["generate", "photo.jpg", "--model", "mythical"]
         )
         assert args.backend == "mythical"
     finally:
         backends_mod.reset_backends_cache()
 
 
-def test_parser_rejects_unknown_backend(tmp_path, monkeypatch):
-    """Sanity: a string that doesn't match any built-in or user
-    backend still dies with argparse's "invalid choice"."""
+def test_parser_rejects_unknown_model(tmp_path, monkeypatch):
+    """Sanity: a string that doesn't match any built-in or user model
+    dies with an ArgumentTypeError from `_resolve_v07_alias` (which
+    includes a difflib closest-match hint — strictly better UX than
+    argparse's default "invalid choice" output).
+    """
     import imgen.backends as backends_mod
     import imgen.paths as paths_mod
     state = tmp_path / ".imgen"
@@ -220,7 +228,7 @@ def test_parser_rejects_unknown_backend(tmp_path, monkeypatch):
         parser = build_parser()
         with pytest.raises(SystemExit):
             parser.parse_args(
-                ["generate", "photo.jpg", "--backend", "totally_unknown_xyz"]
+                ["generate", "photo.jpg", "--model", "totally_unknown_xyz"]
             )
     finally:
         backends_mod.reset_backends_cache()
@@ -566,3 +574,225 @@ class TestAddRunControlArgs:
             assert args.dry_run is True, (
                 f"--dry-run not set for {argv_prefix[0]}"
             )
+
+
+# ── v0.8.0 commit 4a — --backend → --model CLI rename ───────────────────
+#
+# Per [[project-v080-design]] §I + §Q commit 4a lock-ins, plus 2 lock-ins
+# from the design pre-vet round (architect HIGH-1 + python NIT-7):
+#
+#   §Q (4):
+#     1. hard-error space form  (`--backend flux`)
+#     2. hard-error equals form (`--backend=flux`)
+#     3. hint does not echo user value (control-byte safety)
+#     4. backends.d/ loader DEPRECATED warn (covered by
+#        tests/test_user_models.py::test_user_toml_warns_on_backends_d_load)
+#
+#   §I (2):
+#     5. --model accepts v0.8 canonical names
+#     6. --model rejects v0.7 names with hint
+#
+#   Pre-vet round 1 (2):
+#     7. no-flag invocation uses v0.8 default (CRITICAL-1 regression test)
+#     8. draw default uses backend_draw key, NOT i2i rename map (HIGH-1)
+
+
+class TestBackendFlagDeprecation:
+    """Pre-argparse hook hard-errors on the legacy --backend flag with
+    a static migration hint. Hook lives at parser._check_for_deprecated_
+    backend_flag and is wired from cli.main before argparse runs.
+    """
+
+    def test_backend_flag_space_form_hard_errors_with_hint(self, capsys):
+        """`--backend flux` (separate token) → SystemExit + stderr
+        contains migration hint naming the new --model flag."""
+        from imgen.parser import _check_for_deprecated_backend_flag
+        with pytest.raises(SystemExit):
+            _check_for_deprecated_backend_flag(
+                ["generate", "photo.jpg", "--backend", "flux"]
+            )
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "renamed --backend → --model" in combined
+        assert "--model flux-kontext" in combined
+
+    def test_backend_flag_equals_form_hard_errors_with_hint(self, capsys):
+        """`--backend=flux` (equals form) → same hard-error path.
+        Equals form was an easy miss in earlier drafts (caught at
+        python-reviewer round-1 MEDIUM)."""
+        from imgen.parser import _check_for_deprecated_backend_flag
+        with pytest.raises(SystemExit):
+            _check_for_deprecated_backend_flag(
+                ["generate", "photo.jpg", "--backend=flux"]
+            )
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "renamed --backend → --model" in combined
+
+    def test_backend_flag_hint_does_not_echo_user_value(self, capsys):
+        """Security lock-in (memo §I round-1 MEDIUM): the migration
+        hint is STATIC text. The user's typed value never gets
+        interpolated into the error — even via repr() — so a
+        control-byte-laden value can't leak escape sequences into
+        stderr.
+        """
+        evil_value = "\x1b[2J\x1b[H"  # clear-screen + cursor home
+        from imgen.parser import _check_for_deprecated_backend_flag
+        with pytest.raises(SystemExit):
+            _check_for_deprecated_backend_flag(
+                ["generate", "photo.jpg", f"--backend={evil_value}"]
+            )
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        # Hint fires
+        assert "renamed --backend → --model" in combined
+        # User value NEVER appears in output (raw OR repr'd)
+        assert evil_value not in combined
+        assert repr(evil_value) not in combined
+        # Spot-check: the escape byte itself is absent
+        assert "\x1b" not in combined
+
+    def test_hook_passes_through_when_no_backend_flag(self, capsys):
+        """Negative case: argv without --backend → hook returns
+        cleanly, no SystemExit, no stderr.
+        """
+        from imgen.parser import _check_for_deprecated_backend_flag
+        # Various argv shapes that DON'T contain --backend
+        for argv in (
+            [],
+            ["generate", "photo.jpg"],
+            ["generate", "photo.jpg", "--model", "flux-kontext"],
+            ["draw", "a prompt", "--model", "flux-dev"],
+            # Argument with `backend` substring but not the flag
+            ["generate", "photo.jpg", "--style", "cyberbackend"],
+        ):
+            _check_for_deprecated_backend_flag(argv)
+        captured = capsys.readouterr()
+        assert (captured.out + captured.err) == ""
+
+
+@pytest.mark.parametrize(
+    "v08_name, expected_v07_registry_key",
+    [
+        ("flux-kontext", "flux"),                  # renamed
+        ("qwen-image-edit-v1", "qwen"),            # renamed
+        ("flux-dev", "flux-dev"),                  # unchanged
+        ("flux2-klein-edit-9b", "flux2-klein-edit-9b"),  # unchanged
+    ],
+)
+def test_model_flag_accepts_v0_8_0_names(v08_name, expected_v07_registry_key):
+    """§I lock-in: --model accepts every v0.8 canonical name across
+    every subcommand that has the flag. Resolver translates renamed
+    names to their v0.7 registry key (commit 4a) so get_backend()
+    lookups in cmd_helpers continue to work.
+    """
+    from imgen.parser import build_parser
+    parser = build_parser()
+    # generate subcommand — i2i flag presence is the canonical case
+    args = parser.parse_args(
+        ["generate", "photo.jpg", "--model", v08_name]
+    )
+    assert args.backend == expected_v07_registry_key
+
+
+def test_model_flag_rejects_v0_7_name_with_hint(capsys):
+    """§I lock-in: --model NAME with the v0.7 name dies, hint names
+    the v0.8 canonical equivalent. argparse wraps our
+    ArgumentTypeError into its standard "argument --model: <msg>"
+    exit-2 path.
+    """
+    from imgen.parser import build_parser
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["generate", "photo.jpg", "--model", "flux"]
+        )
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "'flux' is the v0.7 model name" in combined
+    assert "'flux-kontext'" in combined
+
+
+def test_model_flag_unknown_name_has_difflib_close_match_hint(capsys):
+    """When the user typos a v0.8 name (e.g. `flux-konext` instead of
+    `flux-kontext`), the rejection includes a `Did you mean ... ?`
+    suggestion via difflib. Strictly better UX than argparse's
+    default 'invalid choice'.
+    """
+    from imgen.parser import build_parser
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["generate", "photo.jpg", "--model", "flux-konext"]
+        )
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "Unknown model 'flux-konext'" in combined
+    assert "Did you mean 'flux-kontext'?" in combined
+
+
+class TestNoModelFlagDefault:
+    """Pre-vet round-1 CRITICAL regression lock-in: argparse runs
+    `type=` on string defaults, so without pre-translation of
+    ``defaults["backend"]`` ("flux") through the v0.7→v0.8 rename
+    map, every no-flag invocation would die on the v0.7-name
+    rejection branch of `_resolve_v07_alias`. These tests pin the
+    fix: `_v07_default_to_v08_for_i2i` translates the i2i default
+    BEFORE argparse sees it, and `_resolve_v07_alias` maps it back
+    to the v0.7 registry key.
+    """
+
+    def test_generate_no_model_resolves_to_v07_default(self):
+        from imgen.parser import build_parser
+        parser = build_parser()
+        args = parser.parse_args(["generate", "photo.jpg"])
+        # DEFAULTS["backend"] = "flux" → pre-translated to
+        # "flux-kontext" → mapped back to "flux" by type=.
+        assert args.backend == "flux"
+
+    def test_batch_no_model_resolves_to_v07_default(self):
+        from imgen.parser import build_parser
+        parser = build_parser()
+        args = parser.parse_args(["batch", "/tmp/dir"])
+        assert args.backend == "flux"
+
+    def test_draw_no_model_resolves_to_backend_draw_default(self):
+        """Architect HIGH-1 lock-in: draw's default is
+        ``defaults["backend_draw"]`` ("flux-dev"), which is ALREADY
+        v0.8-canonical and NOT in the rename map. The translation
+        helper is intentionally NOT applied to backend_draw — a user
+        with `[defaults] backend_draw = "flux"` in config.toml would
+        get the v0.7-rejection error from `_resolve_v07_alias`
+        instead of being silently migrated to `flux-kontext` for the
+        t2i subcommand (which would be the wrong model for t2i).
+        """
+        from imgen.parser import build_parser
+        parser = build_parser()
+        args = parser.parse_args(["draw", "a prompt"])
+        # flux-dev is unchanged by the rename map — passes through.
+        assert args.backend == "flux-dev"
+
+    def test_refine_no_model_resolves_to_literal_default(self):
+        """Refine's default is a literal "flux2-klein-edit-9b" (not
+        sourced from `defaults`). Already v0.8-canonical; passes
+        through `_resolve_v07_alias` unchanged.
+        """
+        from imgen.parser import build_parser
+        parser = build_parser()
+        args = parser.parse_args(["refine", "photo.png"])
+        assert args.backend == "flux2-klein-edit-9b"
+
+    def test_draw_with_config_override_backend_draw(self):
+        """Architect HIGH-1 lock-in (continued): if a colleague sets
+        `[defaults] backend_draw = "z-image-turbo"` (hypothetical
+        user backend), the parser uses it without translation —
+        because the rename map applies only to i2i defaults.
+        """
+        from imgen.parser import build_parser
+        # Imagine a config-loaded defaults dict with a custom draw
+        # default. We pass it via the parser's `defaults=` slot.
+        custom_defaults = dict(DEFAULTS)
+        custom_defaults["backend_draw"] = "flux-dev"  # safe v0.8 name
+        parser = build_parser(defaults=custom_defaults)
+        args = parser.parse_args(["draw", "a prompt"])
+        assert args.backend == "flux-dev"

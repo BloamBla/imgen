@@ -2003,7 +2003,7 @@ def load_backend_and_token(
         if not token:
             die("FLUX backend requires HuggingFace token",
                 code=3,
-                hint="Run: imgen setup   (or use --backend qwen)")
+                hint="Run: imgen setup   (or use --model qwen-image-edit-v1)")
 
     # ── Custom-backend secret (v0.4) ─────────────────────────────
     backend_secret: tuple[str, str] | None = None

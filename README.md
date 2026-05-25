@@ -164,7 +164,7 @@ imgen <photo> -s anime --scope person          # keep background photorealistic,
 imgen <photo> -s anime --enhance-prompt        # smarter prompts via local AI (see "Smart prompts" below)
 imgen <photo> -s anime --no-lora               # A/B against the style's built-in LoRA (see "LoRAs" below)
 imgen <photo> -s pencil --lora REF[:WEIGHT]    # attach an extra LoRA; REF = HF repo or local .safetensors
-imgen <photo> --backend qwen                   # use Qwen Edit (no HF token needed)
+imgen <photo> --model qwen-image-edit-v1       # use Qwen Edit (no HF token needed)
 imgen <photo> --force                          # skip resource preflight checks
 
 # Refine — Hires-Fix upsample (v0.7.5+, FLUX.2-klein-edit-9b default backend)
@@ -173,7 +173,7 @@ imgen refine <input> --scale 2                 # 2x → 2048² (FLUX.2-klein nat
 imgen refine <input> --width 1920 --height 1080  # explicit dims (mutex with --scale)
 imgen refine <input> --prompt "polished, ..."  # override the baked-in refine prompt
 imgen refine <input> --strength 0.5            # higher = more refine, lower = more input-faithful (default 0.3)
-imgen refine <input> --backend flux            # fall back to FLUX.1-Kontext (capped at ~1.5K cleanly)
+imgen refine <input> --model flux-kontext      # fall back to FLUX.1-Kontext (capped at ~1.5K cleanly)
 imgen refine <input> -o ~/Desktop/refined.png  # explicit output path
 
 # Batch a folder — same flags as generate except no -o/--output (always run-folder layout)
@@ -444,9 +444,9 @@ Use it via `imgen photo.jpg --style anime_strong`. The `compatible_with` list co
 
 ### Compatibility groups
 
-LoRAs are architecture-bound. A LoRA trained for FLUX.1 will NOT load on Qwen-Image-Edit, and vice versa. `imgen` declares a `lora_compat_group` on each backend (`"flux-1"` for the default `flux` backend; `"qwen"` for `qwen`); when a LoRA's `compatible_with` list doesn't include the active backend's group, `imgen` warns once and skips the LoRA, then continues with the rest of the stack (or fully text-only if all LoRAs are incompatible). It doesn't crash and doesn't silently apply a mismatched LoRA.
+LoRAs are architecture-bound. A LoRA trained for FLUX.1 will NOT load on Qwen-Image-Edit, and vice versa. `imgen` declares a `lora_compat_group` on each model (`"flux-1"` for the default `flux-kontext` model; `"qwen"` for `qwen-image-edit-v1`); when a LoRA's `compatible_with` list doesn't include the active model's group, `imgen` warns once and skips the LoRA, then continues with the rest of the stack (or fully text-only if all LoRAs are incompatible). It doesn't crash and doesn't silently apply a mismatched LoRA.
 
-In practice all built-in LoRAs are flux-1 only. Switching `--backend qwen` produces a warn-and-skip plus a text-only generation for those styles. Qwen-side LoRAs do exist; you'd attach them ad-hoc via `--lora REF` with `compatible_with = ["qwen"]` in a user style TOML.
+In practice all built-in LoRAs are flux-1 only. Switching `--model qwen-image-edit-v1` produces a warn-and-skip plus a text-only generation for those styles. Qwen-side LoRAs do exist; you'd attach them ad-hoc via `--lora REF` with `compatible_with = ["qwen"]` in a user style TOML.
 
 ### License model
 
@@ -462,42 +462,50 @@ The blanket caveat in the LoRA section above (FLUX-NC base gates commercial use)
 
 `--lora` references you supply yourself are entirely your responsibility — `imgen` doesn't check upstream licenses, and (as the Kontext-compatibility note above explains) most FLUX-LoRAs on HuggingFace target FLUX.1-dev base and will crash on Kontext. The same applies to user `styles.d/*.toml` LoRA entries.
 
-## Backends
+## Models
+
+> v0.8.0 renamed `--backend` → `--model` and two built-in names moved to honest
+> v0.8 spellings (`flux` → `flux-kontext`, `qwen` → `qwen-image-edit-v1`).
+> Old shell scripts using `--backend` get a hard error with the migration hint.
+> See the v0.8.0 migration note at the top of the release notes for the rest of
+> the rename surface (`backends.d/` → `models.d/`, etc.).
 
 Built-in:
 
-- `flux` (default) — **FLUX.1 Kontext Dev** — best quality for style transfer. Gated, requires:
+- `flux-kontext` (default for `imgen generate` / `batch`) — **FLUX.1 Kontext Dev** — best quality for style transfer. Gated, requires:
   - HF token (any classic Read token)
   - License acceptance at https://huggingface.co/black-forest-labs/FLUX.1-Kontext-dev
-- `qwen` — **Qwen-Image-Edit-2509** — open model, no token required. Lower quality at low quants.
-- `flux-dev` — **FLUX.1-dev** — t2i base for `imgen draw`. Gated, same HF token + license as `flux`.
-- `flux2-klein-edit-9b` — **FLUX.2-klein-9B** distilled edit — default for `imgen refine` (v0.7.5+). Native ~4 MP support (up to 2048²) past FLUX.1's 1.5K clean ceiling. Gated, accept license at https://huggingface.co/black-forest-labs/FLUX.2-klein-9B. Q4 default needs **~24 GB peak RAM** (real measurement at 1.5K-2K²; 32 GB Mac required, 16 GB will OOM). Internal `--guidance` pinned to 1.0 by mflux — `imgen refine` handles this automatically (the `--guidance` flag still works for `--backend flux` Kontext fallback).
+- `qwen-image-edit-v1` — **Qwen-Image-Edit-2509** — open model, no token required. Lower quality at low quants.
+- `flux-dev` — **FLUX.1-dev** — t2i base for `imgen draw`. Gated, same HF token + license as `flux-kontext`.
+- `flux2-klein-edit-9b` — **FLUX.2-klein-9B** distilled edit — default for `imgen refine` (v0.7.5+). Native ~4 MP support (up to 2048²) past FLUX.1's 1.5K clean ceiling. Gated, accept license at https://huggingface.co/black-forest-labs/FLUX.2-klein-9B. Q4 default needs **~24 GB peak RAM** (real measurement at 1.5K-2K²; 32 GB Mac required, 16 GB will OOM). Internal `--guidance` pinned to 1.0 by mflux — `imgen refine` handles this automatically (the `--guidance` flag still works for `--model flux-kontext` fallback).
 
-`imgen --list-backends` shows the full set including any user-defined backends below.
+`imgen --list-backends` shows the full set including any user-defined models below. (The flag itself will be renamed to `--list-models` in a follow-up v0.8.0 commit.)
 
 ### Why these specific model versions?
 
-**FLUX.1 Kontext for restyle, FLUX.2-klein for refine.** FLUX.2 (released Nov 2025; klein distilled variants Jan 2026) is two different model families: `klein-base` is text-to-image (doesn't take an input photo), and `klein-edit` is *instruction-based editing* ("make the sky blue") plus low-strength i2i, not the dense image-conditioning that drives style transfer. FLUX.1 Kontext was purpose-built for "rewrite this image while preserving identity / pose / composition" — exactly the load `imgen generate` / `imgen batch` carry, so they stay on Kontext. The six built-in style presets are prompt-tuned for Kontext's verb conventions ([BFL Kontext prompting guide](https://docs.bfl.ai/guides/prompting_guide_kontext_i2i)), so expect to retune prompts if you swap. v0.7.5 added `imgen refine` on **FLUX.2-klein-edit-9b** (via `mflux-generate-flux2-edit`) because the Hires-Fix workload — preserve composition, push detail, upsample past 1.5K — wants exactly the low-strength i2i FLUX.2-klein-edit is good at, AND its native 4 MP support clears FLUX.1's clean 1.5K ceiling without tiling artifacts. You can still swap refine onto `--backend flux` if you want to stay under 1.5K with Kontext.
+**FLUX.1 Kontext for restyle, FLUX.2-klein for refine.** FLUX.2 (released Nov 2025; klein distilled variants Jan 2026) is two different model families: `klein-base` is text-to-image (doesn't take an input photo), and `klein-edit` is *instruction-based editing* ("make the sky blue") plus low-strength i2i, not the dense image-conditioning that drives style transfer. FLUX.1 Kontext was purpose-built for "rewrite this image while preserving identity / pose / composition" — exactly the load `imgen generate` / `imgen batch` carry, so they stay on Kontext. The six built-in style presets are prompt-tuned for Kontext's verb conventions ([BFL Kontext prompting guide](https://docs.bfl.ai/guides/prompting_guide_kontext_i2i)), so expect to retune prompts if you swap. v0.7.5 added `imgen refine` on **FLUX.2-klein-edit-9b** (via `mflux-generate-flux2-edit`) because the Hires-Fix workload — preserve composition, push detail, upsample past 1.5K — wants exactly the low-strength i2i FLUX.2-klein-edit is good at, AND its native 4 MP support clears FLUX.1's clean 1.5K ceiling without tiling artifacts. You can still swap refine onto `--model flux-kontext` if you want to stay under 1.5K with Kontext.
 
 **Qwen-Image-Edit-2509, not 2511.** Qwen-Image-Edit-2511 (released 2025-12-17) is newer and arguably stronger, but mflux 0.17.5 — the only version this CLI is tested against — hardcodes `Qwen/Qwen-Image-Edit-2509` in its qwen-edit entrypoint. Bumping the pin requires upstream mflux support; tracked as a future release candidate.
 
-### User-defined backends
+### User-defined models
 
-Drop `*.toml` files into `~/.imgen/backends.d/` (auto-created by `imgen setup`). Filename becomes the `--backend NAME`. Same drop-in pattern as styles.d, applied to the image-gen binaries imgen drives — useful for experimenting with new mflux-shaped models (future SDXL ports, your own wrapper script, etc.) without editing imgen's code.
+Drop `*.toml` files into `~/.imgen/models.d/` (v0.8.0+ canonical path). Filename becomes the `--model NAME`. Same drop-in pattern as styles.d, applied to the image-gen binaries imgen drives — useful for experimenting with new mflux-shaped models (future SDXL ports, your own wrapper script, etc.) without editing imgen's code.
+
+> Pre-v0.8.0 the directory was `~/.imgen/backends.d/`. Files there still load with a DEPRECATED warn through v0.8.x — run `mv ~/.imgen/backends.d/<NAME>.toml ~/.imgen/models.d/<NAME>.toml` per file to clear it. v0.9.0 drops the `backends.d/` read entirely.
 
 ```toml
-# ~/.imgen/backends.d/sdxl.toml
+# ~/.imgen/models.d/sdxl.toml
 binary = "mflux-generate-sdxl"        # bare name (looked up in imgen's venv) OR absolute path
 image_flag = "--image-path"           # "--image-path" or "--image-paths" (the two mflux shapes)
-supports_strength = true              # backend accepts --image-strength
-supports_negative = false             # backend accepts --negative-prompt
+supports_strength = true              # model accepts --image-strength
+supports_negative = false             # model accepts --negative-prompt
 extra_args = ["--model", "sdxl"]      # appended unconditionally to every invocation
 
-# Optional [secret] section — for backends needing an API key/token
+# Optional [secret] section — for models needing an API key/token
 # in the subprocess env. Value comes from the parent shell's env;
 # imgen forwards but does NOT store it.
 [secret]
-env_var = "MY_BACKEND_API_KEY"        # name imgen looks up in os.environ
+env_var = "MY_MODEL_API_KEY"          # name imgen looks up in os.environ
 required = true                       # false → best-effort forward, no die on missing
 ```
 
@@ -511,13 +519,13 @@ imgen doctor
 imgen --list-backends
 
 # Use it:
-export MY_BACKEND_API_KEY=...           # (only if [secret] declared with required=true)
-imgen photo.jpg --backend sdxl
+export MY_MODEL_API_KEY=...             # (only if [secret] declared with required=true)
+imgen photo.jpg --model sdxl
 ```
 
-> **Security:** `binary = ...` is exec'd as a subprocess by imgen. Treat backends.d/ files **like shell scripts** — only drop in files you wrote yourself or got from a source you trust. This is a strictly higher trust level than `styles.d/`: a style TOML injects arguments to a known mflux binary, a backend TOML controls *which binary runs at all*. A malicious backends.d entry runs arbitrary code as your user.
+> **Security:** `binary = ...` is exec'd as a subprocess by imgen. Treat models.d/ files **like shell scripts** — only drop in files you wrote yourself or got from a source you trust. This is a strictly higher trust level than `styles.d/`: a style TOML injects arguments to a known mflux binary, a model TOML controls *which binary runs at all*. A malicious models.d entry runs arbitrary code as your user.
 
-Collisions with built-ins (`flux.toml`, `qwen.toml`) get a `_0001` suffix with a warning; built-ins always win on name. Mirrors the styles.d collision policy. Binary paths starting with `/` are used as-is; bare names resolve to `~/imgen/.venv/bin/<name>` (the venv that hosts mflux). Built-in fields you'll never see in a user TOML: `needs_token` (FLUX-specific HF token plumbing) is hard-coded `false` for user backends — use the `[secret]` section above for non-HF tokens.
+Collisions with built-ins (`flux-kontext.toml`, `qwen-image-edit-v1.toml`) get a `_0001` suffix with a warning; built-ins always win on name. Mirrors the styles.d collision policy. Binary paths starting with `/` are used as-is; bare names resolve to `~/imgen/.venv/bin/<name>` (the venv that hosts mflux). Built-in fields you'll never see in a user TOML: `needs_token` (FLUX-specific HF token plumbing) is hard-coded `false` for user models — use the `[secret]` section above for non-HF tokens.
 
 ## Persistent config
 
@@ -526,7 +534,9 @@ Collisions with built-ins (`flux.toml`, `qwen.toml`) get a `_0001` suffix with a
 ```toml
 [defaults]
 style = "anime"
-backend = "qwen"            # save the FLUX token check for one-off --backend flux
+backend = "qwen"            # save the FLUX token check for one-off --model flux-kontext
+                            # (config schema key stays `backend` through v0.8.x;
+                            # commit 5 migrates it to `model` in a follow-up.)
 quantize = 4
 steps = 12
 guidance = 4.0
@@ -662,7 +672,7 @@ imgen doctor                          # always start here
 | `venv missing` | `./bootstrap.sh` or `imgen setup` |
 | `HF token not found` | `imgen setup` (paste token) |
 | `403 gated repo` | Accept license: https://huggingface.co/black-forest-labs/FLUX.1-Kontext-dev |
-| `Not enough RAM` | Close apps, or use `--quantize 4` / `--preview` / `--backend qwen` |
+| `Not enough RAM` | Close apps, or use `--quantize 4` / `--preview` / `--model qwen-image-edit-v1` |
 | `Another mflux running` | Wait for it, or `--force` (will fight for GPU/RAM) |
 | Black image | You're not using `imgen` — that's a ComfyUI/MPS issue. mflux uses MLX, no MPS bugs |
 | Disk full | `imgen clean --all` |
