@@ -280,12 +280,13 @@ def cmd_refine(args) -> int:
         return 0
 
     # 9) Preflight. v0.7.14 (gap 6): pass max_megapixels so refine at
-    # 1024² no longer hits the 2K²-calibrated ceiling. width/height
-    # are already in scope (computed at step 6 from --scale or
-    # explicit --width/--height) — refine has exactly one iteration
-    # so one value covers it.
+    # 1024² no longer hits the 2K²-calibrated ceiling. ``target_w`` and
+    # ``target_h`` are in scope from step 2 (resolved from --scale or
+    # explicit --width/--height) — refine has exactly one iteration so
+    # one value covers it. (v0.7.17 fix: pre-v0.7.17 referenced bare
+    # `width, height` here → NameError on every non-dry-run refine.)
     heaviest_quant = iteration.final_quantize
-    max_megapixels = megapixels_of(width, height)
+    max_megapixels = megapixels_of(target_w, target_h)
     preflight_resources(
         backend=backend, heaviest_quant=heaviest_quant,
         force=args.force, max_megapixels=max_megapixels,

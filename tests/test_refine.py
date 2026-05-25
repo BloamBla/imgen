@@ -549,3 +549,70 @@ class TestFlux2KleinEditBackend:
         assert BACKENDS["flux2-klein-edit-9b"].hf_gated_repo == (
             "black-forest-labs/FLUX.2-klein-9B"
         )
+
+
+# ── v0.7.17 regression: cmd_refine non-dry-run path NameError ───────
+
+
+class TestRealRunPathReachesPreflight:
+    """v0.7.15 introduced a latent NameError in ``cmd_refine``'s non-dry-
+    run path: the megapixels_of() call at refine.py:288 referenced
+    ``width, height`` rather than the in-scope ``target_w, target_h``.
+    Bug not caught because every prior refine test exercised either the
+    dry-run early-return (step 8) or the iteration-builder helper in
+    isolation — nothing called ``cmd_refine`` with ``dry_run=False`` to
+    reach step 9 (preflight).
+    Lock-in: this test mocks the heavy lifters (``load_backend_and_token``,
+    ``preflight_resources``) and asserts ``cmd_refine`` reaches the
+    preflight call site without NameError, passing the megapixels value
+    that corresponds to the resolved target dimensions.
+    """
+
+    def test_reaches_preflight_with_target_megapixels(
+        self, tmp_path, monkeypatch
+    ):
+        from PIL import Image
+        from imgen.backends import BACKENDS
+        from imgen.commands import refine as refine_mod
+
+        # Real PNG so _read_image_dimensions opens it successfully.
+        input_png = tmp_path / "in.png"
+        Image.new("RGB", (1024, 1024), "white").save(input_png)
+
+        class _PreflightSentinel(Exception):
+            pass
+
+        captured: dict = {}
+
+        def _fake_preflight(**kwargs):
+            captured.update(kwargs)
+            raise _PreflightSentinel()
+
+        def _fake_load_backend(args):
+            return (
+                "flux2-klein-edit-9b",
+                BACKENDS["flux2-klein-edit-9b"],
+                "fake-hf-token",
+                Path("/fake/mflux-generate-flux2-edit"),
+                None,
+            )
+
+        monkeypatch.setattr(
+            refine_mod, "preflight_resources", _fake_preflight
+        )
+        monkeypatch.setattr(
+            refine_mod, "load_backend_and_token", _fake_load_backend
+        )
+
+        args = _make_args(input=str(input_png), scale=2.0)
+
+        # If line 288 still references undefined `width, height`, this
+        # raises NameError *before* preflight_resources is reached, and
+        # the sentinel never fires → test fails with the wrong exception.
+        with pytest.raises(_PreflightSentinel):
+            refine_mod.cmd_refine(args)
+
+        # Sanity: --scale 2.0 of 1024² → target 2048² = 4.194304 MP.
+        assert captured["max_megapixels"] == pytest.approx(
+            2048 * 2048 / 1_000_000, rel=1e-3
+        )
