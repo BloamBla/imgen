@@ -33,6 +33,7 @@ __all__ = [
     "IMGEN_INSTALL_ROOT",
     "LEGACY_TOKEN_FILE",
     "MFLUX_LORAS_CACHE",
+    "MODELS_D",
     "SAFE_OUTPUT_EXTS",
     "STATE_DIR",
     "STYLES_D",
@@ -166,6 +167,12 @@ MFLUX_LORAS_CACHE = Path.home() / "Library" / "Caches" / "mflux" / "loras"
 # rationale as shell_rc.ALL_RC_FILES_REL added in v0.3.6).
 STYLES_D = STATE_DIR / "styles.d"
 BACKENDS_D = STATE_DIR / "backends.d"
+# v0.8.0 canonical path for user-TOML model registrations. Read alongside
+# BACKENDS_D during the v0.8.x deprecation window; same-stem-in-both
+# resolves with MODELS_D winning (encourages migration). The deprecation
+# warn on BACKENDS_D entries lands in v0.8.0 commit 4a — not at commit 3,
+# which only adds the second read path. See [[project-v080-design]] §H.
+MODELS_D = STATE_DIR / "models.d"
 
 # Output extensions allowed for --output and auto-`open`. macOS `open`
 # delegates to the registered app for the extension, so .terminal /

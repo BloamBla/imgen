@@ -50,6 +50,11 @@ def tmp_state_dir(tmp_path, monkeypatch):
     # using this fixture sees the tmp state_dir for both subdirs.
     monkeypatch.setattr(paths_mod, "STYLES_D", state_dir / "styles.d")
     monkeypatch.setattr(paths_mod, "BACKENDS_D", state_dir / "backends.d")
+    # v0.8.0 commit 3: parallel canonical-path for user-TOML model
+    # registrations. Same rebind discipline as BACKENDS_D so any test
+    # that touches `_load_merged_backends` after commit 3 sees the
+    # isolated tmp dir for both legacy + v0.8 paths.
+    monkeypatch.setattr(paths_mod, "MODELS_D", state_dir / "models.d")
     # history.py imported HISTORY_FILE at module load — rebind locally too
     monkeypatch.setattr(history_mod, "HISTORY_FILE", history_file)
     # runs.py captured LOGS_DIR at module load (= STATE_DIR / "logs"),

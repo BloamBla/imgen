@@ -797,14 +797,40 @@ _cached_merged: dict[str, Backend] | None = None
 
 
 def _load_merged_backends() -> dict[str, Backend]:
-    """Lazy-merge built-ins + ~/.imgen/backends.d/. Cached per process."""
+    """Lazy-merge built-ins + ~/.imgen/backends.d/ + ~/.imgen/models.d/.
+
+    v0.8.0 commit 3: ``models.d/`` is the new canonical user-TOML path
+    (per [[project-v080-design]] §H). Reads BOTH directories during the
+    v0.8.x deprecation window:
+
+    * ``backends.d/`` loads exactly as it did in v0.7.x — no DEPRECATED
+      warn at commit 3 (the warn lands at commit 4a alongside the CLI
+      ``--backend`` → ``--model`` rename, so the migration message hits
+      colleagues once, not split across two commits).
+    * ``models.d/`` overlays ``backends.d/`` for same-stem TOMLs:
+      ``{**from_backends_d, **from_models_d}`` lets a colleague drop
+      the new copy in ``models.d/`` and see it win immediately without
+      first deleting the old one.
+    * Same-stem collisions BETWEEN user TOMLs and built-ins still go
+      through ``merge_user_backends`` (built-ins win, user gets the
+      ``_NNNN`` suffix).
+    * Symlinked directories on either side are refused with a warn —
+      protection mirrored from v0.4 IMP-3 for ``backends.d/``.
+
+    Cached per process; ``reset_backends_cache()`` clears it (tests use
+    that to swap fixtures cleanly).
+    """
     global _cached_merged
     if _cached_merged is None:
         # Local import to avoid module-load circularity with paths.py.
-        from .paths import BACKENDS_D
-        _cached_merged = merge_user_backends(
-            BUILTIN_BACKENDS, load_user_backends_dir(BACKENDS_D)
-        )
+        from .paths import BACKENDS_D, MODELS_D
+        from_backends_d = load_user_backends_dir(BACKENDS_D)
+        from_models_d = load_user_backends_dir(MODELS_D)
+        # `**` overlay — models.d entries replace same-stem backends.d
+        # entries before the built-in collision pass. Test:
+        # tests/test_user_models.py::test_user_toml_models_d_wins_on_collision
+        user = {**from_backends_d, **from_models_d}
+        _cached_merged = merge_user_backends(BUILTIN_BACKENDS, user)
     return _cached_merged
 
 
