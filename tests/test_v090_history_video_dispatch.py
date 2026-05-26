@@ -231,6 +231,149 @@ class TestReplayCommandControlByteFilter:
         fake_cmd_video.assert_called_once()
 
 
+# ── Write-side: video iteration emits num_frames/fps/video_codec ────────
+
+
+class TestVideoIterationWritesAdditiveFields:
+    """v0.9 commit 11.3 (§R.3 architect HIGH-1 closure): the canonical
+    history_entry constructed in engine_dispatch.run_one_iteration MUST
+    carry num_frames + fps + video_codec for video iterations. Pre-fix
+    the read side handled these via entry.get(...) defaults but the
+    write side never emitted them — silent replay drift: a video
+    generated with --num-frames 33 / --fps 30 would replay at 25/24.
+    """
+
+    def test_video_history_entry_carries_num_frames_fps_video_codec(
+        self, monkeypatch, tmp_path,
+    ):
+        """End-to-end: cmd_video → run_one_iteration writes the canonical
+        history entry with all three additive video fields. We mock the
+        engine.run subprocess so no actual generation happens; the
+        history_entry shape is exercised regardless.
+        """
+        from types import SimpleNamespace
+        from imgen.defaults import DEFAULTS
+        from imgen.history import append_history, load_history
+        from imgen.models import BUILTIN_MODELS
+        from imgen.engines.base import GenParams
+        from imgen.runs import BatchContext, Iteration
+        from imgen.engine_dispatch import run_one_iteration
+
+        # Build a minimal video Iteration that mirrors what
+        # build_video_iteration would produce.
+        ltx_model = BUILTIN_MODELS["ltx-video"]
+        params = GenParams(
+            prompt="a samurai", negative="",
+            width=768, height=512,
+            steps=25, guidance=3.0, seed=42, quantize=0, strength=0.0,
+            input_path=None, output_path=tmp_path / "out.mp4",
+            loras=(),
+            num_frames=33, fps=30,  # NON-DEFAULT — the gap point
+        )
+        it = Iteration(
+            style_name="video", prompt=params.prompt, negative="",
+            final_steps=25, final_quantize=0, final_guidance=3.0,
+            final_strength=0.0, output_path=params.output_path,
+            seed=42, model=ltx_model, params=params,
+        )
+
+        # Mock the engine subprocess so the run completes successfully.
+        # The history write happens AFTER engine.run returns.
+        from imgen.engines import diffusers_mps_engine
+        monkeypatch.setattr(
+            diffusers_mps_engine.DiffusersMpsEngine, "run",
+            lambda self, model, params, *, env=None, log_file=None: (
+                params.output_path.touch(), 0,
+            )[1],
+        )
+
+        ctx = BatchContext(
+            model="ltx-video", seed=42, width=768, height=512,
+            input_path=None, effective_custom_prompt=None,
+            args=SimpleNamespace(scope=None, preview=False),
+            batch_id=None, env={}, command="video",
+        )
+        rc = run_one_iteration(
+            it=it, idx=1, total=1, is_batch=False, ctx=ctx,
+            logger=None,
+            succeeded=[], failed=[],
+            enhance_result=None, enhance_model=None,
+        )
+        assert rc, "iteration should continue (returned truthy)"
+
+        entries = load_history()
+        assert len(entries) == 1
+        e = entries[0]
+        assert e["num_frames"] == 33, (
+            f"history write must carry params.num_frames; "
+            f"got entry={e!r}"
+        )
+        assert e["fps"] == 30, (
+            f"history write must carry params.fps; "
+            f"got entry={e!r}"
+        )
+        assert e["video_codec"] == "libx264", (
+            f"history write must stamp video_codec; "
+            f"got entry={e!r}"
+        )
+
+    def test_image_history_entry_does_not_carry_video_fields(
+        self, monkeypatch, tmp_path,
+    ):
+        """Regression: image iterations must NOT emit the video keys
+        (clean additive — only video rows carry them)."""
+        from types import SimpleNamespace
+        from imgen.history import append_history, load_history
+        from imgen.models import BUILTIN_MODELS
+        from imgen.engines.base import GenParams
+        from imgen.runs import BatchContext, Iteration
+        from imgen.engine_dispatch import run_one_iteration
+
+        flux = BUILTIN_MODELS["flux-kontext"]
+        params = GenParams(
+            prompt="a samurai", negative="",
+            width=1024, height=1024,
+            steps=20, guidance=3.5, seed=42, quantize=8, strength=0.5,
+            input_path=tmp_path / "in.jpg",
+            output_path=tmp_path / "out.png",
+            loras=(),
+        )
+        it = Iteration(
+            style_name="anime", prompt=params.prompt, negative="",
+            final_steps=20, final_quantize=8, final_guidance=3.5,
+            final_strength=0.5, output_path=params.output_path,
+            seed=42, model=flux, params=params,
+        )
+
+        from imgen.engines import mflux_engine
+        monkeypatch.setattr(
+            mflux_engine.MfluxEngine, "run",
+            lambda self, model, params, *, env=None, log_file=None: (
+                params.output_path.touch(), 0,
+            )[1],
+        )
+
+        ctx = BatchContext(
+            model="flux-kontext", seed=42, width=1024, height=1024,
+            input_path=tmp_path / "in.jpg", effective_custom_prompt=None,
+            args=SimpleNamespace(scope=None, preview=False),
+            batch_id=None, env={}, command="generate",
+        )
+        run_one_iteration(
+            it=it, idx=1, total=1, is_batch=False, ctx=ctx,
+            logger=None, succeeded=[], failed=[],
+            enhance_result=None, enhance_model=None,
+        )
+
+        entries = load_history()
+        assert len(entries) == 1
+        e = entries[0]
+        # Image rows don't carry video keys — clean additive
+        assert "num_frames" not in e
+        assert "fps" not in e
+        assert "video_codec" not in e
+
+
 # ── Read-compat: v0.8.x reading a v=4 video entry ──────────────────────
 
 

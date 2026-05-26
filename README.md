@@ -44,7 +44,7 @@ imgen batch ~/Desktop/holiday --style anime,ghibli       # every photo in folder
 >
 > Some model names also changed (`flux` → `flux-kontext`, `qwen` → `qwen-image-edit-v1`). Run `imgen --list-models` for the current canonical names.
 >
-> User TOMLs in `~/.imgen/backends.d/` keep working in v0.8.x but emit a DEPRECATED warn on every run. Run `imgen migrate-toml` to move them to `~/.imgen/models.d/`. v0.9.0 drops the `backends.d/` fallback. The helper also detects redundant files (where a user TOML's stem matches a new v0.8 built-in Model) and offers to delete them.
+> User TOMLs in `~/.imgen/backends.d/` keep working in v0.8.x **and v0.9.x** but emit a DEPRECATED warn on every run. Run `imgen migrate-toml` to move them to `~/.imgen/models.d/`. The `backends.d/` fallback is targeted for hard-removal in v0.10.0 — earlier README claimed v0.9.0 drop, but the bridge survives the v0.9 arc for continuity. The helper also detects redundant files (where a user TOML's stem matches a new v0.8 built-in Model) and offers to delete them.
 >
 > `[defaults] style` in `~/.imgen/config.toml` — REMOVED. Pass `--style NAME` per invocation instead. (Soft-deprecated since v0.7.13.)
 >
@@ -556,7 +556,7 @@ Built-in:
 
 Drop `*.toml` files into `~/.imgen/models.d/` (v0.8.0+ canonical path). Filename becomes the `--model NAME`. Same drop-in pattern as styles.d, applied to the image-gen binaries imgen drives — useful for experimenting with new mflux-shaped models (future SDXL ports, your own wrapper script, etc.) without editing imgen's code.
 
-> Pre-v0.8.0 the directory was `~/.imgen/backends.d/`. Files there still load with a DEPRECATED warn through v0.8.x — run `mv ~/.imgen/backends.d/<NAME>.toml ~/.imgen/models.d/<NAME>.toml` per file to clear it. v0.9.0 drops the `backends.d/` read entirely.
+> Pre-v0.8.0 the directory was `~/.imgen/backends.d/`. Files there still load with a DEPRECATED warn through v0.8.x **and v0.9.x** — run `mv ~/.imgen/backends.d/<NAME>.toml ~/.imgen/models.d/<NAME>.toml` per file to clear it. The legacy read is targeted for hard-removal in v0.10.0; v0.9.0's README originally claimed it dropped at v0.9.0 but the bridge survives the v0.9 arc for continuity.
 
 ```toml
 # ~/.imgen/models.d/sdxl.toml
@@ -600,8 +600,9 @@ Collisions with built-ins (`flux-kontext.toml`, `qwen-image-edit-v1.toml`) get a
 [defaults]
 model = "qwen-image-edit-v1"  # see `imgen --list-models`
                               # (legacy `backend = "qwen"` still loads
-                              #  with a DEPRECATED warn through v0.8.x;
-                              #  v0.9.0 drops the old key.)
+                              #  with a DEPRECATED warn through v0.8.x
+                              #  and v0.9.x; targeted for hard-removal
+                              #  in v0.10.0.)
 quantize = 4
 steps = 12
 guidance = 4.0
@@ -615,7 +616,7 @@ color = "auto"              # "auto" | "always" | "never"
 
 **Precedence:** CLI flag > `~/.imgen/config.toml` > built-in defaults. Bad value (e.g. `steps = 999`) → `imgen` warns and falls back to built-ins until you fix the file. Unknown keys are dropped with a warning so old `imgen` versions don't break on configs written by newer ones.
 
-> **v0.8.0 migration:** `[defaults] style = ...` was REMOVED (soft-deprecated since v0.7.13, hard-removed at v0.8.0) — pass `--style NAME` per-invocation instead, or set `[enhance] default = true` to keep enhanced prompts as your default. `[defaults] backend = "flux"` still loads through v0.8.x with a DEPRECATED warn that auto-maps to `[defaults] model = "flux-kontext"`. Rename in your config to clear the warn; v0.9.0 drops the legacy key.
+> **v0.8.0 migration:** `[defaults] style = ...` was REMOVED (soft-deprecated since v0.7.13, hard-removed at v0.8.0) — pass `--style NAME` per-invocation instead, or set `[enhance] default = true` to keep enhanced prompts as your default. `[defaults] backend = "flux"` still loads through v0.8.x **and v0.9.x** with a DEPRECATED warn that auto-maps to `[defaults] model = "flux-kontext"`. Rename in your config to clear the warn; the legacy key is targeted for hard-removal in v0.10.0 (not v0.9.0 — earlier README claimed v0.9.0 drop, but the bridge survives the v0.9 arc for continuity).
 
 For `output_dir` specifically the resolution is **`--output-dir` CLI flag > `$IMGEN_OUTPUT_DIR` env > config > default**.
 

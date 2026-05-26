@@ -604,6 +604,24 @@ def run_one_iteration(
         ],
     }
 
+    # v0.9 commit 11.3 (§R.3 architect HIGH-1 closure / §J keystone):
+    # video Models write num_frames + fps + video_codec into the
+    # history entry so ``imgen replay <id>`` reproduces the temporal
+    # structure exactly. The replay reader at
+    # commands/history.py:_replay_video_entry uses
+    # entry.get("num_frames", 25) / entry.get("fps", 24) — without
+    # the write side, every video replay would silently fall back to
+    # defaults regardless of the original --num-frames / --fps.
+    # Schema stays v=4 additive per §J (no v=5 bump).
+    if ctx.command == "video" and it.params is not None:
+        history_entry["num_frames"] = it.params.num_frames
+        history_entry["fps"] = it.params.fps
+        # v0.9.0 ships only libx264 via imageio-ffmpeg. Future codec
+        # support (WebM via libvpx-vp9) would extend the VideoConfig
+        # supports_video_codecs allowlist — stored value reflects
+        # what the runner actually muxed.
+        history_entry["video_codec"] = "libx264"
+
     # v0.5: optional LLM enhancer recording. Fields land only when the
     # enhancer was actually engaged this run (either ran or was opted-
     # out at CLI level — both signal "user knew enhance is a thing").
