@@ -939,6 +939,11 @@ def _report_diffusers_health() -> int:
         ok(f".venv-diffusers present at {venv_python.parent.parent}")
         if diffusers_declared:
             _report_hf_cache_disk_free()
+        # v0.9 commit 6 (§E.5.3): video-deps drift detection. Surfaces
+        # marker file state when the venv exists — covers the case
+        # where a user installed video deps then later imgen upgraded
+        # across a pin bump.
+        _report_video_deps_health()
     else:
         if diffusers_declared:
             err(".venv-diffusers MISSING but a diffusers_mps model is "
@@ -953,6 +958,76 @@ def _report_diffusers_health() -> int:
             print(f"   {C.DIM}Run IMGEN_INSTALL_DIFFUSERS=1 "
                   f"./bootstrap.sh to install (~10 GB).{C.END}")
     return issues
+
+
+def _report_video_deps_health() -> None:
+    """v0.9 commit 6 (§E.5.3): report video-deps install state via the
+    audit marker ``~/.imgen/video_deps_installed_at.txt`` written by
+    ``ensure_video_deps_or_die``.
+
+    Three tiers:
+
+    * GREEN — marker present + pinned versions match canonical
+      ``_VIDEO_DEPS_PINNED``.
+    * YELLOW — marker present but drifted (user upgraded imgen
+      across a pin bump but didn't re-trigger install). Surfaces
+      which pin drifted so the user knows what to re-install.
+    * INFO — marker absent (no install yet). Hints at the
+      ``imgen video`` first-call install path.
+
+    Safe to call unconditionally — defensive against missing
+    ``.venv-diffusers/`` (just renders the absent line, no crash).
+    Malformed marker file → treated as absent (don't surface
+    parser errors at doctor-time).
+    """
+    from ..paths import STATE_DIR
+
+    marker = STATE_DIR / "video_deps_installed_at.txt"
+    if not marker.exists():
+        dim("   video deps: not yet installed "
+            "(run `imgen video ...` to lazy-install ~60 MB)")
+        return
+
+    try:
+        from .video import _VIDEO_DEPS_PINNED
+        content = marker.read_text()
+    except (OSError, ImportError):
+        dim("   video deps: marker unreadable — treating as absent")
+        return
+
+    # Parse the pinned_versions section. Tolerant: missing/extra
+    # whitespace OK, broken file → treated as absent.
+    installed_pins: set[str] = set()
+    in_pins_section = False
+    for line in content.splitlines():
+        if line.strip() == "pinned_versions:":
+            in_pins_section = True
+            continue
+        if in_pins_section:
+            stripped = line.strip()
+            if stripped:
+                installed_pins.add(stripped)
+
+    if not installed_pins:
+        dim("   video deps: marker malformed — treating as absent")
+        return
+
+    canonical = set(_VIDEO_DEPS_PINNED)
+    if installed_pins == canonical:
+        ok(f"video deps: present (matches pinned: "
+           f"{', '.join(sorted(canonical))})")
+        return
+
+    # Drift — surface specific mismatched pins.
+    missing = canonical - installed_pins
+    extra = installed_pins - canonical
+    warn("video deps: present but DRIFT detected")
+    if extra:
+        print(f"   {C.DIM}installed (stale): {', '.join(sorted(extra))}{C.END}")
+    if missing:
+        print(f"   {C.DIM}pinned (expected): {', '.join(sorted(missing))}{C.END}")
+    print(f"   {C.DIM}Remediation: rm ~/.imgen/video_deps_installed_at.txt "
+          f"+ re-run `imgen video ...` to reinstall pinned set.{C.END}")
 
 
 def _report_hf_cache_disk_free() -> None:
