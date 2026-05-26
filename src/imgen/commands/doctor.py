@@ -873,8 +873,15 @@ def _render_ram_forecast_rows(available_ram: float) -> None:
     mflux_engine = MfluxEngine()
     diffusers_engine = DiffusersMpsEngine()
     # Sort by model name then quant for deterministic ordering.
+    # Image rows (per-quant grid) — skips video Models whose
+    # ``supported_quants=()`` makes the inner loop a no-op anyway.
     for model_name in sorted(BUILTIN_MODELS):
         model = BUILTIN_MODELS[model_name]
+        if model.video is not None:
+            # Video Models rendered separately below — different shape
+            # (resolution × num_frames envelopes per §L instead of
+            # per-quant rows; LTX is bf16-only at v0.9.0).
+            continue
         engine = (
             mflux_engine if model.engine == "mflux"
             else diffusers_engine
@@ -893,6 +900,47 @@ def _render_ram_forecast_rows(available_ram: float) -> None:
             label = f"{model_name} q{q}"
             print(f"   {label:<24} {need:>5.1f} GB  "
                   f"{available_ram:>4.1f} GB  {verdict}")
+
+    # v0.9 commit 9 (§K + §L): video Model forecast section.
+    # Three envelope rows per video Model: canonical, heavy mode,
+    # out-of-envelope. Numbers derived from Engine.ram_estimate_gb
+    # — same source-of-truth as the preflight gate, so a future
+    # tuning of the formula propagates to both surfaces at once.
+    video_models = [
+        (n, BUILTIN_MODELS[n]) for n in sorted(BUILTIN_MODELS)
+        if BUILTIN_MODELS[n].video is not None
+    ]
+    if video_models:
+        print()  # visual separator between image grid + video grid
+        for model_name, model in video_models:
+            for width, height, num_frames, label_extra in (
+                (768, 512, 25, "canonical"),
+                (1024, 576, 33, "heavy mode"),
+                (1280, 720, 121, "out of envelope"),
+            ):
+                params = GenParams(
+                    prompt="", negative="", width=width, height=height,
+                    steps=1, guidance=0.0, seed=0, quantize=0,
+                    strength=0.0, input_path=None,
+                    output_path=Path("/tmp/_doctor_placeholder.mp4"),
+                    loras=(),
+                    num_frames=num_frames,
+                )
+                need = diffusers_engine.ram_estimate_gb(model, params)
+                # Video preflight adds a +3 GB safety buffer (§L);
+                # surface ✅ only when there's headroom for it,
+                # ⚠️ when base fits but buffer doesn't, ❌ otherwise.
+                if available_ram >= need + 3.0:
+                    verdict = f"{C.OK}✅ fits{C.END}"
+                elif available_ram >= need:
+                    verdict = f"{C.WARN}⚠️  tight{C.END}"
+                else:
+                    verdict = f"{C.ERR}❌ no{C.END}"
+                label = (f"{model_name} {width}×{height} "
+                         f"× {num_frames}f")
+                print(f"   {label:<28} {need:>5.1f} GB  "
+                      f"{available_ram:>4.1f} GB  {verdict}  "
+                      f"{C.DIM}({label_extra}){C.END}")
 
 
 def _report_diffusers_health() -> int:
