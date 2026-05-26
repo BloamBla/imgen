@@ -98,7 +98,7 @@ class Engine(Protocol):
         between them.
 
         KeyboardInterrupt must propagate UNWRAPPED. The orchestration
-        layer (``cmd_helpers.run_one_iteration``) owns the
+        layer (``engine_dispatch.run_one_iteration``) owns the
         cancel-history-marker side effect; if Engine.run caught and
         swallowed (or re-raised as a different exception), the marker
         couldn't fire.

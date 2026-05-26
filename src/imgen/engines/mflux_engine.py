@@ -126,7 +126,7 @@ class MfluxEngine:
             progress instead of buffering.
 
         ``env`` is passed through verbatim — the caller
-        (``cmd_helpers.run_one_iteration``) builds it via
+        (``engine_dispatch.run_one_iteration``) builds it via
         ``build_mflux_env`` to populate the allowlisted env vars
         (HF_TOKEN, PYTHONPATH, etc.).
 
@@ -145,7 +145,7 @@ class MfluxEngine:
         # env=None defensive fallback: build a minimal allowlisted env
         # (no HF_TOKEN — gated-repo runs require the caller to pass
         # env=build_mflux_env(token=...) explicitly). Production path
-        # via cmd_helpers.run_one_iteration always passes ctx.env;
+        # via engine_dispatch.run_one_iteration always passes ctx.env;
         # this branch only fires for tests / direct Engine.run calls.
         return run_with_stderr_redaction(
             cmd,
