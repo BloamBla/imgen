@@ -146,6 +146,7 @@ def _format_diffusers_dryrun(it: Iteration) -> str:
         f"  negative:        {params.negative!r}",
         f"  steps: {params.steps}  guidance: {params.guidance}  "
         f"seed: {params.seed}  width: {params.width}  height: {params.height}",
+        f"  cpu_offload_threshold_mp: {model.cpu_offload_threshold_mp}",
         f"  output_path:     {_scrub(params.output_path)}",
     ]
     if params.input_path is not None:
