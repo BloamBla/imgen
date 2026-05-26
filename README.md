@@ -1,6 +1,6 @@
 # imgen
 
-Local image generation CLI for Apple Silicon Macs. Three modes today: **`imgen draw`** generates images from text prompts (FLUX.1-dev), **`imgen refine`** upsamples an existing image at 1.5×/2× via FLUX.2-klein-edit (Hires-Fix pattern), **`imgen generate` / `imgen batch`** restyle photos (FLUX.1-Kontext, Qwen-Image-Edit). Wraps [mflux](https://github.com/filipstrand/mflux) under the hood — on-device via MLX, no cloud, no API keys outside HuggingFace's gated-repo token.
+Local image + video generation CLI for Apple Silicon Macs. Four modes today: **`imgen draw`** generates images from text prompts (FLUX.1-dev), **`imgen refine`** upsamples an existing image at 1.5×/2× via FLUX.2-klein-edit (Hires-Fix pattern), **`imgen generate` / `imgen batch`** restyle photos (FLUX.1-Kontext, Qwen-Image-Edit), and **`imgen video`** (v0.9.0+) generates short clips from text prompts (LTX-Video via diffusers). Wraps [mflux](https://github.com/filipstrand/mflux) for the image side; the video side uses HuggingFace `diffusers` in a separate isolated venv. On-device via MLX / MPS, no cloud, no API keys outside HuggingFace's gated-repo token.
 
 ```bash
 # Text-to-image (v0.7.0+)
@@ -17,6 +17,12 @@ imgen draw "samurai" --num-iterations 5 --preview             # explore: 5 varia
 imgen refine ~/Desktop/imgen/<run>/samurai-3.png              # winner → polished 1536² (~49 min on M2 Pro 32GB)
 imgen refine winner.png --scale 2                             # 1024² → 2048² (FLUX.2-klein native cap)
 imgen refine winner.png --width 1920 --height 1080            # explicit dims (16-multiple rounding)
+
+# Text-to-video (v0.9.0+, LTX-Video via diffusers — single-shot per call)
+imgen video "a samurai walking through bamboo forest"         # canonical: 768×512 × 25 frames @ 24fps ≈ 1 sec
+imgen video "cyberpunk city at night" --duration 2            # 2 sec, ceils to next valid 8k+1 frames (49 @ 24fps)
+imgen video "abstract" --num-frames 33 --fps 24               # explicit frame count (alternative to --duration)
+imgen video "test" --dry-run                                  # show dispatch shape without running
 
 # Photo restyle (v0.1+)
 imgen photo.jpg --style anime                            # preset mode
@@ -68,9 +74,9 @@ Photos without people work fine too — the identity-preserving language doesn't
 
 - **macOS on Apple Silicon** (M1/M2/M3/M4) — MLX does not support Intel
 - **Python 3.12** (install: `brew install python@3.12`)
-- **32 GB unified memory recommended** for full feature set; 16 GB works for `imgen generate` / `imgen draw` with `--quantize 4`. **`imgen refine` requires 32 GB** (real measurement Q4/1536² peaks at ~23 GB resident + compression — 16 GB Macs would OOM mid-inference)
-- **~60 GB free disk** (FLUX + Qwen models combined ~80 GB cached)
-- **HuggingFace account** (for FLUX Kontext — gated model, needs license acceptance)
+- **32 GB unified memory recommended** for full feature set; 16 GB works for `imgen generate` / `imgen draw` with `--quantize 4`. **`imgen refine` requires 32 GB** (real measurement Q4/1536² peaks at ~23 GB resident + compression — 16 GB Macs would OOM mid-inference). **`imgen video` (LTX-Video) needs ~17 GB available** for the canonical 768×512 × 25-frame envelope per [§L of the design memo](memory/project_v090_design.md) — close Chrome/IDE before running on 32 GB Macs.
+- **~60 GB free disk** for image (FLUX + Qwen models combined ~80 GB cached); **add ~26 GB more for video** (LTX-Video weights).
+- **HuggingFace account** (for FLUX Kontext — gated model, needs license acceptance). LTX-Video is **open** (no token, no license click-through).
 
 ## Install
 
@@ -90,6 +96,7 @@ The bootstrap script:
 3. Installs the `imgen` package + dependencies (pinned mflux 0.17.5)
 4. Adds shell alias (`zsh` / `bash` / `fish` auto-detected)
 5. Prompts for HuggingFace token (optional — only needed for FLUX)
+6. Asks whether to also opt into the **diffusers** venv at `.venv-diffusers/` (~8 GB: torch + diffusers + transformers). Needed for `imgen video` (LTX-Video) and any user-TOML model with `engine = "diffusers_mps"`. Skip if you only use the image path — opt in later via `IMGEN_INSTALL_DIFFUSERS=1 ./bootstrap.sh`.
 
 ### Option B: `pipx install` (for those who already use pipx)
 
@@ -193,6 +200,16 @@ imgen refine <input> --strength 0.5            # higher = more refine, lower = m
 imgen refine <input> --model flux-kontext      # fall back to FLUX.1-Kontext (capped at ~1.5K cleanly)
 imgen refine <input> -o ~/Desktop/refined.png  # explicit output path
 
+# Video — text-to-video (v0.9.0+, LTX-Video default model, diffusers_mps engine)
+imgen video "samurai walking"                  # canonical: 768×512 × 25 frames @ 24fps ≈ 1 sec
+imgen video "..." --duration 2                 # seconds; ceils to next 8k+1 alignment
+imgen video "..." --num-frames 33              # explicit frame count (mutex with --duration)
+imgen video "..." --fps 30                     # {24, 25, 30} allowlist
+imgen video "..." --width 1024 --height 576    # heavy mode (~19 GB; close other apps)
+imgen video "..." --seed 42                    # reproducible
+imgen video "..." -o ~/clip.mp4                # .mp4 extension required
+imgen video "..." --dry-run                    # show dispatch payload without running
+
 # Batch a folder — same flags as generate except no -o/--output (always run-folder layout)
 imgen batch <dir>                              # every photo × default style → one timestamped folder
 imgen batch <dir> --style anime,ghibli,pixar   # N × M into one folder, named <input>-<style>.png
@@ -223,6 +240,37 @@ imgen history --last 50                        # more
 imgen last                                     # repeat last with new seed
 imgen replay 42                                # repeat #42
 ```
+
+## Text-to-video (v0.9.0+)
+
+`imgen video` generates short clips from text prompts via **LTX-Video** (Lightricks, ~2B-param DiT + ~5B-param T5-XXL text encoder) using HuggingFace `diffusers` on Apple Silicon's MPS backend. Outputs `.mp4` (libx264 via bundled ffmpeg). Single-shot per call in v0.9.0 — `--num-iterations N` is deferred to v0.9.x.
+
+```bash
+imgen video "a samurai walking through bamboo forest"   # canonical envelope
+```
+
+### Realistic envelope on M2 Pro 32 GB
+
+LTX-Video's RAM math (per [§L of the design memo](memory/project_v090_design.md)) — peak RSS depends on resolution + frame count:
+
+| Mode | Resolution × frames | RAM peak | Verdict on M2 Pro 32 GB |
+|---|---|---|---|
+| **Canonical** | 768×512 × 25 frames (~1 sec @ 24 fps) | ~17 GB | ✅ realistic with `available_gb >= 20` (close Chrome/IDE first) |
+| **Heavy** | 1024×576 × 33 frames (~1.4 sec) | ~19 GB | ⚠️ tight; pass `--force` if preflight fails on 22 GB available |
+| **Out of envelope** | 1280×720 × 121 frames (~5 sec) | ~29 GB | ❌ infeasible on 32 GB — needs M3 Ultra refurb |
+
+Check your current envelope with `imgen doctor` — the RAM forecast table includes a video section showing fits/tight/no per row.
+
+### First-call lazy install
+
+`imgen video` depends on three extra pip packages (`imageio==2.37.3`, `imageio-ffmpeg==0.6.0`, `sentencepiece==0.2.1`) that aren't part of the default `.venv-diffusers/`. The first `imgen video` invocation prompts to install them; subsequent calls return silently. For non-interactive contexts (cron, CI), set `IMGEN_INSTALL_VIDEO_DEPS=1` to opt in without prompting — an audit line still prints to stderr (never silent per security review §R.1).
+
+### Architecture notes
+
+- **Separate venv**: LTX runs in `.venv-diffusers/` (torch + diffusers + transformers + the three pinned video packages), kept isolated from the main `.venv/` to avoid the torch ↔ MLX dependency conflict.
+- **CPU offload mandatory** on 32 GB Macs: LTX's T5-XXL encoder transient peaks ~18 GB if loaded to MPS directly; `force_cpu_offload=True` keeps the encoder on CPU and streams to MPS — peak drops to ~3 GB encoder + 14 GB transformer/activations.
+- **8k+1 frame alignment**: LTX's temporal-VAE patch structure requires frame counts that satisfy `(n - 1) % 8 == 0` (1, 9, 17, 25, 33, 49, 65, ...). `--duration N` ceils UP to the nearest valid count so output is always ≥ requested duration.
+- **History replay**: video entries roundtrip via `imgen replay <id>` — the `command="video"` discriminator + new fields (`num_frames`, `fps`, `video_codec`) flow through the existing history schema (v=4, additive).
 
 ## Keeping prompts out of `ps`
 
