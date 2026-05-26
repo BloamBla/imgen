@@ -34,15 +34,79 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Mapping
+from typing import Literal, Mapping
 
 __all__ = [
     "BUILTIN_MODELS",
     "Model",
+    "VideoConfig",
     "_V07_TO_V08_MODEL_RENAMES",
     "get_model",
     "list_models",
 ]
+
+
+# ── VideoConfig (v0.9 commit 1, [[project-v090-design]] §C) ────────────
+#
+# Nested video-specific config on ``Model.video``. Absent (None) ⇒
+# image Model. Present ⇒ video Model. Per architect §R.1 HIGH-1:
+# flat field expansion (7 new top-level Model fields) was rejected
+# because (a) image-only user TOMLs would carry noise fields
+# meaningless for image; (b) future audio/3d Models would compound
+# the flat bloat. Nested keeps Model at fixed top-level cardinality.
+#
+# frozen + slots so Model can stay frozen+hashable with this nested.
+# All fields are hashable types (int / float / bool / tuple of str).
+
+
+@dataclass(frozen=True, slots=True)
+class VideoConfig:
+    """v0.9 video-specific Model config. Absent on a Model ⇒ image;
+    present ⇒ video output.
+
+    Tied design memo: [[project-v090-design]] §C.
+    """
+
+    default_num_frames: int           # LTX: 25 (~1 sec @ 24 fps)
+    default_fps: int                  # LTX: 24
+    max_num_frames: int               # LTX: 257 (~10.7 sec @ 24 fps; paper cap)
+    num_frames_alignment: int = 8     # LTX: 8 (must be 8k+1 frames)
+    num_frames_offset: int = 1        # LTX: 1 (the +1 in 8k+1)
+    supports_video_codecs: tuple[str, ...] = ("libx264",)
+    force_cpu_offload: bool = True    # video defaults to forced offload (T5-XXL pressure)
+    encoder_ram_gb: float = 3.0       # T5-XXL transient peak when offloaded; not optional for video
+
+    def __post_init__(self) -> None:
+        if self.default_num_frames < 9:
+            raise ValueError(
+                f"VideoConfig.default_num_frames={self.default_num_frames} "
+                "too low (minimum 9 for usable temporal sampling)"
+            )
+        if self.default_fps not in {24, 25, 30}:
+            raise ValueError(
+                f"VideoConfig.default_fps={self.default_fps} not in "
+                "{24, 25, 30} — supported video rates for v0.9.0"
+            )
+        if self.max_num_frames < self.default_num_frames:
+            raise ValueError(
+                f"VideoConfig.max_num_frames={self.max_num_frames} must be "
+                f">= default_num_frames={self.default_num_frames}"
+            )
+        if self.num_frames_alignment < 1:
+            raise ValueError(
+                f"VideoConfig.num_frames_alignment={self.num_frames_alignment} "
+                "must be >= 1"
+            )
+        if not self.supports_video_codecs:
+            raise ValueError(
+                "VideoConfig.supports_video_codecs must list at least one "
+                "codec (typically 'libx264')"
+            )
+        if self.encoder_ram_gb <= 0:
+            raise ValueError(
+                f"VideoConfig.encoder_ram_gb={self.encoder_ram_gb} must be > 0 "
+                "(text encoder peak RAM is load-bearing for video preflight)"
+            )
 
 
 # ── v0.7 → v0.8 model name renames (canonical home, 4b moved from parser.py) ──
@@ -120,6 +184,19 @@ class Model:
     enhance_system_prompt: str | None = None
     enhance_invariants: tuple[str, ...] = ()
 
+    # — v0.9 commit 1: nested video config (None ⇒ image Model) —
+    # Forward-typed via PEP 563 (`from __future__ import annotations`
+    # at top of file) so this annotation references the class declared
+    # above without import-order pain.
+    video: VideoConfig | None = None
+
+    @property
+    def output_type(self) -> Literal["image", "video"]:
+        """Derived: ``"video"`` if a VideoConfig is attached, else
+        ``"image"``. Used by iteration_dryrun_display (§H), runner
+        payload routing (§F), history command field (§J)."""
+        return "video" if self.video is not None else "image"
+
     def __post_init__(self) -> None:
         """Engine-conditional invariants. Fires at every Model
         instantiation — built-in registry, user TOMLs, test fixtures —
@@ -149,6 +226,23 @@ class Model:
                 f"Model row missing ram_slope_gb_per_mp (got {self.ram_slope_gb_per_mp}) "
                 "— registry author must declare."
             )
+        # v0.9 commit 1 — Model × VideoConfig cross-rules per §C
+        if self.video is not None:
+            if self.engine != "diffusers_mps":
+                raise ValueError(
+                    f"VideoConfig only supported with engine='diffusers_mps' "
+                    f"(got engine={self.engine!r})"
+                )
+            # v0.9 video Models bypass the cpu_offload_threshold_mp
+            # mechanism — force_cpu_offload on VideoConfig is the
+            # single source of truth. Non-default threshold on a
+            # video Model is double-encoded behaviour (footgun).
+            if self.cpu_offload_threshold_mp != 2.0:
+                raise ValueError(
+                    "video Models must use VideoConfig.force_cpu_offload; "
+                    "cpu_offload_threshold_mp is image-only "
+                    "(leave at the default 2.0 for video Models)"
+                )
 
 
 # ── Enhancer system prompts (moved from backends.py at 4b) ─────────────

@@ -66,9 +66,10 @@ class TestModelDataclassShape:
             m.engine = "diffusers_mps"  # type: ignore[misc]
 
     def test_v0_8_0_field_surface_locked(self):
-        """Schema lock — every named v0.8 field is present. If a field
-        gets dropped or renamed in v0.8.1+, this test fails and forces
-        a deliberate update."""
+        """Schema lock — every named field is present. If a field gets
+        dropped or renamed, this test fails and forces a deliberate
+        update. v0.9 commit 1 widens with `video` (nested VideoConfig)
+        per [[project-v090-design]] §C."""
         from imgen.models import Model
         names = {f.name for f in fields(Model)}
         expected = {
@@ -81,6 +82,8 @@ class TestModelDataclassShape:
             "supported_quants", "omit_quantize", "param_overrides",
             "ram_baseline_gb", "ram_slope_gb_per_mp", "encoder_ram_gb",
             "enhance_system_prompt", "enhance_invariants",
+            # v0.9 commit 1 — nested video config (None ⇒ image Model)
+            "video",
         }
         assert expected == names, (
             f"Field surface drift: missing={expected - names}, "
