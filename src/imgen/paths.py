@@ -183,8 +183,9 @@ MODELS_D_EXAMPLE = STATE_DIR / "models.d.example"
 # Output extensions allowed for --output and auto-`open`. macOS `open`
 # delegates to the registered app for the extension, so .terminal /
 # .command / .sh etc would auto-execute. Restrict to known-safe image
-# suffixes.
-SAFE_OUTPUT_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
+# + video suffixes. .mp4 added at v0.9 commit 4 for the VideoEngine
+# output path (libx264 muxed output via imageio-ffmpeg).
+SAFE_OUTPUT_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".mp4"}
 
 
 def ensure_state_dir() -> None:

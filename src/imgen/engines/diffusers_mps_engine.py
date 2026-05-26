@@ -145,6 +145,21 @@ class DiffusersMpsEngine:
             # filters through the allowlist.
             "param_overrides": dict(model.param_overrides),
         }
+        # v0.9 commit 4 — video payload extensions (§F). Image Models
+        # keep the v0.8 payload shape (no output_type key, runner
+        # defaults to image). Video Models add the v0.9 triple +
+        # force_cpu_offload from VideoConfig.
+        if model.video is not None:
+            payload["output_type"] = "video"
+            payload["num_frames"] = params.num_frames
+            payload["fps"] = params.fps
+            payload["force_cpu_offload"] = model.video.force_cpu_offload
+            # v0.9.0 ships LTX-Video as the only built-in video Model
+            # → pipeline_class hardcoded to "LTXPipeline". v0.9.x with
+            # a second built-in video Model will move this onto
+            # VideoConfig as a typed field; backlog item documented in
+            # the commit body.
+            payload["pipeline_class"] = "LTXPipeline"
 
         # STATIC argv — no user data interpolated. Security pre-vet
         # confirmed: str(Path) is a stable stringification; no shell

@@ -61,15 +61,29 @@ _HF_REPO_RE = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$"
 )
 
-# Safe extensions for the output PNG/JPG/WebP and the optional input
-# image. Mirrors paths.SAFE_OUTPUT_EXTS but defined locally so the
-# runner has zero non-stdlib imports during validation (defense-in-
-# depth: even if imgen.paths fails to import inside .venv-diffusers,
-# validation still works).
-_SAFE_OUTPUT_EXTS: frozenset[str] = frozenset({".png", ".jpg", ".jpeg", ".webp"})
+# Safe extensions for the output PNG/JPG/WebP/MP4 and the optional
+# input image. Mirrors paths.SAFE_OUTPUT_EXTS but defined locally so
+# the runner has zero non-stdlib imports during validation (defense-
+# in-depth: even if imgen.paths fails to import inside
+# .venv-diffusers, validation still works). v0.9 commit 4 adds .mp4
+# for VideoEngine output; the lock-in test
+# ``test_runner_safe_output_exts_equals_paths_safe_output_exts``
+# pins both sets identical.
+_SAFE_OUTPUT_EXTS: frozenset[str] = frozenset(
+    {".png", ".jpg", ".jpeg", ".webp", ".mp4"}
+)
 _SAFE_IMAGE_INPUT_EXTS: frozenset[str] = frozenset({
     ".png", ".jpg", ".jpeg", ".webp", ".heic", ".heif",
 })
+
+# Per-output_type extension allowlist. The schema's matrix rule:
+# image payloads MUST use the image set; video payloads MUST use the
+# video set. .mp4 in an image payload (or vice versa) rejects before
+# reaching the save path.
+_SAFE_IMAGE_OUTPUT_EXTS: frozenset[str] = frozenset(
+    {".png", ".jpg", ".jpeg", ".webp"}
+)
+_SAFE_VIDEO_OUTPUT_EXTS: frozenset[str] = frozenset({".mp4"})
 
 # Map _SAFE_OUTPUT_EXTS → PIL format keyword. When PIL.save is given
 # an open file object (instead of a path string) it cannot infer the
@@ -80,6 +94,25 @@ _PIL_FORMAT_BY_EXT: dict[str, str] = {
     ".jpeg": "JPEG",
     ".webp": "WEBP",
 }
+
+# v0.9 commit 4 — pipeline class allowlist for the runner-side
+# dispatch. Security §R.1 HIGH-1: validate as a LITERAL allowlist
+# BEFORE the diffusers import so introspection / path-traversal /
+# dunder strings never reach getattr-on-module. The actual class
+# objects resolve via literal dict in _resolve_pipeline_class().
+_PIPELINE_CLASS_ALLOWLIST: frozenset[str] = frozenset({
+    "DiffusionPipeline",   # generic v0.8 image fallback
+    "LTXPipeline",         # v0.9.0 LTX-Video first built-in video class
+})
+
+# v0.9 commit 4 — fps allowlist for video payloads. Mirrors
+# DiffusersMpsEngine._validate_video (parent side) per §E.0 drift
+# lock-in.
+_VIDEO_FPS_ALLOWLIST: frozenset[int] = frozenset({24, 25, 30})
+
+# Output type allowlist. "image" is the default for legacy v0.8
+# payloads that omit the key.
+_OUTPUT_TYPE_ALLOWLIST: frozenset[str] = frozenset({"image", "video"})
 
 # param_overrides allowlist — only these keys may flow from user TOML
 # into ``pipe(**kwargs)``. Memo §E.1 round-2 security HIGH; symmetric
@@ -107,6 +140,15 @@ _PAYLOAD_OPTIONAL_KEYS: frozenset[str] = frozenset({
     "input_path",
     "cpu_offload_threshold_mp",
     "param_overrides",
+    # v0.9 commit 4 — video payload extensions. All optional at the
+    # top-level schema; output_type=="video" triggers conditional
+    # required-ness for num_frames + fps + pipeline_class via the
+    # per-output-type matrix in _validate_payload_shape.
+    "num_frames",
+    "fps",
+    "output_type",
+    "pipeline_class",
+    "force_cpu_offload",
 })
 
 # POSIX EX_USAGE (sysexits.h). Returned for every input-validation
@@ -137,6 +179,13 @@ def _validate_payload_shape(payload: object) -> int:
     Required keys + types + range/regex per
     :data:`_PAYLOAD_REQUIRED_KEYS` and the locked memo §E.1 spec.
     Unknown top-level keys reject (deny-by-default).
+
+    v0.9 commit 4 adds the video-payload branch (§F). When
+    ``output_type=="video"`` the additional triple (num_frames, fps,
+    pipeline_class) becomes required and the output_path extension
+    is gated to ``.mp4`` only. ``pipeline_class`` is validated via
+    a LITERAL allowlist BEFORE the diffusers import (security §R.1
+    HIGH-1 — getattr-on-module is the anti-pattern this avoids).
     """
     if not isinstance(payload, dict):
         return _ex_usage("runner: payload must be a JSON object")
@@ -188,16 +237,37 @@ def _validate_payload_shape(payload: object) -> int:
     if not (0.0 <= float(guidance) <= 30.0):
         return _ex_usage("runner: guidance out of range [0.0, 30.0]")
 
-    # output_path: absolute, safe ext. Security pre-vet HIGH: this is
-    # where pipe.images[0].save(...) writes — must be in the user's
-    # output tree, not /etc/passwd or similar.
+    # v0.9 commit 4 — output_type validation. Optional key; defaults
+    # to "image" when absent (v0.8 payload compat). Allowlist
+    # enforced BEFORE the per-type matrix below.
+    if "output_type" in payload:
+        ot = payload["output_type"]
+        if not isinstance(ot, str) or ot not in _OUTPUT_TYPE_ALLOWLIST:
+            return _ex_usage(
+                "runner: output_type must be in {'image', 'video'}"
+            )
+        output_type = ot
+    else:
+        output_type = "image"
+
+    # output_path: absolute, safe ext per output_type. Security
+    # pre-vet HIGH: this is where pipe.images[0].save(...) writes —
+    # must be in the user's output tree, not /etc/passwd or similar.
+    # v0.9 commit 4: the output_type/extension matrix prevents a
+    # video payload from silently writing a .png (or vice versa).
     if not payload["output_path"].startswith("/"):
         return _ex_usage("runner: output_path must be absolute")
     out_ext = _splitext_lower(payload["output_path"])
-    if out_ext not in _SAFE_OUTPUT_EXTS:
-        return _ex_usage(
-            "runner: output_path extension not in allowlist"
-        )
+    if output_type == "video":
+        if out_ext not in _SAFE_VIDEO_OUTPUT_EXTS:
+            return _ex_usage(
+                "runner: output_path extension not in video allowlist"
+            )
+    else:
+        if out_ext not in _SAFE_IMAGE_OUTPUT_EXTS:
+            return _ex_usage(
+                "runner: output_path extension not in image allowlist"
+            )
 
     # input_path: optional. If present, absolute + safe image ext.
     input_path = payload.get("input_path")
@@ -247,6 +317,48 @@ def _validate_payload_shape(payload: object) -> int:
                 return _ex_usage(
                     "runner: param_overrides key not in allowlist"
                 )
+
+    # ── v0.9 commit 4 — video-conditional schema branch ────────────
+    #
+    # When output_type=="video", three additional keys become required
+    # (num_frames, fps, pipeline_class) with strict type/allowlist
+    # checks. force_cpu_offload stays optional with a bool-only type.
+    if output_type == "video":
+        for required_video_key in ("num_frames", "fps", "pipeline_class"):
+            if required_video_key not in payload:
+                return _ex_usage(
+                    "runner: video payload missing required key"
+                )
+
+        nf = payload["num_frames"]
+        if isinstance(nf, bool) or not isinstance(nf, int):
+            return _ex_usage("runner: num_frames must be a JSON int")
+        if not (1 <= nf <= 1024):
+            return _ex_usage("runner: num_frames out of range [1, 1024]")
+
+        fps = payload["fps"]
+        if isinstance(fps, bool) or not isinstance(fps, int):
+            return _ex_usage("runner: fps must be a JSON int")
+        if fps not in _VIDEO_FPS_ALLOWLIST:
+            return _ex_usage("runner: fps not in {24, 25, 30}")
+
+        # Security §R.1 HIGH-1: literal allowlist BEFORE any diffusers
+        # import. The check fails closed for dunder strings, path
+        # traversal, empty strings, and any non-allowlisted class name.
+        pc = payload["pipeline_class"]
+        if not isinstance(pc, str) or pc not in _PIPELINE_CLASS_ALLOWLIST:
+            return _ex_usage(
+                "runner: pipeline_class not in allowlist"
+            )
+
+        # force_cpu_offload: optional, bool-not-int discipline.
+        if "force_cpu_offload" in payload:
+            fco = payload["force_cpu_offload"]
+            if not isinstance(fco, bool):
+                return _ex_usage(
+                    "runner: force_cpu_offload must be a JSON bool"
+                )
+
     return 0
 
 
@@ -292,22 +404,242 @@ def _open_output_for_save(output_path: str):
     return os.fdopen(fd, "wb"), pil_format
 
 
+# ── Pipeline class resolver (v0.9 commit 4 §F) ────────────────────────
+
+
+def _resolve_pipeline_class(name: str):
+    """Literal dict dispatch from allowlisted name → class object.
+
+    Security §R.1 HIGH-1: this is the SECOND of two layers around the
+    getattr-on-module anti-pattern. The first layer is the schema
+    check in :func:`_validate_payload_shape`, which rejects any
+    non-allowlisted ``pipeline_class`` BEFORE the diffusers import
+    runs. This function provides defence-in-depth — even if the
+    schema check were bypassed by a future refactor, the literal
+    dict lookup here fails closed for any name not in
+    :data:`_PIPELINE_CLASS_ALLOWLIST`.
+
+    The diffusers import is lazy (deferred until allowlist check
+    passes) so a fail-closed call costs ~0ms, not the ~3-5s of cold
+    diffusers import.
+    """
+    if name not in _PIPELINE_CLASS_ALLOWLIST:
+        raise ValueError("pipeline_class not in allowlist")
+    # Lazy diffusers import — only reached after allowlist passes.
+    from diffusers import DiffusionPipeline, LTXPipeline
+    classes = {
+        "DiffusionPipeline": DiffusionPipeline,
+        "LTXPipeline": LTXPipeline,
+    }
+    return classes[name]
+
+
+# ── Output_type dispatchers ───────────────────────────────────────────
+
+
+def _run_image(payload: dict) -> int:
+    """v0.8 image path — extracted unchanged from pre-v0.9 ``main()``.
+
+    Reaches here only after :func:`_validate_payload_shape` passed the
+    payload (steps 1-3 in :func:`main`). All keys referenced below
+    are either required or validated-optional per the schema.
+    """
+    try:
+        import torch
+        from diffusers import DiffusionPipeline
+        from diffusers.utils import load_image
+    except ImportError as e:
+        sys.stderr.write(
+            f"runner: diffusers stack import failed: {e}. "
+            "Re-run bootstrap.sh and answer 'y' at the diffusers "
+            "prompt (or set IMGEN_INSTALL_DIFFUSERS=1 for "
+            "non-interactive install).\n"
+        )
+        return 3
+
+    pipe = DiffusionPipeline.from_pretrained(
+        payload["repo"],
+        torch_dtype=torch.bfloat16,
+    )
+
+    mp = (payload["width"] * payload["height"]) / 1_000_000.0
+    threshold = payload.get("cpu_offload_threshold_mp", 2.0)
+    if mp > float(threshold):
+        pipe.enable_model_cpu_offload()
+    else:
+        pipe.to("mps")
+
+    pipe_kwargs = dict(
+        prompt=payload["prompt"],
+        negative_prompt=payload["negative"] or None,
+        num_inference_steps=payload["steps"],
+        guidance_scale=payload["guidance"],
+        width=payload["width"],
+        height=payload["height"],
+        generator=torch.Generator(device="mps").manual_seed(
+            payload["seed"],
+        ),
+    )
+    pipe_kwargs.update(payload.get("param_overrides") or {})
+
+    if payload.get("input_path"):
+        pipe_kwargs["image"] = load_image(payload["input_path"])
+
+    result = pipe(**pipe_kwargs)
+
+    try:
+        out_fp, pil_format = _open_output_for_save(payload["output_path"])
+    except OSError as e:
+        sys.stderr.write(
+            f"runner: refused to write output_path (errno {e.errno}); "
+            "path may be a symlink (O_NOFOLLOW) or permission denied\n"
+        )
+        return 1
+    with out_fp:
+        result.images[0].save(out_fp, format=pil_format)
+    return 0
+
+
+def _run_video(payload: dict) -> int:
+    """v0.9 commit 4 video path — LTX-shaped pipeline → MP4 output
+    via atomic-rename pattern.
+
+    Per §F: ``imageio.mimsave`` doesn't accept fd-mode for libx264
+    muxing (moov atom requires seekable container), so the
+    O_NOFOLLOW write pattern from the image path doesn't apply.
+    Instead:
+
+    1. Refuse if ``output_dir`` is a symlink (parent-traversal
+       protection; symlinked output_path itself is replaced
+       atomically by the rename).
+    2. Write inference frames to a ``NamedTemporaryFile`` in the
+       same directory as output_path (same-fs requirement for atomic
+       os.rename).
+    3. ``os.rename`` the temp to output_path — atomic; replaces any
+       pre-existing symlink at output_path with a regular file.
+
+    On any failure between step 2 and step 3 the temp file is
+    unlinked before re-raising; output_dir stays clean.
+
+    Trust boundary: ``output_path`` is already validated by
+    :func:`_validate_payload_shape` (absolute, .mp4 extension), and
+    ``pipeline_class`` is allowlisted before reaching
+    :func:`_resolve_pipeline_class`. ffmpeg subprocess is launched
+    by imageio-ffmpeg's BUNDLED binary inside .venv-diffusers — no
+    system-PATH ffmpeg invocation.
+    """
+    import tempfile
+    from pathlib import Path
+
+    output_path = Path(payload["output_path"])
+    output_dir = output_path.parent
+
+    # 1. Parent-traversal symlink guard. The output_path itself can
+    # be a pre-existing symlink — os.rename replaces it (which we
+    # own semantically per §F atomic-rename design). But output_dir
+    # being a symlink means a same-uid attacker could redirect the
+    # write upstream of our checks; refuse.
+    if output_dir.is_symlink():
+        sys.stderr.write(
+            "runner: refused to write — output_dir is symlink\n"
+        )
+        return 1
+
+    try:
+        import torch
+        import imageio
+    except ImportError as e:
+        sys.stderr.write(
+            f"runner: diffusers/imageio stack import failed: {e}. "
+            "Re-run bootstrap.sh and answer 'y' at the diffusers "
+            "prompt (or set IMGEN_INSTALL_DIFFUSERS=1 for "
+            "non-interactive install). For video output, ensure "
+            "imageio + imageio-ffmpeg are installed in "
+            ".venv-diffusers (see imgen video --help).\n"
+        )
+        return 3
+
+    pipeline_class = _resolve_pipeline_class(payload["pipeline_class"])
+
+    pipe = pipeline_class.from_pretrained(
+        payload["repo"],
+        torch_dtype=torch.bfloat16,
+    )
+
+    if payload.get("force_cpu_offload", False):
+        pipe.enable_model_cpu_offload()
+    else:
+        pipe.to("mps")
+
+    pipe_kwargs = dict(
+        prompt=payload["prompt"],
+        negative_prompt=payload["negative"] or None,
+        num_inference_steps=payload["steps"],
+        guidance_scale=payload["guidance"],
+        width=payload["width"],
+        height=payload["height"],
+        num_frames=payload["num_frames"],
+        generator=torch.Generator(device="mps").manual_seed(
+            payload["seed"],
+        ),
+    )
+    pipe_kwargs.update(payload.get("param_overrides") or {})
+
+    result = pipe(**pipe_kwargs)
+    # diffusers LTX pipelines return result.frames[0] = list of PIL
+    # Images (one batch element). Image pipelines return result.images.
+    frames = result.frames[0]
+
+    # 2. Write to NamedTemporaryFile in output_dir (same-fs for
+    # atomic os.rename). delete=False so the path persists between
+    # the close-of-handle and imageio.mimsave open.
+    with tempfile.NamedTemporaryFile(
+        dir=str(output_dir),
+        suffix=".mp4",
+        prefix=".imgen-video-",
+        delete=False,
+    ) as tmp:
+        tmp_path = tmp.name
+
+    try:
+        imageio.mimsave(
+            tmp_path, frames,
+            fps=payload["fps"],
+            codec="libx264",
+            quality=8,
+        )
+        # 3. Atomic rename — replaces any symlink at output_path
+        # with a regular file. Race window between dir symlink check
+        # and write closes here.
+        os.rename(tmp_path, output_path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+    return 0
+
+
 # ── Entry point ────────────────────────────────────────────────────────
 
 
 def main() -> int:
-    """Read payload from stdin, validate, dispatch to diffusers
-    pipeline, write result image.
+    """Read payload from stdin, validate, dispatch by output_type
+    to ``_run_video`` or ``_run_image``.
 
     Order (security pre-vet N2):
       1. Read up to ``_RUNNER_STDIN_MAX_BYTES + 1`` bytes; reject
          if over cap (DoS guard).
       2. ``json.loads`` (catch decode error).
       3. ``_validate_payload_shape`` (strict schema + repo regex +
-         path checks + allowlist).
-      4. Lazy import torch + diffusers (~3-5s cold-import cost —
-         deferred so validation errors return in <100 ms).
-      5. Pipeline load + run + save.
+         path checks + allowlist + per-output-type matrix).
+      4. Dispatch by ``payload["output_type"]`` (defaults to
+         "image" for v0.8 compat).
+      5. Lazy import torch + diffusers (~3-5s cold-import cost —
+         deferred so validation errors return in <100 ms) inside
+         the dispatched function.
     """
     # Security pre-vet M4: set MPS-fallback flag BEFORE torch is
     # imported (which happens in step 4). Once torch is imported the
@@ -342,77 +674,10 @@ def main() -> int:
     if rc != 0:
         return rc
 
-    # 4. Lazy imports (~3-5s cold-import; deferred past validation
-    # so invalid payloads fail fast).
-    try:
-        import torch
-        from diffusers import DiffusionPipeline
-        from diffusers.utils import load_image
-    except ImportError as e:
-        sys.stderr.write(
-            f"runner: diffusers stack import failed: {e}. "
-            "Re-run bootstrap.sh and answer 'y' at the diffusers "
-            "prompt (or set IMGEN_INSTALL_DIFFUSERS=1 for "
-            "non-interactive install).\n"
-        )
-        return 3
-
-    # 5. Pipeline load.
-    pipe = DiffusionPipeline.from_pretrained(
-        payload["repo"],
-        torch_dtype=torch.bfloat16,
-    )
-
-    # CPU-offload above the per-model MP threshold; else direct MPS
-    # transfer. Architect pre-vet H2 noted disk-write cost for offload
-    # — the doctor reports free disk under ~/.cache/huggingface when
-    # diffusers_mps models are declared; this runner trusts the
-    # preflight gate at the parent (no point re-checking after
-    # validation has passed).
-    mp = (payload["width"] * payload["height"]) / 1_000_000.0
-    threshold = payload.get("cpu_offload_threshold_mp", 2.0)
-    if mp > float(threshold):
-        pipe.enable_model_cpu_offload()
-    else:
-        pipe.to("mps")
-
-    pipe_kwargs = dict(
-        prompt=payload["prompt"],
-        negative_prompt=payload["negative"] or None,
-        num_inference_steps=payload["steps"],
-        guidance_scale=payload["guidance"],
-        width=payload["width"],
-        height=payload["height"],
-        generator=torch.Generator(device="mps").manual_seed(
-            payload["seed"],
-        ),
-    )
-
-    # param_overrides flows through as a flat dict, ALREADY FILTERED
-    # by `_validate_payload_shape` against the allowlist. The schema
-    # check is the single trust boundary.
-    pipe_kwargs.update(payload.get("param_overrides") or {})
-
-    if payload.get("input_path"):
-        pipe_kwargs["image"] = load_image(payload["input_path"])
-
-    result = pipe(**pipe_kwargs)
-
-    # M-NEW-1 (v0.8.3): O_NOFOLLOW-guarded write. See
-    # _open_output_for_save() for the threat-model rationale.
-    try:
-        out_fp, pil_format = _open_output_for_save(payload["output_path"])
-    except OSError as e:
-        # Static stderr — don't echo the user-controlled path back
-        # (memo §I round-1 MEDIUM: control-byte avoidance in stderr).
-        sys.stderr.write(
-            f"runner: refused to write output_path (errno {e.errno}); "
-            "path may be a symlink (O_NOFOLLOW) or permission denied\n"
-        )
-        return 1
-    with out_fp:
-        result.images[0].save(out_fp, format=pil_format)
-    return 0
+    # 4. Dispatch by output_type (v0.8 compat: absent ⇒ image).
+    if payload.get("output_type") == "video":
+        return _run_video(payload)
+    return _run_image(payload)
 
 
 if __name__ == "__main__":
