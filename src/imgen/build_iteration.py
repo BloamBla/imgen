@@ -385,6 +385,14 @@ def _resolve_iteration_params(
         final_quantize = args.quantize
     elif args.preview:
         final_quantize = PREVIEW_OVERRIDES["quantize"]
+    elif model is not None and not model.supported_quants:
+        # v0.9 commit 8: bf16-only Models (supported_quants=()) default
+        # to quantize=0 — no MLX-style quantization. Without this, the
+        # merged_defaults["quantize"] (typically 8) fallback would
+        # trip the §R.2 quantize gate in
+        # DiffusersMpsEngine._validate_video. LTX-Video at v0.9.0 is
+        # the only such Model; future bf16-only Models inherit.
+        final_quantize = 0
     else:
         final_quantize = merged_defaults["quantize"]
 

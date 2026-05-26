@@ -107,6 +107,11 @@ def iteration_dryrun_display(it: Iteration) -> str:
         from .engines.mflux_engine import MfluxEngine
         return format_cmd(MfluxEngine().build_cmd(it.model, it.params))
     if it.model.engine == "diffusers_mps":
+        # v0.9 commit 8 (§H): branch by output_type so video-specific
+        # payload fields (num_frames, fps, force_cpu_offload,
+        # pipeline_class) surface in dry-run. Image path unchanged.
+        if it.model.output_type == "video":
+            return _format_diffusers_video_dryrun(it)
         return _format_diffusers_dryrun(it)
     raise ValueError(
         f"unknown engine={it.model.engine!r} for dry-run display"
@@ -138,12 +143,20 @@ def _format_diffusers_dryrun(it: Iteration) -> str:
             return "~" + s[len(home):]
         return s
 
+    # v0.9 commit 8 (security §R.2 MEDIUM-1): safe_display() wraps
+    # the prompt + negative via repr() so any C0/DEL/C1 byte in the
+    # input (hand-crafted via --prompt-file PATH or stdin) renders
+    # as a visible escape literal instead of triggering terminal
+    # control sequences. f-string's !r conversion is structurally
+    # identical to repr() — using the helper keeps the discipline
+    # explicit and matches the design memo §H.
+    from ._safe import safe_display
     lines = [
         f"{runner_str} -m imgen.engines._diffusers_runner",
         "  (stdin-JSON payload)",
         f"  repo:            {model.repo}",
-        f"  prompt:          {params.prompt!r}",
-        f"  negative:        {params.negative!r}",
+        f"  prompt:          {safe_display(params.prompt)}",
+        f"  negative:        {safe_display(params.negative)}",
         f"  steps: {params.steps}  guidance: {params.guidance}  "
         f"seed: {params.seed}  width: {params.width}  height: {params.height}",
         f"  cpu_offload_threshold_mp: {model.cpu_offload_threshold_mp}",
@@ -151,6 +164,63 @@ def _format_diffusers_dryrun(it: Iteration) -> str:
     ]
     if params.input_path is not None:
         lines.insert(-1, f"  input_path:      {_scrub(params.input_path)}")
+    if model.param_overrides:
+        overrides = dict(model.param_overrides)
+        lines.append(f"  param_overrides: {overrides}")
+    return "\n".join(lines)
+
+
+def _format_diffusers_video_dryrun(it: Iteration) -> str:
+    """v0.9 commit 8 (§H): video-shaped dry-run for diffusers_mps
+    Iterations with ``model.video is not None``.
+
+    Mirrors :func:`_format_diffusers_dryrun` shape but surfaces the
+    video-specific payload fields (num_frames, fps,
+    force_cpu_offload, pipeline_class, computed duration_sec).
+    Same ``$HOME`` rewriting + ``safe_display()`` prompt escaping
+    (security §R.2 MEDIUM-1) as the image path.
+
+    The runner-payload key ``pipeline_class`` is hardcoded to
+    "LTXPipeline" at v0.9.0 (Engine.run hardcodes; backlog item B-1
+    moves this onto VideoConfig when a 2nd video Model lands). The
+    display surfaces the literal value so dry-run shows what the
+    runner actually receives.
+    """
+    from ._safe import safe_display
+    from .paths import IMGEN_INSTALL_ROOT
+    home = str(Path.home())
+    runner = IMGEN_INSTALL_ROOT / ".venv-diffusers" / "bin" / "python"
+    runner_str = str(runner).replace(home, "~", 1) if home else str(runner)
+
+    model = it.model
+    params = it.params
+    assert model is not None and params is not None  # narrowed by caller
+
+    def _scrub(p) -> str:
+        s = str(p)
+        if home and s.startswith(home):
+            return "~" + s[len(home):]
+        return s
+
+    duration_sec = params.num_frames / params.fps if params.fps > 0 else 0.0
+    vc = model.video
+    force_offload = vc.force_cpu_offload if vc is not None else False
+
+    lines = [
+        f"{runner_str} -m imgen.engines._diffusers_runner",
+        "  (stdin-JSON payload)",
+        f"  repo:            {model.repo}",
+        f"  output_type:     video",
+        f"  pipeline_class:  LTXPipeline",
+        f"  prompt:          {safe_display(params.prompt)}",
+        f"  negative:        {safe_display(params.negative)}",
+        f"  steps: {params.steps}  guidance: {params.guidance}  "
+        f"seed: {params.seed}  width: {params.width}  height: {params.height}",
+        f"  num_frames: {params.num_frames}  fps: {params.fps}  "
+        f"duration: {duration_sec:.2f}s",
+        f"  force_cpu_offload: {force_offload}",
+        f"  output_path:     {_scrub(params.output_path)}",
+    ]
     if model.param_overrides:
         overrides = dict(model.param_overrides)
         lines.append(f"  param_overrides: {overrides}")

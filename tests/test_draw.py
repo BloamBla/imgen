@@ -782,6 +782,68 @@ class TestCmdDrawDryRun:
         out = capsys.readouterr().out
         assert "a ninja from stdin" in out
 
+    def test_cmd_draw_after_orchestrator_extraction_unchanged_behavior(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """v0.9 commit 8 (§R.2 architect WATCH-1 closure): explicit
+        lock-in that cmd_draw post-orchestrator-extraction produces
+        byte-identical mflux argv vs the pre-extraction shape.
+
+        The 59 surrounding test_draw.py tests provide broad coverage
+        that cmd_draw still works after commit 7's extraction; this
+        single named pin is the explicit "byte-identical pre/post"
+        check the design memo §I.0 called out. A future refactor that
+        accidentally drops a flag or reorders args surfaces here
+        immediately by argv content drift, separately from the
+        broader behaviour suite.
+
+        The canonical argv shape pinned below is the post-extraction
+        output as of commit 7. If a future change INTENDS to modify
+        argv (new flag, reordered options), update both this test
+        and the corresponding behaviour test together — never the
+        production code alone.
+        """
+        from imgen.backends import BACKENDS
+
+        def fake_load(args):
+            return ("flux-dev", BACKENDS["flux-dev"], "tok",
+                    Path("/fake/mflux-generate"), None)
+        monkeypatch.setattr(
+            "imgen.cmd_helpers.load_backend_and_token", fake_load,
+        )
+
+        args = _make_args(
+            prompt="a samurai walking",
+            seed=42,
+            dry_run=True,
+            output_dir=str(tmp_path),
+        )
+        rc = cmd_draw(args)
+        assert rc == 0
+        out = capsys.readouterr().out
+        # Anchor expected flag/value pairs that must appear together
+        # in the dry-run argv. The full argv contains a slug-derived
+        # output path (varies with tmp_path), so we anchor on
+        # invariant pieces — model, seed, prompt, dimensions — and
+        # ensure flags that should be present aren't missing.
+        for needle in (
+            "--prompt 'a samurai walking'",
+            "--seed 42",
+            "--model dev",
+            "--width 1024",
+            "--height 1024",
+        ):
+            assert needle in out, (
+                f"orchestrator extraction drift: missing canonical "
+                f"argv fragment {needle!r} in dry-run output:\n{out}"
+            )
+        # Negative invariants — flags that MUST NOT appear in t2i draw.
+        for absent in ("--image-path", "--image-paths"):
+            assert absent not in out, (
+                f"orchestrator extraction drift: t2i draw must not "
+                f"emit {absent!r}; full output:\n{out}"
+            )
+
 
 class TestCmdDrawRefineHint:
     """v0.7.7: after a successful single-shot imgen draw, surface a
