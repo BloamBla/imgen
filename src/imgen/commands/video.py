@@ -138,15 +138,25 @@ def ensure_video_deps_or_die() -> None:
             code=2,
         )
 
-    # 2. Symlink + is_file guards (security §R.1 HIGH-2).
+    # 2. Symlink + is_file guards (security §R.1 HIGH-2 + v0.9.0
+    # hotfix). Narrow the symlink guard so the canonical Python venv
+    # layout (`python -> python3.12` relative same-dir symlink) is
+    # allowed, while absolute / traversal / non-peer targets reject.
+    # See DiffusersMpsEngine.run for the full rationale; this mirror
+    # check applies to the pip install path.
     for path, name in [(pip_path, "pip"), (python_path, "python")]:
         if path.is_symlink():
-            die(
-                f".venv-diffusers/bin/{name} is a symlink — refusing "
-                "to exec. Same-uid attacker may have planted it. "
-                "Remove .venv-diffusers/ and re-run bootstrap.sh.",
-                code=2,
-            )
+            target = os.readlink(path)
+            if "/" in target:
+                die(
+                    f".venv-diffusers/bin/{name} is a symlink with "
+                    "non-peer target — refusing to exec. Canonical "
+                    "Python venv uses relative same-dir symlinks "
+                    "(e.g. python -> python3.12); an absolute target "
+                    "or path traversal is a plant-attack signal. "
+                    "Remove .venv-diffusers/ and re-run bootstrap.sh.",
+                    code=2,
+                )
         if not path.is_file():
             die(
                 f".venv-diffusers/bin/{name} not found.\n"

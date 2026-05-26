@@ -255,15 +255,17 @@ def test_diffusers_mps_dies_friendly_when_venv_missing(
     assert "IMGEN_INSTALL_DIFFUSERS=1" in combined
 
 
-def test_diffusers_mps_refuses_symlinked_venv_python(
+def test_diffusers_mps_refuses_symlinked_venv_python_absolute_target(
     monkeypatch, tmp_path, capsys,
 ):
-    """v0.9 commit 7.1 (§R.2 security HIGH-1): a planted symlink at
-    .venv-diffusers/bin/python must be refused BEFORE subprocess
-    exec. Mirrors the install-path symlink guard in
-    ``ensure_video_deps_or_die`` (commit 6 closed §R.1 HIGH-2 for
-    the install path; this closes the execution path which was
-    missed at the same time).
+    """v0.9 commit 7.1 (§R.2 security HIGH-1) + commit 11.2 hotfix
+    narrow: planted symlinks with ABSOLUTE targets (the attacker
+    scenario) must be refused BEFORE subprocess exec. The narrowed
+    guard checks ``os.readlink(...)`` for ``/`` — absolute paths
+    and traversal patterns reject; same-dir peer symlinks (the
+    canonical Python venv layout) are allowed (covered by
+    test_diffusers_mps_accepts_canonical_venv_relative_peer_symlink
+    below).
     """
     from imgen import paths
     from imgen.engines import DiffusersMpsEngine
@@ -274,7 +276,7 @@ def test_diffusers_mps_refuses_symlinked_venv_python(
     target = tmp_path / "evil_python"
     target.write_text("#!/usr/bin/env python3\n")
     target.chmod(0o755)
-    (venv_bin / "python").symlink_to(target)
+    (venv_bin / "python").symlink_to(target)  # absolute path → reject
     monkeypatch.setattr(paths, "IMGEN_INSTALL_ROOT", install_root)
 
     engine = DiffusersMpsEngine()
@@ -284,6 +286,54 @@ def test_diffusers_mps_refuses_symlinked_venv_python(
     stderr = capsys.readouterr().err
     assert "symlink" in stderr.lower(), (
         f"refuse message should mention symlink; got: {stderr!r}"
+    )
+
+
+def test_diffusers_mps_accepts_canonical_venv_relative_peer_symlink(
+    monkeypatch, tmp_path,
+):
+    """v0.9 commit 11.2 hotfix: canonical Python venv layout —
+    ``python -> python3.12`` (relative same-dir symlink) — must be
+    allowed. ``python3 -m venv`` produces this layout; rejecting it
+    blocks every legitimate ``.venv-diffusers/`` since the original
+    FIX-1 (commit 7.1) was too aggressive (rejected ALL symlinks).
+
+    The narrowed check fires only on ``/``-in-target (absolute paths
+    or path traversal). Same-dir peer symlinks pass through to
+    subprocess exec.
+    """
+    from imgen import paths
+    from imgen.engines import DiffusersMpsEngine
+
+    install_root = tmp_path / "install_root_canonical_venv"
+    venv_bin = install_root / ".venv-diffusers" / "bin"
+    venv_bin.mkdir(parents=True)
+    # The real binary (peer in same dir).
+    (venv_bin / "python3.12").write_text("#!/usr/bin/env python3\n")
+    (venv_bin / "python3.12").chmod(0o755)
+    # Canonical venv symlink: python -> python3.12 (relative, no slash).
+    (venv_bin / "python").symlink_to("python3.12")
+
+    monkeypatch.setattr(paths, "IMGEN_INSTALL_ROOT", install_root)
+
+    # Stub run_with_stderr_redaction so we don't actually exec — we
+    # just need to reach it (means the symlink guard accepted).
+    captured = []
+    def fake_run(*args, **kwargs):
+        captured.append(("called", args, kwargs))
+        return 0
+
+    from imgen import subprocess_helpers
+    monkeypatch.setattr(
+        subprocess_helpers, "run_with_stderr_redaction", fake_run,
+    )
+
+    engine = DiffusersMpsEngine()
+    rc = engine.run(_make_diffusers_model(), _make_genparams())
+    assert rc == 0, "canonical venv layout should pass symlink guard + reach subprocess"
+    assert captured, (
+        "symlink guard rejected the canonical python -> python3.12 "
+        "layout; the narrowed FIX-1 hotfix should allow it"
     )
 
 

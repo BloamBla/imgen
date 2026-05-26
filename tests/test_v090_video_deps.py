@@ -152,6 +152,32 @@ class TestSymlinkGuard:
         stderr = capsys.readouterr().err
         assert "symlink" in stderr.lower()
 
+    def test_canonical_venv_relative_peer_symlink_accepted(
+        self, tmp_path, monkeypatch,
+    ):
+        """v0.9 commit 11.2 hotfix: ``python -> python3.12`` (relative
+        same-dir symlink) is the canonical Python venv layout from
+        ``python3 -m venv``. Must be ALLOWED — the original FIX-1
+        rejected all symlinks and blocked every legitimate venv.
+
+        The narrowed guard fires only on ``/``-in-target (absolute
+        paths or path traversal). Same-dir peer symlinks pass.
+        """
+        from imgen.commands.video import ensure_video_deps_or_die
+        pip_path, python_path, _ = _setup_fake_venv(tmp_path, monkeypatch)
+        # Replace `python` with a canonical relative same-dir symlink.
+        python_path.unlink()
+        (python_path.parent / "python3.12").write_text("#!/bin/bash\n")
+        (python_path.parent / "python3.12").chmod(0o755)
+        python_path.symlink_to("python3.12")  # relative, no slash
+
+        # Stub probes so we don't actually invoke pip — just verify the
+        # symlink guard accepted the canonical layout (no SystemExit).
+        _stub_subprocess_run(monkeypatch, deps_present_rc=0)
+        # deps_present_rc=0 → happy path (deps already installed) →
+        # returns silently. No SystemExit.
+        ensure_video_deps_or_die()
+
 
 # ── Missing venv guard ────────────────────────────────────────────────
 

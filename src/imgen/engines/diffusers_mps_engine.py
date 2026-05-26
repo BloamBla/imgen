@@ -115,20 +115,38 @@ class DiffusersMpsEngine:
         venv_python = (
             IMGEN_INSTALL_ROOT / ".venv-diffusers" / "bin" / "python"
         )
-        # v0.9 commit 7.1 (§R.2 security HIGH-1): symlink guard on the
-        # execution path. §R.1 HIGH-2 closed the install-time guard in
-        # ensure_video_deps_or_die (commit 6) but missed the execution-
-        # time check here. ``Path.is_file()`` dereferences symlinks, so
-        # a same-uid attacker planting a symlink at venv_python would
-        # have flowed through to subprocess.Popen unchecked. Mirrors
-        # ensure_video_deps_or_die's pip/python check pattern.
+        # v0.9 commit 7.1 (§R.2 security HIGH-1) + commit 11.2 hotfix:
+        # symlink guard on execution path. The original FIX-1 rejected
+        # ALL symlinks, which broke the canonical Python venv layout
+        # (`python -> python3.12` relative same-dir symlink — standard
+        # `python3 -m venv` output). Hotfix narrows the guard:
+        #
+        # * Allow first-level symlinks whose target is a same-dir peer
+        #   (no `/` in the readlink). Catches `python -> python3.12`.
+        # * Reject any symlink with `/` in target — absolute paths,
+        #   `..` traversal, or any non-peer reference. Catches the
+        #   attacker scenario (`python -> /tmp/evil_python`).
+        #
+        # The python3.12 chain may end at /opt/homebrew/... or
+        # /Library/Frameworks/Python... — a same-uid attacker with
+        # write access to those system paths is out of scope (they
+        # could replace the binary directly anyway). The first-level
+        # peer check defends against the realistic threat of a
+        # planted-symlink-into-venv attack without rejecting normal
+        # venv layouts.
+        import os as _os
         if venv_python.is_symlink():
-            die(
-                f".venv-diffusers/bin/python is a symlink — refusing "
-                f"to exec. Same-uid attacker may have planted it. "
-                f"Remove .venv-diffusers/ and re-run bootstrap.sh.",
-                code=3,
-            )
+            target = _os.readlink(venv_python)
+            if "/" in target:
+                die(
+                    f".venv-diffusers/bin/python is a symlink with "
+                    "non-peer target — refusing to exec. Canonical "
+                    "Python venv layout uses relative same-dir symlinks "
+                    "(e.g. python -> python3.12); an absolute target "
+                    "or path traversal is a plant-attack signal. "
+                    "Remove .venv-diffusers/ and re-run bootstrap.sh.",
+                    code=3,
+                )
         if not venv_python.is_file():
             die(
                 "diffusers_mps engine selected but the diffusers venv "
