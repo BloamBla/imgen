@@ -6,4 +6,4 @@ photo restyle (`imgen generate` / `imgen batch`) via FLUX.1-Kontext or
 Qwen-Image-Edit. All on-device via mflux + MLX.
 """
 
-__version__ = "0.8.2"
+__version__ = "0.8.3"
