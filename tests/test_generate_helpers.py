@@ -229,9 +229,15 @@ def fake_styles(monkeypatch):
     """Stub get_style with a controlled registry per test.
 
     Lets us mix prompt-bearing and param-only styles without touching
-    the real built-in registry or styles.d/. The helper imports
-    get_style locally; patch at the call site
-    (imgen.cmd_helpers.get_style)."""
+    the real built-in registry or styles.d/.
+
+    v0.8.4 M-NEW-E: ``check_prompt_style_compat`` + ``build_iterations``
+    moved to ``imgen.build_iteration``, which calls ``_styles.get_style``
+    via module-attribute indirection. Patch ``imgen.styles.get_style``
+    so the stub takes effect from any consumer. (cmd_helpers' own
+    ``get_style`` re-export stays patched too for tests that read it
+    from there.)
+    """
     registry: dict = {}
 
     def fake_get_style(name: str) -> dict:
@@ -239,9 +245,8 @@ def fake_styles(monkeypatch):
             raise KeyError(f"Unknown style '{name}'")
         return registry[name]
 
-    monkeypatch.setattr(
-        "imgen.cmd_helpers.get_style", fake_get_style
-    )
+    monkeypatch.setattr("imgen.styles.get_style", fake_get_style)
+    monkeypatch.setattr("imgen.cmd_helpers.get_style", fake_get_style)
     return registry
 
 
