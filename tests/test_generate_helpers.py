@@ -2229,7 +2229,7 @@ def test_run_one_iteration_log_marker_lands_even_if_history_raises(
     history.py wouldn't normally catch (RuntimeError) so we exercise
     the safe_append_history wrapper."""
     monkeypatch.setattr(
-        "imgen.cmd_helpers.append_history",
+        "imgen.engine_dispatch.append_history",
         lambda entry: (_ for _ in ()).throw(RuntimeError("json busted")),
     )
     logger = BatchLogger("coherence1")
@@ -2257,7 +2257,7 @@ def test_run_one_iteration_cancel_marker_lands_even_if_history_raises(
     marker must land even if the cancel-history record write blew up."""
     stub_mflux["raise"] = KeyboardInterrupt()
     monkeypatch.setattr(
-        "imgen.cmd_helpers.append_history",
+        "imgen.engine_dispatch.append_history",
         lambda entry: (_ for _ in ()).throw(RuntimeError("json busted")),
     )
     logger = BatchLogger("coherence2")
@@ -2281,7 +2281,7 @@ def test_run_one_iteration_warns_on_history_failure(
     """User has to see *something* — log + history mismatch otherwise
     looks like data was never recorded but the user has no clue why."""
     monkeypatch.setattr(
-        "imgen.cmd_helpers.append_history",
+        "imgen.engine_dispatch.append_history",
         lambda entry: (_ for _ in ()).throw(RuntimeError("json busted")),
     )
 
@@ -2306,7 +2306,7 @@ def test_safe_append_history_propagates_keyboard_interrupt(monkeypatch):
     from imgen.cmd_helpers import safe_append_history
 
     monkeypatch.setattr(
-        "imgen.cmd_helpers.append_history",
+        "imgen.engine_dispatch.append_history",
         lambda entry: (_ for _ in ()).throw(KeyboardInterrupt()),
     )
 
@@ -2320,7 +2320,7 @@ def test_safe_append_history_propagates_system_exit(monkeypatch):
     from imgen.cmd_helpers import safe_append_history
 
     monkeypatch.setattr(
-        "imgen.cmd_helpers.append_history",
+        "imgen.engine_dispatch.append_history",
         lambda entry: (_ for _ in ()).throw(SystemExit(99)),
     )
 
