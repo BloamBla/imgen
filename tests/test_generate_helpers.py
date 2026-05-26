@@ -782,6 +782,13 @@ def _build_args(**overrides) -> SimpleNamespace:
         strength=None,
         scope="scene",
         preview=False,
+        # v0.8.4 M-NEW-D: args.model drives Iteration.model resolution
+        # via _model_for_validate. Default to None so the existing
+        # merged-defaults fallback tests (which assert merged_defaults
+        # values win when no Model is set) keep their semantics. Tests
+        # that need to assert on derived argv (via iteration_argv)
+        # override this to a real Model name like "flux-kontext".
+        model=None,
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -1431,16 +1438,25 @@ def test_build_iterations_iteration_is_frozen(fake_styles, tmp_path):
         its[0].style_name = "ghibli"  # type: ignore[misc]
 
 
-def test_build_iterations_cmd_is_list_of_str(fake_styles, tmp_path):
-    """Smoke check: build_mflux_cmd was called, result stored in
-    it.cmd as a list of strings ready for subprocess.Popen."""
+def test_build_iterations_argv_derives_through_engine(fake_styles, tmp_path):
+    """Smoke check: post-v0.8.4 M-NEW-D, argv is no longer stored on
+    Iteration — derive it via the conftest ``iteration_argv`` helper
+    which routes through ``MfluxEngine.build_cmd(model, params)``.
+    Result must be a list[str] starting with the resolved binary."""
+    from _iteration_argv import iteration_argv
     fake_styles["anime"] = Style(prompt="x")
 
-    its = _build(fake_styles=fake_styles, tmp_path=tmp_path)
+    its = _build(
+        fake_styles=fake_styles, tmp_path=tmp_path,
+        # Set args.model so Iteration.model resolves — derived argv
+        # builds from it via MfluxEngine.build_cmd.
+        args=_build_args(model="flux-kontext"),
+    )
+    argv = iteration_argv(its[0])
 
-    assert isinstance(its[0].cmd, list)
-    assert all(isinstance(arg, str) for arg in its[0].cmd)
-    assert "/fake/bin/mflux-generate-kontext" in its[0].cmd
+    assert isinstance(argv, list)
+    assert all(isinstance(arg, str) for arg in argv)
+    assert "/fake/bin/mflux-generate-kontext" in argv
 
 
 # ── exit_code ──────────────────────────────────────────────────────────
@@ -1886,7 +1902,6 @@ def _full_iter(tmp_path, style="anime") -> Iteration:
         final_guidance=2.5,
         final_strength=0.6,
         output_path=tmp_path / f"out-{style}.png",
-        cmd=["/fake/mflux", "--prompt", "x"],
         # v0.7.3: per-iteration seed lives on Iteration. Tests that
         # exercise the history serialiser need to match the ctx.seed
         # used at run_one_iteration call time — fixtures keep them in

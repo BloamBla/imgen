@@ -31,7 +31,6 @@ __all__ = [
     "build_runner_payload",
     "enhance_iteration_prompts",
     "parse_runner_response",
-    "replace_prompt_in_cmd",
     "run_with_mlx_lm",
 ]
 
@@ -249,30 +248,13 @@ def run_with_mlx_lm(
 # ── Iteration-level orchestrator (used by cmd_generate / cmd_batch) ─────
 
 
-def replace_prompt_in_cmd(cmd: list[str], new_prompt: str) -> list[str]:
-    """Return a new mflux argv with the ``--prompt`` value swapped.
-
-    Iteration.cmd is built in :func:`backends.build_mflux_cmd` with
-    ``--prompt`` followed by the prompt string at a fixed position.
-    When the enhancer modifies the prompt post-construction, we patch
-    the argv rather than re-running build_mflux_cmd (which would
-    require carrying every keyword arg through the Iteration). Pure
-    function — never mutates ``cmd``.
-
-    If ``cmd`` does not contain ``--prompt`` (which would be a bug in
-    build_mflux_cmd, not a normal path), the input is returned
-    unchanged. Defensive: enhance should never crash the generation
-    flow, just degrade silently to no-op.
-    """
-    out = list(cmd)
-    try:
-        i = out.index("--prompt")
-    except ValueError:
-        return out  # no --prompt to replace; defensive no-op
-    if i + 1 >= len(out):
-        return out  # malformed argv; defensive no-op
-    out[i + 1] = new_prompt
-    return out
+# v0.8.4 M-NEW-D: ``replace_prompt_in_cmd`` removed. Pre-v0.8.4 it
+# spliced enhanced prompts into the build-time ``Iteration.cmd``
+# snapshot for the apply_enhance dual-update; v0.8.4 retired both the
+# field AND the dual-update (Engine.run reads ``params.prompt``
+# directly, dry-run derives argv from (model, params) via
+# ``engine_dispatch.iteration_dryrun_display``). No production caller
+# remains, so the helper + its 5 lock-ins are dropped as dead code.
 
 
 def enhance_iteration_prompts(

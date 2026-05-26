@@ -135,6 +135,20 @@ class Iteration:
     reconstruct the exact LoRA stack (Architect-CRITICAL #1 from the
     v0.6 pre-tag review). Default ``()`` keeps v0.5-era callers
     constructing Iteration without breaking — they get a text-only run.
+
+    v0.8.4 M-NEW-D: the legacy ``cmd: list[str]`` field is gone.
+    Pre-v0.8.4 each Iteration carried both a build-time argv snapshot
+    (``cmd``) AND its resolved Model + GenParams. v0.8.3 retired the
+    last dispatch consumer of ``cmd`` (the legacy fallback in
+    run_one_iteration); v0.8.4 retires the last reader (``--dry-run``
+    printing) by deriving argv from (model, params) via
+    :func:`engine_dispatch.iteration_dryrun_display`.
+
+    ``model`` and ``params`` keep their ``Optional[...] = None``
+    defaults so direct-construct test fixtures stay shorthand; the
+    Engine.run dispatch invariant in
+    :func:`engine_dispatch.run_one_iteration` raises AssertionError
+    on the None case (v0.8.3 M-NEW-C).
     """
     style_name: str
     prompt: str
@@ -144,42 +158,28 @@ class Iteration:
     final_guidance: float
     final_strength: float
     output_path: Path
-    cmd: list[str]
     loras: tuple = ()   # tuple[styles.LoraRef, ...] — forward ref to dodge cycle
     # v0.7.3 fix: per-iteration seed. CRITICAL for cmd_draw's
     # --num-iterations N where each iteration uses a different ladder
     # seed (base, base+1, ..., base+N-1). Pre-fix run_one_iteration
     # wrote ``ctx.seed`` (the base) to every history row, so replaying
     # row K>1 generated row 1's image, silently breaking the headline
-    # determinism promise. Default 0 keeps existing i2i callers
-    # (build_iterations) working without changes — those set the
-    # field explicitly per the architect's "Iteration self-contained
-    # for replay" guidance from the v0.7.3 pre-tag review.
+    # determinism promise.
     seed: int = 0
-    # v0.8.2 M-1A (Engine.run wire-up preparation): each Iteration
-    # carries its resolved Model + GenParams alongside the pre-built
-    # argv ``cmd``. v0.8.2's run_one_iteration dispatches via
-    # ``engine.run(it.model, it.params, ...)`` when it.model is non-None;
-    # legacy fallback (``run_with_stderr_redaction(it.cmd, ...)``)
-    # stays for the v0.8.x deprecation window per architect HIGH-1.
+    # v0.8.2 M-1A: each Iteration carries its resolved Model + GenParams
+    # for the v0.8 Engine.run dispatch path.
     #
-    # Defaults None so legacy v0.7-shape constructors keep working
-    # through the migration; the cross-build assertion in tests
-    # (architect MEDIUM-2 lock-in) ensures all production build_*
-    # helpers populate them.
-    #
-    # Forward-typed strings to dodge import-cycle risk — Model lives
-    # in models.py (which doesn't import runs), GenParams lives in
-    # engines/base.py (which doesn't import runs). The actual
-    # annotation values are resolved at type-check time, not import
-    # time, thanks to ``from __future__ import annotations``.
+    # Forward-typed strings to dodge import-cycle risk — Model lives in
+    # models.py (which doesn't import runs), GenParams lives in
+    # engines/base.py (which doesn't import runs). The actual annotation
+    # values are resolved at type-check time, not import time, thanks
+    # to ``from __future__ import annotations``.
     model: "Model | None" = None  # noqa: F821 — late-resolved
     params: "GenParams | None" = None  # noqa: F821 — late-resolved
 
-    # Same opt-out reasoning as BatchContext: `cmd: list[str]` is not
-    # hashable, so a caller using Iteration as a set/dict-key would
-    # hit TypeError at first hash. Equality still works for test
-    # assertions on _build_iterations output.
+    # Dataclass `model` / `params` are instance objects that don't
+    # compose into a useful __hash__. Equality still works for test
+    # assertions on build_* output.
     __hash__ = None  # type: ignore[assignment]
 
 

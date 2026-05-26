@@ -133,7 +133,7 @@ def test_format_duration_minutes():
 
 def _iters(*style_names: str) -> list[Iteration]:
     """Build minimal Iteration objects — _confirm_batch only reads
-    style_name; the other 8 fields can be any valid value."""
+    style_name; the other fields can be any valid value."""
     return [
         Iteration(
             style_name=s,
@@ -144,7 +144,6 @@ def _iters(*style_names: str) -> list[Iteration]:
             final_guidance=2.5,
             final_strength=0.6,
             output_path=Path("/tmp/dummy.png"),
-            cmd=[],
         )
         for s in style_names
     ]

@@ -52,10 +52,10 @@ from pathlib import Path
 
 from .backends import Backend
 from .colors import C, die, err, info, ok, step, warn
-from .enhance import EnhanceResult, replace_prompt_in_cmd
+from .enhance import EnhanceResult
 from .history import append_history
 from .runs import BatchContext, BatchLogger, Iteration, PerInputBatch
-from .subprocess_helpers import InsufficientRAMError
+from .subprocess_helpers import InsufficientRAMError, format_cmd
 
 __all__ = [
     "_engine_for_model",
@@ -63,6 +63,7 @@ __all__ = [
     "apply_enhance_results_to_groups",
     "apply_enhance_results_to_iterations",
     "emit_gated_repo_hint_if_failed",
+    "iteration_dryrun_display",
     "run_one_iteration",
     "safe_append_history",
     "validate_engine_params_or_die",
@@ -70,6 +71,89 @@ __all__ = [
 
 
 # ── Engine lookup + validation gate ─────────────────────────────────────
+
+
+def iteration_dryrun_display(it: Iteration) -> str:
+    """Return the ``--dry-run`` display string for one Iteration.
+
+    Engine-aware. v0.8.4 M-NEW-D replacement for the dropped
+    ``Iteration.cmd`` field: pre-v0.8.4 dry-run printed
+    ``format_cmd(it.cmd)`` which was the build-time argv snapshot;
+    post-v0.8.4 we derive the dispatch shape from (model, params) so
+    the displayed text matches whatever Engine.run will actually do.
+
+    * ``mflux`` — return ``format_cmd(MfluxEngine.build_cmd(model,
+      params))``. Byte-identical with what Engine.run dispatches; the
+      v0.8.2 CRITICAL-2 lock-in
+      (``test_mflux_engine_build_cmd_matches_legacy_build_mflux_cmd``)
+      guarantees this stays byte-identical with the legacy
+      ``backends.build_mflux_cmd`` shape that pre-v0.8.4 dry-run
+      showed.
+    * ``diffusers_mps`` — multi-line structured display of the
+      stdin-JSON payload that DiffusersMpsEngine.run sends to
+      ``_diffusers_runner``. Pre-v0.8.4 dry-run on a diffusers user-
+      TOML printed the legacy mflux argv (a latent bug — no diffusers
+      built-in shipped pre-v0.8.4, so dry-run on diffusers Models
+      never actually fired in production). This is the corrected
+      shape.
+
+    Returns ``"(legacy Iteration — no model/params)"`` when fields
+    are None — defensive for any caller bypassing the post-M-NEW-C
+    invariant.
+    """
+    if it.model is None or it.params is None:
+        return "(legacy Iteration — no model/params)"
+    if it.model.engine == "mflux":
+        from .engines.mflux_engine import MfluxEngine
+        return format_cmd(MfluxEngine().build_cmd(it.model, it.params))
+    if it.model.engine == "diffusers_mps":
+        return _format_diffusers_dryrun(it)
+    raise ValueError(
+        f"unknown engine={it.model.engine!r} for dry-run display"
+    )
+
+
+def _format_diffusers_dryrun(it: Iteration) -> str:
+    """Multi-line dry-run display for diffusers_mps Iterations.
+
+    Pretty-print the JSON payload that DiffusersMpsEngine.run streams
+    to ``_diffusers_runner`` on stdin. Matches the python-style invocation
+    the engine actually uses so the user sees the real dispatch shape
+    (``.venv-diffusers/bin/python -m imgen.engines._diffusers_runner``)
+    + the key payload fields. ``$HOME`` rewriting matches format_cmd's
+    privacy-vs-discoverability trade-off.
+    """
+    from .paths import IMGEN_INSTALL_ROOT
+    home = str(Path.home())
+    runner = IMGEN_INSTALL_ROOT / ".venv-diffusers" / "bin" / "python"
+    runner_str = str(runner).replace(home, "~", 1) if home else str(runner)
+
+    model = it.model
+    params = it.params
+    assert model is not None and params is not None  # narrowed by caller
+
+    def _scrub(p) -> str:
+        s = str(p)
+        if home and s.startswith(home):
+            return "~" + s[len(home):]
+        return s
+
+    lines = [
+        f"{runner_str} -m imgen.engines._diffusers_runner",
+        "  (stdin-JSON payload)",
+        f"  repo:            {model.repo}",
+        f"  prompt:          {params.prompt!r}",
+        f"  negative:        {params.negative!r}",
+        f"  steps: {params.steps}  guidance: {params.guidance}  "
+        f"seed: {params.seed}  width: {params.width}  height: {params.height}",
+        f"  output_path:     {_scrub(params.output_path)}",
+    ]
+    if params.input_path is not None:
+        lines.insert(-1, f"  input_path:      {_scrub(params.input_path)}")
+    if model.param_overrides:
+        overrides = dict(model.param_overrides)
+        lines.append(f"  param_overrides: {overrides}")
+    return "\n".join(lines)
 
 
 def _engine_for_model(model):
@@ -204,21 +288,17 @@ def apply_enhance_results_to_iterations(
     Iteration is frozen+slots — we build NEW instances via
     :func:`dataclasses.replace` rather than mutating. For each
     iteration whose result was successfully enhanced, the new
-    iteration carries the LLM-expanded prompt AND a freshly patched
-    ``cmd`` (the ``--prompt`` argv slot is overwritten via
-    :func:`enhance.replace_prompt_in_cmd`). Skipped / fallback /
-    invariant-violated iterations are returned unchanged — their
-    final_prompt equals their original ``it.prompt`` anyway, so
-    rebuilding would be a no-op.
+    iteration carries the LLM-expanded prompt on both
+    ``Iteration.prompt`` (display) and ``Iteration.params.prompt``
+    (Engine.run's dispatch payload). Skipped / fallback / invariant-
+    violated iterations are returned unchanged.
 
-    v0.8.2 dual-update of ``cmd`` + ``params.prompt`` survives v0.8.3:
-    ``cmd`` is no longer dispatched-from (Engine.run reads
-    ``params.prompt``), but ``--dry-run`` still prints
-    ``format_cmd(it.cmd)`` for user-visible argv preview, and
-    dry-run-with-enhance MUST show the enhanced prompt. Removal of
-    the dual-update lands together with removal of the ``cmd`` field
-    itself + migration of dry-run to ``engine.build_cmd(it.model,
-    it.params)`` — tracked as M-NEW-D for v0.8.4.
+    v0.8.4 M-NEW-D: single-update — pre-v0.8.4 the rebuild also
+    spliced the enhanced text into ``it.cmd`` via
+    ``replace_prompt_in_cmd``. ``cmd`` field was retired alongside,
+    so the splice is dead. Dry-run-with-enhance still shows enhanced
+    text because :func:`iteration_dryrun_display` derives argv from
+    ``it.params`` (which we DO update), not from the legacy snapshot.
 
     Asserts aligned lengths because misalignment would silently
     write the wrong prompt to the wrong iteration — louder failure
@@ -232,13 +312,12 @@ def apply_enhance_results_to_iterations(
     out: list[Iteration] = []
     for it, r in zip(iterations, enhance_results):
         if r.was_enhanced and r.final_prompt != it.prompt:
-            new_cmd = replace_prompt_in_cmd(it.cmd, r.final_prompt)
             new_params = (
                 _dataclass_replace(it.params, prompt=r.final_prompt)
                 if it.params is not None else None
             )
             out.append(_dataclass_replace(
-                it, prompt=r.final_prompt, cmd=new_cmd, params=new_params,
+                it, prompt=r.final_prompt, params=new_params,
             ))
         else:
             out.append(it)

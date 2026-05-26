@@ -525,7 +525,6 @@ class TestApplyEnhanceResultsToPerInput:
             final_guidance=4.0,
             final_strength=0.6,
             output_path=Path(f"/tmp/out-{style}.png"),
-            cmd=["fake-mflux", "--prompt", prompt],
         )
 
     def _make_result(self, original: str, enhanced: str | None = None) -> EnhanceResult:

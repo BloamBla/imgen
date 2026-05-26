@@ -79,7 +79,6 @@ from pathlib import Path
 
 from .backends import (
     Backend,
-    build_mflux_cmd,
     filter_compatible_loras,
     get_backend,
 )
@@ -1232,33 +1231,18 @@ def _assemble_iteration_no_style(
     # user --lora pointing at a backend-incompat LoRA gets silently
     # filtered (warn is on the build_iterations path only). Matches
     # pre-v0.7.8 behaviour of both draw + refine.
-    cmd = build_mflux_cmd(
-        binary=binary,
-        model=be,
-        input_path=input_path,
-        output_path=output_path,
-        prompt=lora_resolution.prompt_with_triggers,
-        negative=negative,
-        quantize=params.final_quantize,
-        steps=params.final_steps,
-        guidance=params.final_guidance,
-        strength=params.final_strength,
-        seed=seed,
-        width=width,
-        height=height,
-        mlx_cache_gb=merged_defaults["mlx_cache_gb"],
-        battery_stop=merged_defaults["battery_stop"],
-        loras=lora_resolution.effective_loras,
-    )
-    # v0.8.2 M-1A: alongside the pre-built mflux ``cmd``, attach the
-    # resolved Model + GenParams so the future Engine.run dispatch in
-    # ``run_one_iteration`` can route through ``engine.run(it.model,
-    # it.params, ...)``. Both fields are None for user-TOML names not
-    # in BUILTIN_MODELS today — v0.8.1 widened ``_model_for_validate``
-    # to also resolve user TOMLs, so ``model`` is non-None for
-    # every recognised --model; the None case remains a defensive
-    # default for any callable build_* helper invoked with an
-    # unrecognised name (the resolver dies upstream in production).
+    # v0.8.4 M-NEW-D: build_mflux_cmd no longer called at iteration-
+    # build time — MfluxEngine.build_cmd is invoked inside
+    # MfluxEngine.run (production) and iteration_dryrun_display
+    # (--dry-run preview). Saves one redundant argv build per iteration.
+    #
+    # v0.8.2 M-1A: attach the resolved Model + GenParams so
+    # Engine.run dispatch in ``run_one_iteration`` can route through
+    # ``engine.run(it.model, it.params, ...)``. Both fields are non-
+    # None for every recognised --model (BUILTIN_MODELS + user TOMLs
+    # via _model_for_validate); a None model here only happens if a
+    # caller bypasses the upstream resolver die() — caught by
+    # run_one_iteration's M-NEW-C invariant.
     gen_params = _genparams_from_iteration_inputs(
         prompt=lora_resolution.prompt_with_triggers,
         negative=negative,
@@ -1280,7 +1264,6 @@ def _assemble_iteration_no_style(
         final_guidance=params.final_guidance,
         final_strength=params.final_strength,
         output_path=output_path,
-        cmd=cmd,
         loras=lora_resolution.compatible_loras,
         seed=seed,
         model=model,
@@ -1710,29 +1693,10 @@ def build_iterations(
                     tuple(sorted(lora.compatible_with)),
                 )
 
-        # 5. Argv assembly for this iteration.
-        cmd = build_mflux_cmd(
-            binary=binary,
-            model=be,
-            input_path=input_path,
-            output_path=output_path,
-            prompt=prompt,
-            negative=negative,
-            quantize=params.final_quantize,
-            steps=params.final_steps,
-            guidance=params.final_guidance,
-            strength=params.final_strength,
-            seed=seed,
-            width=width,
-            height=height,
-            mlx_cache_gb=merged_defaults["mlx_cache_gb"],
-            battery_stop=merged_defaults["battery_stop"],
-            loras=lora_resolution.effective_loras,
-        )
-
-        # v0.8.2 M-1A: build GenParams in parallel with the legacy
-        # argv ``cmd``. See identical block in
-        # ``_assemble_iteration_no_style`` for the rationale.
+        # 5. GenParams payload — Engine.run reads this. v0.8.4 M-NEW-D:
+        # pre-built ``cmd`` argv no longer stored on Iteration;
+        # MfluxEngine.build_cmd is invoked at dispatch time
+        # (or by iteration_dryrun_display for --dry-run preview).
         gen_params = _genparams_from_iteration_inputs(
             prompt=prompt,
             negative=negative,
@@ -1754,18 +1718,14 @@ def build_iterations(
             final_guidance=params.final_guidance,
             final_strength=params.final_strength,
             output_path=output_path,
-            cmd=cmd,
             # The compat-filtered stack — incompatible LoRAs already
             # warn-and-skipped by filter_compatible_loras above. This is
-            # exactly what landed on the argv, and what v=3 history
-            # records for replay determinism.
+            # exactly what lands on the argv (via MfluxEngine.build_cmd
+            # → filter_compatible_loras), and what v=3 history records
+            # for replay determinism.
             loras=lora_resolution.compatible_loras,
             # v0.7.3: per-Iteration seed. i2i (cmd_generate/cmd_batch)
-            # uses one seed across all M styles of a single input —
-            # all iterations of one build_iterations call share the
-            # same seed, equal to ctx.seed. Field set explicitly so
-            # the run_one_iteration history serialiser reads from
-            # ``it.seed`` (post-v0.7.3) uniformly across i2i + t2i.
+            # uses one seed across all M styles of a single input.
             seed=seed,
             model=model,
             params=gen_params,

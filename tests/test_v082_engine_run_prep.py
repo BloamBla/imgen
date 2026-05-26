@@ -39,9 +39,10 @@ from imgen.runs import Iteration
 
 
 def _make_iter_with_params(prompt: str = "samurai") -> Iteration:
-    """Construct an Iteration with both ``cmd`` AND ``params``
-    populated — matches the post-M-1A production shape from
-    build_iterations / build_draw_iterations / etc."""
+    """Construct an Iteration with ``params`` populated — matches the
+    post-M-1A production shape from build_iterations /
+    build_draw_iterations. v0.8.4 M-NEW-D dropped the legacy ``cmd``
+    field; apply_enhance now updates ``params.prompt`` only."""
     from imgen.engines.base import GenParams
     return Iteration(
         style_name="draw",
@@ -52,7 +53,6 @@ def _make_iter_with_params(prompt: str = "samurai") -> Iteration:
         final_guidance=3.5,
         final_strength=0.0,
         output_path=Path("/tmp/out.png"),
-        cmd=["fake-mflux", "--prompt", prompt, "--steps", "20"],
         params=GenParams(
             prompt=prompt,
             negative="",
@@ -76,15 +76,12 @@ def _make_enhance_result(original: str, enhanced: str) -> EnhanceResult:
     )
 
 
-def test_apply_enhance_dual_updates_cmd_and_params():
-    """v0.8.2 architect CRITICAL-3 closure: when the enhancer succeeds,
-    BOTH ``it.cmd`` (dry-run display) and ``it.params.prompt``
-    (Engine.run payload) are updated. v0.8.3 M-NEW-C retired the
-    legacy ``run_with_stderr_redaction(it.cmd, ...)`` fallback, so
-    ``cmd`` is no longer dispatched-from, but ``--dry-run`` still
-    prints ``format_cmd(it.cmd)`` — the dual-update preserves user-
-    visible argv preview for dry-run-with-enhance. Removal of the
-    dual-update + field itself is tracked as M-NEW-D for v0.8.4.
+def test_apply_enhance_updates_params_prompt():
+    """v0.8.4 M-NEW-D: single-update — ``Iteration.params.prompt``
+    carries the enhanced text (this is what MfluxEngine.run dispatches
+    on AND what ``iteration_dryrun_display`` derives argv from for
+    ``--dry-run``). The legacy ``Iteration.cmd`` field is gone; no
+    dual-update needed.
     """
     it = _make_iter_with_params(prompt="samurai")
     enhanced = "a fierce samurai standing on a misty mountain at dawn"
@@ -96,15 +93,14 @@ def test_apply_enhance_dual_updates_cmd_and_params():
 
     # Iteration.prompt updated (existing v0.5 contract)
     assert new_it.prompt == enhanced
-    # cmd argv has the enhanced prompt spliced (dry-run display)
-    assert enhanced in new_it.cmd
-    # params.prompt also carries the enhanced text (Engine.run dispatch)
+    # params.prompt carries the enhanced text — Engine.run reads this,
+    # iteration_dryrun_display derives argv from it.
     assert new_it.params is not None
     assert new_it.params.prompt == enhanced
 
 
-def test_apply_enhance_preserves_other_params_fields_on_dual_update():
-    """The dual-update mutates ONLY ``params.prompt``. Every other
+def test_apply_enhance_preserves_other_params_fields_on_single_update():
+    """The single-update mutates ONLY ``params.prompt``. Every other
     GenParams field must round-trip unchanged — defence against a
     future careless rebuild that clobbers seed / steps / etc."""
     it = _make_iter_with_params(prompt="samurai")
@@ -131,16 +127,14 @@ def test_apply_enhance_preserves_other_params_fields_on_dual_update():
 
 def test_apply_enhance_legacy_iteration_without_params_still_works():
     """Iterations constructed without ``params`` (legacy callers; some
-    test fixtures) keep working — the dual-update preserves
-    ``params=None`` rather than crashing. ``Iteration.params`` has a
-    None default for exactly this transition window per architect
-    MEDIUM-2.
+    test fixtures) keep working through ``apply_enhance_results_to_
+    iterations`` — params stays None, Iteration.prompt is updated, no
+    crash. ``Iteration.params`` has a None default for exactly this
+    transition window per architect MEDIUM-2.
 
-    v0.8.3 M-NEW-C: post-legacy-fallback retirement, such Iterations
-    can no longer round-trip through ``run_one_iteration`` (which
-    hard-asserts both fields). They CAN still flow through
-    ``apply_enhance_results_to_iterations`` as a data shape — the
-    dual-update updates ``cmd`` but leaves ``params=None``.
+    v0.8.3 M-NEW-C: such Iterations can no longer round-trip through
+    ``run_one_iteration`` (which hard-asserts both fields), but the
+    data-shape path through apply_enhance stays defensive.
     """
     legacy_it = Iteration(
         style_name="legacy",
@@ -151,7 +145,6 @@ def test_apply_enhance_legacy_iteration_without_params_still_works():
         final_guidance=3.5,
         final_strength=0.0,
         output_path=Path("/tmp/out.png"),
-        cmd=["fake-mflux", "--prompt", "original"],
         # NO model, NO params — legacy shape
     )
     result = _make_enhance_result("original", "enhanced version")
@@ -159,7 +152,6 @@ def test_apply_enhance_legacy_iteration_without_params_still_works():
     out = apply_enhance_results_to_iterations([legacy_it], [result])
     new_it = out[0]
     assert new_it.prompt == "enhanced version"
-    assert "enhanced version" in new_it.cmd
     # No params to update — stays None, no crash
     assert new_it.params is None
 

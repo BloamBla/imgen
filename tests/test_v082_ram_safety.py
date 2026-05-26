@@ -193,7 +193,6 @@ def test_run_one_iteration_catches_ram_safety_failure(
         final_steps=20, final_quantize=4,
         final_guidance=3.5, final_strength=0.55,
         output_path=tmp_path / "out.png",
-        cmd=["echo", "hello"],
         model=model, params=params,
     )
 

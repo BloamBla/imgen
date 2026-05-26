@@ -55,7 +55,7 @@ from ..images import detect_resolution
 from ..inputs import resolve_single_input_path, resolve_to_mflux_input
 from ..prompt_input import PromptInputError, resolve_prompt
 from ..runs import BatchContext, BatchLogger, Iteration
-from ..subprocess_helpers import build_mflux_env, format_cmd
+from ..subprocess_helpers import build_mflux_env
 
 __all__ = ["cmd_generate"]
 
@@ -299,10 +299,11 @@ def cmd_generate(args) -> int:
 
         # 9) Dry run — show every M cmd, skip resource checks + history.
         if args.dry_run:
+            from ..engine_dispatch import iteration_dryrun_display
             for it in iterations:
                 step(f"Dry run — would execute ({it.style_name}):")
                 print()
-                print(format_cmd(it.cmd))
+                print(iteration_dryrun_display(it))
                 print()
             return 0
 

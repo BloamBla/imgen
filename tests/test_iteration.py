@@ -8,6 +8,10 @@ Frozen because the v0.2.3 pre-build-all-iterations design assumes
 iteration values cannot mutate mid-loop; slots because we want the
 field set to be a closed contract (typos like `it.style_anme` should be
 AttributeError, not silently create a new attribute).
+
+v0.8.4 M-NEW-D: ``cmd: list[str]`` field removed — its build-time
+argv snapshot is now derived from (model, params) via
+:func:`engine_dispatch.iteration_dryrun_display`.
 """
 from __future__ import annotations
 
@@ -29,7 +33,6 @@ def _make_iteration(**overrides) -> Iteration:
         final_guidance=2.5,
         final_strength=0.6,
         output_path=Path("/tmp/out.png"),
-        cmd=["/venv/bin/mflux-generate", "--prompt", "..."],
     )
     defaults.update(overrides)
     return Iteration(**defaults)
@@ -43,7 +46,6 @@ def test_iteration_constructs_with_all_fields():
     assert it.final_guidance == pytest.approx(2.5)
     assert it.final_strength == pytest.approx(0.6)
     assert it.output_path == Path("/tmp/out.png")
-    assert it.cmd[0] == "/venv/bin/mflux-generate"
 
 
 def test_iteration_is_frozen():
@@ -103,16 +105,14 @@ def test_iteration_field_order_matches_spec():
     rely on positional construction in tests (and future code that
     might build via *args). Lock it.
 
-    ``loras`` (v0.6) and ``seed`` (v0.7.3 fix) were appended at the
-    end with defaults so older positional construction stays valid:
-    9 args (v0.5) → 10 args (v0.6 + loras=()) → 11 args (v0.7.3 +
-    seed=0). v0.8.2 M-1A added ``model`` + ``params`` (both
-    None-defaulted) for Engine.run wire-up; 11 → 13 args.
-
-    i2i callers (build_iterations) and t2i callers
-    (build_draw_iterations) set seed + model + params explicitly;
-    the defaults exist only for any unknown third-party programmatic
-    caller during the v0.8.x deprecation window.
+    Field shape history:
+    * v0.5: 9 required fields (style_name … output_path … cmd).
+    * v0.6: + ``loras: tuple = ()`` (10 args).
+    * v0.7.3: + ``seed: int = 0`` (11 args).
+    * v0.8.2 M-1A: + ``model: Model | None = None`` + ``params:
+      GenParams | None = None`` for Engine.run wire-up (13 args).
+    * v0.8.4 M-NEW-D: ``cmd`` dropped — derived from (model, params)
+      at dry-run / dispatch time (12 args).
     """
     import dataclasses
     fields = [f.name for f in dataclasses.fields(Iteration)]
@@ -125,7 +125,6 @@ def test_iteration_field_order_matches_spec():
         "final_guidance",
         "final_strength",
         "output_path",
-        "cmd",
         "loras",
         "seed",
         "model",
@@ -143,10 +142,11 @@ def test_iteration_loras_defaults_to_empty_tuple():
 
 
 def test_iteration_is_explicitly_unhashable():
-    """`cmd: list[str]` is not hashable, so the frozen dataclass'
-    auto-generated __hash__ would TypeError on first use. We opt out
-    with `__hash__ = None` so the error surfaces at the set/dict
-    insertion site. (v0.2.5 review — same fix as BatchContext)"""
+    """`Iteration.model` / ``.params`` are dataclass instances that
+    don't compose into a useful auto-generated __hash__. We opt out
+    with ``__hash__ = None`` so any attempt to insert into a set/dict
+    surfaces the error at the insertion site rather than silently
+    using identity-hash. (v0.2.5 review — same fix as BatchContext)"""
     it = _make_iteration()
     with pytest.raises(TypeError):
         hash(it)

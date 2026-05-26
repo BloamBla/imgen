@@ -47,7 +47,6 @@ from .enhance_runtime import (
     build_runner_payload,
     enhance_iteration_prompts,
     parse_runner_response,
-    replace_prompt_in_cmd,
     run_with_mlx_lm,
 )
 
@@ -72,6 +71,5 @@ __all__ = [
     "build_runner_payload",
     "enhance_iteration_prompts",
     "parse_runner_response",
-    "replace_prompt_in_cmd",
     "run_with_mlx_lm",
 ]

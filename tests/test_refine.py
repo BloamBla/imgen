@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from imgen.defaults import DEFAULTS
+from _iteration_argv import iteration_argv as _argv
 
 
 # ── Parser stanza ────────────────────────────────────────────────────
@@ -296,9 +297,9 @@ class TestBuildRefineIteration:
             run_dir=tmp_path,
             seed=42,
         )
-        assert "--image-paths" in it.cmd
-        idx = it.cmd.index("--image-paths")
-        assert it.cmd[idx + 1] == "/tmp/in.png"
+        assert "--image-paths" in _argv(it)
+        idx = _argv(it).index("--image-paths")
+        assert _argv(it)[idx + 1] == "/tmp/in.png"
 
     def test_seed_recorded_on_iteration(self, tmp_path):
         """v0.7.3 fix carry-forward: Iteration.seed is the per-iter
@@ -345,8 +346,8 @@ class TestAssembleNakedIteration:
         )
         assert it.style_name == "draw"
         # t2i: --image-path / --image-paths argv pair omitted
-        assert "--image-path" not in it.cmd
-        assert "--image-paths" not in it.cmd
+        assert "--image-path" not in _argv(it)
+        assert "--image-paths" not in _argv(it)
 
     def test_refine_mode_emits_image_paths_in_cmd(self, tmp_path):
         from imgen.backends import BACKENDS
@@ -366,9 +367,9 @@ class TestAssembleNakedIteration:
         )
         assert it.style_name == "refine"
         # i2i: --image-paths flag pair carries the input path
-        assert "--image-paths" in it.cmd
-        idx = it.cmd.index("--image-paths")
-        assert it.cmd[idx + 1] == str(input_path)
+        assert "--image-paths" in _argv(it)
+        idx = _argv(it).index("--image-paths")
+        assert _argv(it)[idx + 1] == str(input_path)
 
     def test_empty_negative_no_style_inherited(self, tmp_path):
         """Naked = empty Style preset → negative=""; locks the
@@ -390,7 +391,7 @@ class TestAssembleNakedIteration:
         assert it.negative == ""
         # mflux argv must NOT include --negative-prompt for empty case
         # (build_mflux_cmd gates emission on non-empty negative)
-        assert "--negative-prompt" not in it.cmd
+        assert "--negative-prompt" not in _argv(it)
 
     def test_style_name_passes_through(self, tmp_path):
         """Caller controls the style_name label; helper doesn't

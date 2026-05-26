@@ -57,7 +57,7 @@ from ..cmd_helpers import (
     resolve_output_layout,
     run_one_iteration,
 )
-from ..subprocess_helpers import build_mflux_env, format_cmd
+from ..subprocess_helpers import build_mflux_env
 
 __all__ = ["cmd_draw"]
 
@@ -288,10 +288,11 @@ def cmd_draw(args) -> int:
 
     # 7) Dry-run: print every N cmds, exit clean.
     if args.dry_run:
+        from ..engine_dispatch import iteration_dryrun_display
         for idx, it in enumerate(iterations, start=1):
             print(f"Dry run [{idx}/{total}] — would execute (draw):")
             print()
-            print(format_cmd(it.cmd))
+            print(iteration_dryrun_display(it))
             print()
         return 0
 

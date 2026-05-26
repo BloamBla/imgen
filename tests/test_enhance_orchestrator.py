@@ -1,17 +1,18 @@
-"""Tests for the iteration-level orchestrator and argv helper that
-bridge :mod:`imgen.enhance` to ``cmd_generate`` / ``cmd_batch``.
+"""Tests for the iteration-level orchestrator that bridges
+:mod:`imgen.enhance` to ``cmd_generate`` / ``cmd_batch``.
 
-Both surfaces are pure-functional with an injected LLM callable —
-no real mlx_lm load, no subprocess. Real-mlx_lm smoke testing is
-manual (see CLAUDE.md release checklist).
+Pure-functional with an injected LLM callable — no real mlx_lm load,
+no subprocess. Real-mlx_lm smoke testing is manual (see CLAUDE.md
+release checklist).
 
 Exercised:
 
 * :func:`enhance_iteration_prompts` — N-prompts-in, N-results-out
   orchestrator that handles per-prompt skips + all-or-nothing
   runner-failure fallback.
-* :func:`replace_prompt_in_cmd` — argv patching when an enhancement
-  modifies the prompt post-build.
+
+v0.8.4 M-NEW-D: ``replace_prompt_in_cmd`` removed (dead code post-
+Iteration.cmd field retirement). Its 5 lock-ins are gone too.
 """
 from __future__ import annotations
 
@@ -21,50 +22,7 @@ from imgen.enhance import (
     EnhanceResult,
     RunnerError,
     enhance_iteration_prompts,
-    replace_prompt_in_cmd,
 )
-
-
-# ── replace_prompt_in_cmd ───────────────────────────────────────────────
-
-
-class TestReplacePromptInCmd:
-    def test_basic_replacement(self):
-        cmd = [
-            "/bin/mflux-generate-kontext", "--quantize", "8",
-            "--image-path", "/p.jpg",
-            "--prompt", "OLD PROMPT",
-            "--steps", "20",
-        ]
-        out = replace_prompt_in_cmd(cmd, "NEW PROMPT")
-        assert out[5] == "--prompt"      # flag still where it was
-        assert out[6] == "NEW PROMPT"    # value replaced
-        assert out[7] == "--steps"       # next flag intact
-        # And original cmd is untouched.
-        assert cmd[6] == "OLD PROMPT"
-
-    def test_does_not_mutate_input(self):
-        cmd = ["--prompt", "old"]
-        original = list(cmd)
-        replace_prompt_in_cmd(cmd, "new")
-        assert cmd == original
-
-    def test_returns_new_list_object(self):
-        cmd = ["--prompt", "old"]
-        out = replace_prompt_in_cmd(cmd, "new")
-        assert out is not cmd
-
-    def test_missing_prompt_flag_is_no_op(self):
-        cmd = ["/bin/mflux", "--quantize", "8"]
-        out = replace_prompt_in_cmd(cmd, "anything")
-        assert out == cmd
-
-    def test_malformed_argv_dangling_prompt_is_no_op(self):
-        # ``--prompt`` at end with no value — shouldn't happen via our
-        # build_mflux_cmd but defensive: don't IndexError.
-        cmd = ["/bin/mflux", "--prompt"]
-        out = replace_prompt_in_cmd(cmd, "x")
-        assert out == cmd
 
 
 # ── enhance_iteration_prompts: fake LLM callable ──────────────────────

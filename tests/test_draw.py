@@ -24,6 +24,7 @@ from imgen.cmd_helpers import (
 from imgen.runs import _MAX_COLLISIONS, next_available_path
 from imgen.commands.draw import cmd_draw
 from imgen.defaults import DEFAULTS
+from _iteration_argv import iteration_argv as _argv
 
 
 # ── prompt_slug helper (architect §D) ────────────────────────────────
@@ -256,8 +257,8 @@ class TestBuildDrawIterations:
         assert "-1.png" not in out[0].output_path.name
         assert out[0].output_path.name.endswith("a-samurai.png")
         # Seed = base_seed.
-        seed_idx = out[0].cmd.index("--seed") + 1
-        assert out[0].cmd[seed_idx] == "42"
+        seed_idx = _argv(out[0]).index("--seed") + 1
+        assert _argv(out[0])[seed_idx] == "42"
 
     def test_n_equals_3_seed_ladder(self, tmp_path):
         """Deterministic ladder: base_seed=100, N=3 → seeds 100,101,102."""
@@ -279,7 +280,7 @@ class TestBuildDrawIterations:
         assert len(out) == 3
         # Each iteration's argv carries its slot's seed.
         seeds = [
-            it.cmd[it.cmd.index("--seed") + 1] for it in out
+            _argv(it)[_argv(it).index("--seed") + 1] for it in out
         ]
         assert seeds == ["100", "101", "102"]
 
@@ -329,9 +330,9 @@ class TestBuildDrawIterations:
             num_iterations=1,
         )
         assert out[0].negative == "low quality, blurry"
-        assert "--negative-prompt" in out[0].cmd
-        idx = out[0].cmd.index("--negative-prompt")
-        assert out[0].cmd[idx + 1] == "low quality, blurry"
+        assert "--negative-prompt" in _argv(out[0])
+        idx = _argv(out[0]).index("--negative-prompt")
+        assert _argv(out[0])[idx + 1] == "low quality, blurry"
 
     def test_negative_prompt_absent_preserves_empty_default(self, tmp_path):
         """No `--negative-prompt` CLI → Iteration.negative == "" and argv
@@ -353,7 +354,7 @@ class TestBuildDrawIterations:
             num_iterations=1,
         )
         assert out[0].negative == ""
-        assert "--negative-prompt" not in out[0].cmd
+        assert "--negative-prompt" not in _argv(out[0])
 
     def test_negative_prompt_dropped_on_flux2_klein_edit_9b(self, tmp_path):
         """v0.7.11 cross-product defence-in-depth (gap 7 × gap 1 interaction):
@@ -361,11 +362,24 @@ class TestBuildDrawIterations:
         the CLI, the flag must NOT reach argv when targeting a backend
         with ``supports_negative=False``. The existing gap-7 test in
         test_generate_cmd.py guards the build_mflux_cmd seam; this test
-        closes the end-to-end loop from the draw entrypoint."""
+        closes the end-to-end loop from the draw entrypoint.
+
+        v0.8.4 M-NEW-D: argv derivation post-Iteration.cmd-retirement
+        uses ``MfluxEngine.build_cmd(it.model, it.params)`` — and
+        ``it.model`` is resolved from ``args.model`` (via
+        ``_model_for_validate``), NOT from the ``be`` argument. The
+        test now passes ``args.model="flux2-klein-edit-9b"`` so the
+        Model + Backend agree on ``supports_negative=False``.
+        Production never hits the mismatch because
+        ``load_backend_and_token`` resolves both from the same name.
+        """
         from imgen.backends import BACKENDS
         from imgen.cmd_helpers import build_draw_iterations
         out = build_draw_iterations(
-            args=_make_args(negative_prompt="low quality, blurry"),
+            args=_make_args(
+                negative_prompt="low quality, blurry",
+                model="flux2-klein-edit-9b",
+            ),
             prompt="a portrait",
             merged_defaults=DEFAULTS,
             be=BACKENDS["flux2-klein-edit-9b"],
@@ -381,7 +395,7 @@ class TestBuildDrawIterations:
         # history), but argv-level emission is gated by
         # backend.supports_negative=False.
         assert out[0].negative == "low quality, blurry"
-        assert "--negative-prompt" not in out[0].cmd
+        assert "--negative-prompt" not in _argv(out[0])
 
     def test_seed_ladder_wraps_at_2_32(self, tmp_path):
         """base_seed near the cap: ladder modulo 2^32 keeps every
@@ -402,7 +416,7 @@ class TestBuildDrawIterations:
             base_seed=cap - 1,
             num_iterations=3,
         )
-        seeds = [int(it.cmd[it.cmd.index("--seed") + 1]) for it in out]
+        seeds = [int(_argv(it)[_argv(it).index("--seed") + 1]) for it in out]
         # Ladder: cap-1, (cap-1+1)%cap=0, (cap-1+2)%cap=1.
         assert seeds == [cap - 1, 0, 1]
 
@@ -474,7 +488,7 @@ class TestBuildDrawIterations:
         # Cross-check: argv --seed matches Iteration.seed (no drift
         # between the two surfaces).
         for it in out:
-            argv_seed = int(it.cmd[it.cmd.index("--seed") + 1])
+            argv_seed = int(_argv(it)[_argv(it).index("--seed") + 1])
             assert argv_seed == it.seed
 
     def test_all_iterations_share_compatible_loras(self, tmp_path):
@@ -679,10 +693,10 @@ class TestBuildDrawIteration:
             run_dir=tmp_path,
             seed=42,
         )
-        assert "--image-path" not in it.cmd
+        assert "--image-path" not in _argv(it)
         # Sanity: prompt + output still present.
-        assert "--prompt" in it.cmd
-        assert it.cmd[it.cmd.index("--prompt") + 1] == "a samurai"
+        assert "--prompt" in _argv(it)
+        assert _argv(it)[_argv(it).index("--prompt") + 1] == "a samurai"
 
     def test_strength_recorded_but_no_argv_emission(self, tmp_path):
         """args.strength is missing on draw Namespace; the getattr
@@ -708,7 +722,7 @@ class TestBuildDrawIteration:
         )
         # final_strength has a value (from merged_defaults) but argv
         # doesn't carry --image-strength.
-        assert "--image-strength" not in it.cmd
+        assert "--image-strength" not in _argv(it)
         assert it.final_strength == DEFAULTS["strength"]
 
 

@@ -23,6 +23,7 @@ from imgen.cmd_helpers import (
 )
 from imgen.defaults import DEFAULTS
 from imgen.styles import LoraRef, Style
+from _iteration_argv import iteration_argv as _argv
 
 
 # ── resolve_effective_loras ────────────────────────────────────────────
@@ -330,15 +331,15 @@ class TestBuildIterationsLoRA:
             ),
         }
         its = _build(fake_styles=styles, tmp_path=tmp_path)
-        assert "--lora-paths" in its[0].cmd
-        i = its[0].cmd.index("--lora-paths")
-        assert its[0].cmd[i + 1] == "strangerzonehf/Flux-Animeo-v1-LoRA"
+        assert "--lora-paths" in _argv(its[0])
+        i = _argv(its[0]).index("--lora-paths")
+        assert _argv(its[0])[i + 1] == "strangerzonehf/Flux-Animeo-v1-LoRA"
 
     def test_style_with_no_loras_produces_no_lora_argv(self, tmp_path):
         """Backward compat: a style without `loras` field works as v0.5."""
         styles = {"anime": Style(prompt="anime portrait")}
         its = _build(fake_styles=styles, tmp_path=tmp_path)
-        assert "--lora-paths" not in its[0].cmd
+        assert "--lora-paths" not in _argv(its[0])
 
     def test_cli_lora_appended_to_style_loras_in_cmd(self, tmp_path):
         """--lora REF appends to the style's stack — argv shows BOTH
@@ -353,9 +354,9 @@ class TestBuildIterationsLoRA:
             lora=[LoraRef(ref="cli/lora", weight=0.5)],
         )
         its = _build(fake_styles=styles, tmp_path=tmp_path, args=args)
-        i = its[0].cmd.index("--lora-paths")
+        i = _argv(its[0]).index("--lora-paths")
         # Style first, CLI second.
-        assert its[0].cmd[i + 1:i + 3] == ["style/lora", "cli/lora"]
+        assert _argv(its[0])[i + 1:i + 3] == ["style/lora", "cli/lora"]
 
     def test_no_lora_drops_style_loras_from_cmd(self, tmp_path):
         styles = {
@@ -366,7 +367,7 @@ class TestBuildIterationsLoRA:
         }
         args = _build_args(no_lora=True)
         its = _build(fake_styles=styles, tmp_path=tmp_path, args=args)
-        assert "--lora-paths" not in its[0].cmd
+        assert "--lora-paths" not in _argv(its[0])
 
     def test_trigger_word_prepended_to_iteration_prompt(self, tmp_path):
         """LoRA with trigger → iteration.prompt has the trigger
@@ -385,8 +386,8 @@ class TestBuildIterationsLoRA:
         # Iteration's stored prompt starts with the trigger.
         assert its[0].prompt.startswith("Animeo, ")
         # And mflux argv carries the same trigger-prepended prompt.
-        i = its[0].cmd.index("--prompt")
-        assert its[0].cmd[i + 1].startswith("Animeo, ")
+        i = _argv(its[0]).index("--prompt")
+        assert _argv(its[0])[i + 1].startswith("Animeo, ")
 
     def test_trigger_already_in_prompt_not_duplicated(self, tmp_path):
         """If the style's preset prompt already contains the trigger,
@@ -417,7 +418,7 @@ class TestBuildIterationsLoRA:
             ),
         }
         its = _build(fake_styles=styles, tmp_path=tmp_path)
-        assert "--lora-paths" not in its[0].cmd
+        assert "--lora-paths" not in _argv(its[0])
         captured = capsys.readouterr()
         message = captured.out + captured.err
         assert "flux2-only/x" in message

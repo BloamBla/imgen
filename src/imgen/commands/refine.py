@@ -45,7 +45,7 @@ from ..cmd_helpers import (
     resolve_output_layout,
     run_one_iteration,
 )
-from ..subprocess_helpers import build_mflux_env, format_cmd
+from ..subprocess_helpers import build_mflux_env
 
 __all__ = ["cmd_refine"]
 
@@ -277,7 +277,8 @@ def cmd_refine(args) -> int:
         print()
         print(f"Dry run — would execute (refine):")
         print()
-        print(format_cmd(iteration.cmd))
+        from ..engine_dispatch import iteration_dryrun_display
+        print(iteration_dryrun_display(iteration))
         print()
         return 0
 

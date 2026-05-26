@@ -81,7 +81,7 @@ from ..cmd_helpers import (
     resolve_styles_list,
     run_one_iteration,
 )
-from ..subprocess_helpers import build_mflux_env, format_cmd
+from ..subprocess_helpers import build_mflux_env
 
 __all__ = ["cmd_batch"]
 
@@ -362,10 +362,11 @@ def cmd_batch(args) -> int:
         # already happened above (mflux paths in cmd reference cache);
         # cache is wiped by TemporaryDirectory on context exit.
         if args.dry_run:
+            from ..engine_dispatch import iteration_dryrun_display
             for idx, it in enumerate(all_iters, start=1):
                 print(f"Dry run [{idx}/{total_iters}] {it.style_name}:")
                 print()
-                print(format_cmd(it.cmd))
+                print(iteration_dryrun_display(it))
                 print()
             return 0
 
