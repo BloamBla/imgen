@@ -106,7 +106,10 @@ class BatchContext:
     args: Any
     batch_id: str | None
     env: dict[str, str]
-    command: Literal["generate", "batch", "draw", "refine"] = "generate"
+    # v0.9 commit 7 (§G architect §R.1 MED-5): widened with "video"
+    # for the t2v dispatch path. Literal extension keeps the field
+    # type-narrow so a typo would surface at the call site.
+    command: Literal["generate", "batch", "draw", "refine", "video"] = "generate"
 
     # Opt out of hashing — dict/Namespace fields make the auto-generated
     # __hash__ blow up on any caller that tries to use BatchContext as

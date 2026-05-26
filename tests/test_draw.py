@@ -522,7 +522,7 @@ class TestCmdDrawEnhancerOnce:
             return ("flux-dev", BACKENDS["flux-dev"], "tok",
                     Path("/fake/mflux-generate"), None)
         monkeypatch.setattr(
-            "imgen.commands.draw.load_backend_and_token", fake_load,
+            "imgen.cmd_helpers.load_backend_and_token", fake_load,
         )
 
         call_count = {"n": 0, "prompts": []}
@@ -729,7 +729,7 @@ class TestCmdDrawDryRun:
             return ("flux-dev", BACKENDS["flux-dev"], "fake-token",
                     Path("/fake/mflux-generate"), None)
         monkeypatch.setattr(
-            "imgen.commands.draw.load_backend_and_token", fake_load,
+            "imgen.cmd_helpers.load_backend_and_token", fake_load,
         )
 
         args = _make_args(
@@ -767,7 +767,7 @@ class TestCmdDrawDryRun:
             return ("flux-dev", BACKENDS["flux-dev"], "tok",
                     Path("/fake/mflux-generate"), None)
         monkeypatch.setattr(
-            "imgen.commands.draw.load_backend_and_token", fake_load,
+            "imgen.cmd_helpers.load_backend_and_token", fake_load,
         )
         monkeypatch.setattr(
             "sys.stdin", io.StringIO("a ninja from stdin"),
@@ -798,7 +798,7 @@ class TestCmdDrawRefineHint:
             return ("flux-dev", BACKENDS["flux-dev"], "tok",
                     Path("/fake/mflux-generate"), None)
         monkeypatch.setattr(
-            "imgen.commands.draw.load_backend_and_token", fake_load,
+            "imgen.cmd_helpers.load_backend_and_token", fake_load,
         )
         _touch_and_zero = lambda cmd, *a, **kw: (
             Path(cmd[cmd.index("--output") + 1]).touch(),
@@ -917,7 +917,7 @@ class TestCmdDrawEnhancer:
             return ("flux-dev", BACKENDS["flux-dev"], "tok",
                     Path("/fake/mflux-generate"), None)
         monkeypatch.setattr(
-            "imgen.commands.draw.load_backend_and_token", fake_load,
+            "imgen.cmd_helpers.load_backend_and_token", fake_load,
         )
 
         captured_system_prompt = []
@@ -971,7 +971,7 @@ class TestCmdDrawEnhancer:
             return ("flux-dev", BACKENDS["flux-dev"], "tok",
                     Path("/fake/mflux-generate"), None)
         monkeypatch.setattr(
-            "imgen.commands.draw.load_backend_and_token", fake_load,
+            "imgen.cmd_helpers.load_backend_and_token", fake_load,
         )
         # Force mflux subprocess to "fail" (return non-zero rc) so
         # cmd_draw routes through the failure-summary path with the
@@ -1016,7 +1016,7 @@ class TestCmdDrawEnhancer:
             return ("flux-dev", BACKENDS["flux-dev"], "tok",
                     Path("/fake/mflux-generate"), None)
         monkeypatch.setattr(
-            "imgen.commands.draw.load_backend_and_token", fake_load,
+            "imgen.cmd_helpers.load_backend_and_token", fake_load,
         )
 
         # The "enhanced" prompt has none of the original substrings —

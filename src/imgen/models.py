@@ -419,6 +419,55 @@ BUILTIN_MODELS: dict[str, Model] = {
         max_guidance=10.0,
     ),
 
+    # LTX-Video — v0.9.0 t2v built-in (§K + §L). Pulled forward from
+    # commit 9 in lockstep with cmd_video so the parser's
+    # ``--model ltx-video`` default resolves. Doctor RAM-forecast row
+    # for video Models still lands in commit 9; commit 7 keeps this
+    # row minimal (no doctor extension yet).
+    #
+    # Trust note (security §R.1 MED-5): Lightricks Ltd. is a real
+    # corporate publisher; LTX-Video has been in diffusers ≥0.32 with
+    # significant community surface. Trust assumption same as
+    # Tencent/Qwen rows: open-weights research model from an
+    # established source.
+    #
+    # supported_quants=() — LTX is bf16-only at v0.9.0; diffusers
+    # doesn't ship MLX-style quantization for LTX. Empty tuple keeps
+    # the doctor table from rendering meaningless q3/q4/etc rows.
+    "ltx-video": Model(
+        engine="diffusers_mps",
+        repo="Lightricks/LTX-Video",
+        needs_token=False,
+        supports_negative=True,
+        cpu_offload_threshold_mp=2.0,  # image-only default — ignored for video
+        # §L LTX envelope on M2 Pro 32 GB: baseline=10 (T5 offloaded
+        # transformer+VAE+activations); slope=4 GB/MP. No quantize
+        # term in the video formula — flat bf16 weights.
+        ram_baseline_gb=10.0,
+        ram_slope_gb_per_mp=4.0,
+        encoder_ram_gb=18.0,  # ignored when model.video is set
+        # Per-Model param defaults (§K).
+        default_steps=50,
+        default_guidance=3.0,
+        min_guidance=1.0,
+        max_guidance=10.0,
+        supported_quants=(),
+        enhance_system_prompt=None,  # §S.4 — LTX has no enhancer at v0.9.0
+        enhance_invariants=(),
+        lora_compat_group="ltx-video",  # reserved for v0.9.x video LoRA
+        hf_gated_repo=None,
+        video=VideoConfig(
+            default_num_frames=25,
+            default_fps=24,
+            max_num_frames=257,
+            num_frames_alignment=8,
+            num_frames_offset=1,
+            supports_video_codecs=("libx264",),
+            force_cpu_offload=True,  # mandatory on M2 Pro 32 GB
+            encoder_ram_gb=3.0,      # T5-XXL transient peak when offloaded
+        ),
+    ),
+
     # FLUX.2-klein-edit-9b — Hires-Fix refine default (name unchanged at 4b).
     "flux2-klein-edit-9b": Model(
         engine="mflux",

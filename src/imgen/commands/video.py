@@ -26,7 +26,7 @@ from pathlib import Path
 
 from ..colors import die
 
-__all__ = ["_VIDEO_DEPS_PINNED", "ensure_video_deps_or_die"]
+__all__ = ["_VIDEO_DEPS_PINNED", "cmd_video", "ensure_video_deps_or_die"]
 
 
 # ── Pinned dependency set (§E.5.1) ────────────────────────────────────
@@ -226,3 +226,90 @@ def ensure_video_deps_or_die() -> None:
         # Worst case: next invocation surfaces the stale sentinel,
         # which is recoverable.
         pass
+
+
+# ── cmd_video subcommand (commit 7 §I) ────────────────────────────────
+
+
+_ENHANCE_NOT_SUPPORTED_MSG = (
+    "video: --enhance / --enhance-prompt is not supported "
+    "(LTX-Video v0.9.0 ships without a prompt enhancer; see §S.4 of "
+    "the design memo). Re-run without --enhance."
+)
+
+
+def _confirm_video(
+    *,
+    prompt: str,
+    iterations,
+    run_dir,
+    slug: str,
+    eta_seconds,
+) -> bool:
+    """Per-command confirm gate for ``imgen video``. Mirrors
+    ``_confirm_draw`` but renders video-specific fields: duration,
+    fps, resolution.
+
+    Single-shot in v0.9.0 — iterations always has length 1.
+    """
+    from ..colors import C, info
+    from ..cmd_helpers import format_duration
+
+    it = iterations[0]
+    p = it.params
+    duration_s = p.num_frames / p.fps if p.fps > 0 else 0.0
+
+    preview = prompt if len(prompt) <= 80 else prompt[:77] + "..."
+    info("About to generate 1 video:")
+    print(f"   {C.DIM}prompt:{C.END} {preview}")
+    print(f"   {C.DIM}output:{C.END} {it.output_path}")
+    print(
+        f"   {C.DIM}params:{C.END} {p.width}×{p.height} · "
+        f"{p.num_frames} frames @ {p.fps} fps · {duration_s:.2f}s · "
+        f"{p.steps} steps"
+    )
+    if eta_seconds is not None:
+        # ETA from history is image-shaped; surface as a coarse hint
+        # but note it's not directly applicable to video timing.
+        print(f"   {C.DIM}eta:{C.END}    {format_duration(eta_seconds)} (image-history estimate, video TBD)")
+    print()
+    try:
+        ans = input("Continue? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    return ans in ("y", "yes")
+
+
+def cmd_video(args) -> int:
+    """``imgen video <prompt>`` — text-to-video via diffusers_mps engine.
+
+    v0.9 commit 7. Routes through ``_orchestrate_t2x`` with video-
+    specific factories:
+
+    * ``build_video_iteration`` — single-element iteration list with
+      num_frames/fps resolved from --duration or --num-frames.
+    * ``_confirm_video`` — confirm gate showing duration + fps +
+      resolution.
+    * ``enhancer_die_early_message`` — ``args.enhance=True`` triggers
+      die() before any heavy work per §S.4.
+    * ``pre_dispatch_fn=ensure_video_deps_or_die`` — lazy install
+      gate for imageio/imageio-ffmpeg/sentencepiece. Skipped under
+      --dry-run per §E.5.7.
+
+    The actual LTX-Video Model row lands in BUILTIN_MODELS at commit 9;
+    until then, cmd_video is testable in isolation (mock backend) but
+    not end-to-end-runnable via the CLI.
+    """
+    from .._t2x_orchestrator import _orchestrate_t2x
+    from ..build_iteration import build_video_iteration
+
+    return _orchestrate_t2x(
+        args,
+        command="video",
+        build_iterations_fn=build_video_iteration,
+        confirm_fn=_confirm_video,
+        enhancer_die_early_message=_ENHANCE_NOT_SUPPORTED_MSG,
+        pre_dispatch_fn=ensure_video_deps_or_die,
+        post_success_hint_fn=None,
+    )

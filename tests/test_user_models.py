@@ -155,8 +155,19 @@ def test_user_toml_defaults_engine_mflux_when_omitted(tmp_state_dir):
     )
 
     # Derivation default: any v0.7 Backend → Model has engine="mflux".
+    # v0.9 commit 7 (§K): ltx-video is the first BUILTIN_MODELS row
+    # with engine="diffusers_mps". The v0.7-shape derivation default
+    # still applies to legacy mflux rows; the assertion scopes to them.
     from imgen.models import BUILTIN_MODELS
+    _v07_shape_names = {
+        "flux-kontext", "qwen-image-edit-v1",
+        "flux-dev", "flux2-klein-edit-9b",
+    }
     for name, model in BUILTIN_MODELS.items():
+        if name not in _v07_shape_names:
+            # v0.9+ rows declare engine explicitly; skip the v0.7
+            # default-derivation check.
+            continue
         assert model.engine == "mflux", (
             f"BUILTIN_MODELS[{name!r}].engine should default to 'mflux' "
             f"for v0.7-shape backends (got {model.engine!r})"
@@ -237,8 +248,9 @@ def test_backends_models_no_circular_import():
             "import imgen.parser; "
             "from imgen.backends import BUILTIN_BACKENDS; "
             "from imgen.models import BUILTIN_MODELS; "
-            "assert len(BUILTIN_BACKENDS) == 4; "
-            "assert len(BUILTIN_MODELS) == 4; "
+            # v0.9 commit 7: ltx-video added → 5 built-ins.
+            "assert len(BUILTIN_BACKENDS) == 5; "
+            "assert len(BUILTIN_MODELS) == 5; "
             "print('ok')"
         )],
         capture_output=True, text=True, timeout=30,

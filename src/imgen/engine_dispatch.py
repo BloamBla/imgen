@@ -185,6 +185,8 @@ def validate_engine_params_or_die(
     *,
     quantize: int,
     guidance: float,
+    num_frames: int = 1,
+    fps: int = 24,
 ) -> None:
     """v0.8.0 commit 7 (§M): call ``Engine.validate(model, params)``
     on the resolved per-iteration params; die with the error list on
@@ -203,18 +205,21 @@ def validate_engine_params_or_die(
     if model is None:
         return
     from .engines.base import GenParams
-    # Minimal GenParams — current validate() checks only quantize +
-    # guidance. Other fields filled with placeholder values so the
-    # dataclass instantiates cleanly. Future validate() checks (e.g.
-    # supports_negative + non-empty negative → reject) will need to
-    # extend this builder; refactor when that lands rather than
-    # speculating.
+    # Minimal GenParams — placeholder values for fields validate()
+    # doesn't read. v0.9 commit 7: video Models read num_frames + fps
+    # at validate-time (alignment + fps allowlist), so the placeholder
+    # GenParams must reflect the actual values. Callers from video
+    # paths pass num_frames + fps via kwargs; image callers default to
+    # the GenParams image shape (num_frames=1, fps=24) — image
+    # validate() ignores both fields so the defaults are inert.
     params = GenParams(
         prompt="", negative="", width=64, height=64,
         steps=1, guidance=guidance, seed=0, quantize=quantize,
         strength=0.0, input_path=None,
         output_path=Path("/tmp/_validate_placeholder.png"),
         loras=(),
+        num_frames=num_frames,
+        fps=fps,
     )
     engine = _engine_for_model(model)
     errors = engine.validate(model, params)
@@ -237,6 +242,8 @@ def _genparams_from_iteration_inputs(
     output_path,
     loras,  # tuple[LoraRef, ...]
     merged_defaults: dict,
+    num_frames: int = 1,
+    fps: int = 24,
 ):
     """v0.8.2 M-1A: pack the per-iteration inputs into a GenParams
     payload suitable for the Engine.run dispatch path.
@@ -274,6 +281,11 @@ def _genparams_from_iteration_inputs(
         loras=loras,
         mlx_cache_gb=merged_defaults["mlx_cache_gb"],
         battery_stop=merged_defaults["battery_stop"],
+        # v0.9 commit 7: video extensions appended. Defaults match
+        # GenParams' image defaults (num_frames=1 / fps=24) — image
+        # callers don't need to pass these.
+        num_frames=num_frames,
+        fps=fps,
     )
 
 

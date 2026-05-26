@@ -46,16 +46,24 @@ def test_v080_builtin_models_full_set_registered():
 def test_v080_every_builtin_model_declares_engine_and_quants():
     """Each built-in Model carries a non-None engine field and a
     non-empty supported_quants tuple. Empty supported_quants would
-    silently omit the model from the doctor RAM table (§R.3 M-3)."""
+    silently omit the model from the doctor RAM table (§R.3 M-3).
+
+    v0.9 commit 7: video Models (model.video is not None) are
+    carved out of the supported_quants assertion — LTX-Video is
+    bf16-only at v0.9.0 (supported_quants=()) and the doctor video-
+    Model RAM forecast lands in commit 9 via a separate code path
+    that doesn't iterate supported_quants.
+    """
     for name, model in BUILTIN_MODELS.items():
         assert model.engine in {"mflux", "diffusers_mps"}, (
             f"Model {name!r}: engine={model.engine!r} is not a known "
-            "v0.8 engine value"
+            "engine value"
         )
-        assert model.supported_quants, (
-            f"Model {name!r}: supported_quants is empty — would be "
-            "silently omitted from doctor RAM table per §R.3 M-3"
-        )
+        if model.video is None:
+            assert model.supported_quants, (
+                f"Model {name!r}: supported_quants is empty — would be "
+                "silently omitted from doctor RAM table per §R.3 M-3"
+            )
 
 
 def test_v080_history_schema_at_v4():

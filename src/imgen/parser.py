@@ -539,6 +539,18 @@ def build_parser(
     )
     _add_refine_args(r, defaults)
 
+    # video — v0.9.0 text-to-video. New subcommand for the first
+    # video output surface on imgen. Lazy deps install on first use
+    # (imageio + imageio-ffmpeg + sentencepiece via .venv-diffusers).
+    # Default backend `ltx-video` lands in BUILTIN_MODELS at commit 9;
+    # commit 7 ships parser + cmd glue + orchestrator routing.
+    v = sub.add_parser(
+        "video",
+        help="Text-to-video: generate from a prompt with no input "
+             "media. v0.9.0+ — uses LTX-Video via diffusers_mps engine.",
+    )
+    _add_video_args(v, defaults)
+
     return p
 
 
@@ -976,6 +988,128 @@ def _add_refine_args(
         preview_help="Fast preview mode (smaller resolution + steps).",
         force_help="Skip resource checks (RAM, parallel mflux, etc.)",
     )
+    _add_lora_args(p)
+
+
+def _add_video_args(
+    p: argparse.ArgumentParser,
+    defaults: dict[str, Any],
+) -> None:
+    """Argparse stanza for ``imgen video <prompt>`` — v0.9.0 t2v.
+
+    Per [[project-v090-design]] §I.1. Differences from cmd_draw:
+
+    * --duration / --num-frames mutex (cmd_draw doesn't carry video
+      timing). Either resolves to GenParams.num_frames downstream in
+      :func:`build_video_iteration` via the active Model's VideoConfig
+      alignment.
+    * --fps allowlist {24, 25, 30} — mirrors VideoConfig's allowlist
+      so the parser refuses unsupported rates before any subprocess
+      spawn (~50ms gate per §S die-early principle).
+    * --width/--height default 768×512 — LTX canonical envelope
+      (§L).
+    * No --num-iterations — single-shot in v0.9.0 (§I).
+    * --enhance accepted but ``cmd_video`` dies early per §S.4
+      (LTX has no enhancer in v0.9.0).
+    * --lora/--no-lora reserved for v0.9.x video LoRA — accepted but
+      ignored by build_video_iteration.
+    """
+    p.add_argument(
+        "prompt", nargs="?", default=None,
+        help="Text prompt for video generation. Mutually exclusive "
+             "with --prompt-file. Pass '-' as the positional to read "
+             "from stdin (hides the prompt from `ps auxww`).",
+    )
+    p.add_argument(
+        "--prompt-file", type=Path, default=None,
+        help="Read prompt from PATH instead of the positional. "
+             "Mutually exclusive with the positional prompt.",
+    )
+
+    output_group = p.add_mutually_exclusive_group()
+    output_group.add_argument(
+        "-o", "--output", type=_safe_output_path,
+        help=f"Output path with .mp4 suffix (bypasses run-folder "
+             f"layout; default: "
+             f"{DEFAULT_OUTPUT_DIR}/<start-ts>/<prompt-slug>.mp4)",
+    )
+    output_group.add_argument(
+        "--output-dir", type=str, default=None,
+        help="Parent directory for the auto-named run folder. "
+             "Overrides $IMGEN_OUTPUT_DIR and [defaults] output_dir.",
+    )
+
+    # --duration / --num-frames mutex per §I.1. Duration ceils up to
+    # the next valid alignment (§R.1 MED-2) inside build_video_iteration
+    # so output >= requested seconds.
+    timing_group = p.add_mutually_exclusive_group()
+    timing_group.add_argument(
+        "--duration", type=_float_range(0.0, 60.0), default=None,
+        metavar="SECONDS",
+        help="Video duration 0..60 seconds. Mutex with --num-frames. "
+             "Ceils up to the model's nearest valid frame alignment.",
+    )
+    timing_group.add_argument(
+        "--num-frames", type=_int_range(1, 1024), default=None,
+        metavar="N",
+        help="Explicit frame count 1..1024. Mutex with --duration. "
+             "Per-Model alignment + max enforced by Engine.validate.",
+    )
+
+    p.add_argument(
+        "--fps", type=int, choices=(24, 25, 30), default=None,
+        help="Frame rate. Default = model's VideoConfig.default_fps "
+             "(LTX-Video: 24). Allowlist mirrors VideoConfig.",
+    )
+    p.add_argument(
+        "--steps", type=_int_range(1, 200), default=None,
+        help=f"Inference steps 1..200 (default {defaults['steps']}, "
+             f"LTX canonical 50)",
+    )
+    p.add_argument(
+        "-g", "--guidance", type=_float_range(0.0, 15.0), default=None,
+        help="Guidance scale 0..15 (LTX canonical 3.0)",
+    )
+    p.add_argument(
+        "--negative-prompt", type=_clean_prompt_arg, default=None,
+        help="Negative prompt — concepts to steer AWAY from. "
+             "Honoured only on Models with supports_negative=True.",
+    )
+    p.add_argument(
+        "--seed", type=_int_range(0, 2**32 - 1), default=None,
+        help="Seed (default: random).",
+    )
+    # v0.9.0 default model is "ltx-video" (lands in BUILTIN_MODELS at
+    # commit 9). Until then cmd_video dies at load_backend_and_token
+    # for any missing built-in — testable via user TOML or mock.
+    _video_default = defaults.get("backend_video", "ltx-video")
+    p.add_argument(
+        "--model", type=_resolve_v07_alias, dest="model",
+        default=_video_default, metavar="NAME",
+        help=f"Video model (default {_video_default}). "
+             f"Run --list-models to see all.",
+    )
+    # LTX is bf16-only in v0.9.0 — no quantize; parser rejects.
+    # Reserved for future video Models that support quantization.
+    p.add_argument(
+        "-q", "--quantize", type=int, choices=[3, 4, 5, 6, 8], default=None,
+        help="Quantization (reserved; LTX-Video is bf16-only in v0.9.0)",
+    )
+    p.add_argument(
+        "--width", type=_int_range(64, 4096), default=768,
+        help="Output width 64..4096 (default 768, LTX canonical)",
+    )
+    p.add_argument(
+        "--height", type=_int_range(64, 4096), default=512,
+        help="Output height 64..4096 (default 512, LTX canonical)",
+    )
+    _add_run_control_args(
+        p,
+        preview_help="Fast preview mode (smaller resolution + steps; "
+                     "reserved for v0.9.x — LTX-Video v0.9.0 has no "
+                     "preview override).",
+    )
+    _add_enhance_args(p)
     _add_lora_args(p)
 
 

@@ -729,28 +729,41 @@ def load_backend_and_token(
         # else: required=False — silent skip, subprocess inherits no
         # secret, backend's binary will handle its own auth failure.
 
-    # ── venv + mflux sanity ──────────────────────────────────────
-    if not check_venv() or not check_mflux():
-        die("mflux not installed",
-            code=3,
-            hint="Run: imgen setup")
-
-    # ── Binary path resolution ───────────────────────────────────
-    if be.binary.startswith("/"):
-        # Absolute path — validator already confirmed it exists at
-        # schema time, but re-check here in case the file was removed
-        # between TOML load and command execution.
-        binary = Path(be.binary)
+    # ── venv + mflux + binary sanity (mflux engine only) ─────────
+    #
+    # v0.9 commit 7: diffusers_mps engine doesn't run mflux at all —
+    # Engine.run dispatches via .venv-diffusers/bin/python directly.
+    # Skip the mflux check + binary resolution for those Models;
+    # DiffusersMpsEngine.run validates its own venv_python.is_file()
+    # internally + ensure_video_deps_or_die handles deps.
+    engine = getattr(be, "engine", "mflux")
+    if engine == "diffusers_mps":
+        # Sentinel — caller (orchestrator) unpacks as `_binary` and
+        # ignores it for diffusers_mps Models. Path("") is a stable
+        # falsy sentinel without breaking the Path return type.
+        binary = Path("")
     else:
-        # Bare name — resolve against VENV_BIN (mflux convention).
-        binary = VENV_BIN / be.binary
-    if not binary.is_file():
-        # is_file() (not exists()) — a directory at the path would
-        # crash subprocess.Popen with IsADirectoryError; reject earlier
-        # with the imgen-flavoured error. (v0.4 python-reviewer IMP-1.)
-        die(f"Backend binary not found (or not a regular file): {binary}",
-            code=3,
-            hint="Run: imgen upgrade")
+        if not check_venv() or not check_mflux():
+            die("mflux not installed",
+                code=3,
+                hint="Run: imgen setup")
+        # Binary path resolution
+        if be.binary.startswith("/"):
+            # Absolute path — validator already confirmed it exists at
+            # schema time, but re-check here in case the file was
+            # removed between TOML load and command execution.
+            binary = Path(be.binary)
+        else:
+            # Bare name — resolve against VENV_BIN (mflux convention).
+            binary = VENV_BIN / be.binary
+        if not binary.is_file():
+            # is_file() (not exists()) — a directory at the path
+            # would crash subprocess.Popen with IsADirectoryError;
+            # reject earlier with the imgen-flavoured error.
+            # (v0.4 python-reviewer IMP-1.)
+            die(f"Backend binary not found (or not a regular file): {binary}",
+                code=3,
+                hint="Run: imgen upgrade")
 
     return backend, be, token, binary, backend_secret
 

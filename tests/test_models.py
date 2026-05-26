@@ -188,24 +188,34 @@ class TestBuiltinModelsLiteral:
     def test_builtin_models_keyed_by_v08_canonical_names(self):
         """4b lock-in: literal declaration uses v0.8 names. Two renames
         (flux→flux-kontext, qwen→qwen-image-edit-v1) per §I; other names
-        unchanged."""
+        unchanged. v0.9 commit 7 added ``ltx-video`` (§K, pulled forward
+        from commit 9 in lockstep with cmd_video so parser default
+        resolves)."""
         from imgen.models import BUILTIN_MODELS
         assert set(BUILTIN_MODELS.keys()) == {
             "flux-kontext",
             "qwen-image-edit-v1",
             "flux-dev",
             "flux2-klein-edit-9b",
+            "ltx-video",
         }
 
-    def test_builtin_models_all_engine_mflux(self):
-        """Every built-in at 4b routes to mflux engine; the
-        diffusers_mps engine lands at commit 6 with zero built-in rows
-        (templated only via ~/.imgen/models.d.example/) per §G.2."""
+    def test_builtin_models_engine_routing(self):
+        """Per-row engine routing — mflux for image, diffusers_mps for
+        video. Pre-v0.9 this was an "all mflux" invariant; v0.9 added
+        the first diffusers_mps built-in (ltx-video) for t2v."""
         from imgen.models import BUILTIN_MODELS
+        expected_engines = {
+            "flux-kontext": "mflux",
+            "qwen-image-edit-v1": "mflux",
+            "flux-dev": "mflux",
+            "flux2-klein-edit-9b": "mflux",
+            "ltx-video": "diffusers_mps",
+        }
         for name, m in BUILTIN_MODELS.items():
-            assert m.engine == "mflux", (
+            assert m.engine == expected_engines[name], (
                 f"built-in {name!r} has engine={m.engine!r}, "
-                "expected 'mflux' at 4b"
+                f"expected {expected_engines[name]!r}"
             )
 
     def test_builtin_models_have_required_v08_fields(self):
@@ -233,13 +243,16 @@ class TestBuiltinModelsLiteral:
         """architect 4b HIGH-1: BUILTIN_BACKENDS is keyed by v0.7
         names (derived backward from BUILTIN_MODELS via the inverse
         rename map). v0.7.x test fixtures like ``BACKENDS["flux"]``
-        keep working unchanged."""
+        keep working unchanged. v0.9 commit 7 added ``ltx-video`` — no
+        v0.7 alias rename map entry (v0.7 never had a video name);
+        passes through as-is."""
         from imgen.backends import BUILTIN_BACKENDS
         assert set(BUILTIN_BACKENDS.keys()) == {
             "flux",
             "qwen",
             "flux-dev",
             "flux2-klein-edit-9b",
+            "ltx-video",
         }
 
     def test_backend_from_model_preserves_v07_shape(self):

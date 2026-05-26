@@ -598,6 +598,8 @@ def _assemble_iteration_no_style(
     seed: int,
     style_name: str,
     negative: str = "",
+    num_frames: int = 1,
+    fps: int = 24,
 ) -> Iteration:
     """Shared core for `build_draw_iterations` + `build_refine_iteration`
     (v0.7.8 refactor — closes python NIT #5 + architect NIT #F from
@@ -647,6 +649,8 @@ def _assemble_iteration_no_style(
         model,
         quantize=params.final_quantize,
         guidance=params.final_guidance,
+        num_frames=num_frames,
+        fps=fps,
     )
     # v0.7.11 (gap 1): draw now exposes --negative-prompt via CLI, so
     # the caller (`build_draw_iterations`) passes through args.negative_prompt
@@ -686,6 +690,8 @@ def _assemble_iteration_no_style(
         output_path=output_path,
         loras=lora_resolution.effective_loras,
         merged_defaults=merged_defaults,
+        num_frames=num_frames,
+        fps=fps,
     )
     return Iteration(
         style_name=style_name,
@@ -785,6 +791,143 @@ def build_draw_iterations(
             negative=negative,
         ))
     return iterations
+
+
+# ── t2v builders (cmd_video) ─────────────────────────────────────────────
+
+
+def _resolve_video_frames_and_fps(args) -> tuple[int, int]:
+    """Resolve (num_frames, fps) from args.{num_frames,duration,fps}
+    via the model's VideoConfig (alignment + offset + default_fps).
+
+    Per §I.1 parser stanza — three input paths:
+      * --num-frames N (explicit, wins)
+      * --duration S (mutex with --num-frames at parser; ceil UP to
+        nearest alignment so output is >= requested duration per
+        architect §R.1 MED-2)
+      * Neither — fall back to model.video.default_num_frames.
+
+    fps defaults to model.video.default_fps unless user passed --fps.
+
+    Raises ValueError if the resolved model is not a video Model
+    (model.video is None) — cmd_video gates upstream so this should
+    never fire in practice; defensive.
+    """
+    model = _model_for_validate(args)
+    if model is None or model.video is None:
+        raise ValueError(
+            "build_video_iteration: model does not declare a "
+            "VideoConfig — args.model must reference a video Model"
+        )
+    vc = model.video
+
+    explicit_num_frames = getattr(args, "num_frames", None)
+    explicit_duration = getattr(args, "duration", None)
+
+    if explicit_num_frames is not None:
+        num_frames = explicit_num_frames
+    elif explicit_duration is not None:
+        # Ceil to next-valid-alignment so output >= requested duration.
+        # n = offset + k * alignment, find smallest n >= target.
+        target = int(float(explicit_duration) * vc.default_fps)
+        if target < vc.num_frames_offset:
+            num_frames = vc.num_frames_offset
+        else:
+            k = (target - vc.num_frames_offset
+                 + vc.num_frames_alignment - 1) // vc.num_frames_alignment
+            num_frames = k * vc.num_frames_alignment + vc.num_frames_offset
+    else:
+        num_frames = vc.default_num_frames
+
+    fps = getattr(args, "fps", None) or vc.default_fps
+    return num_frames, fps
+
+
+def build_video_iteration(
+    *,
+    args,
+    prompt: str,
+    merged_defaults: dict,
+    be,
+    width: int,
+    height: int,
+    explicit_output: Path | None,
+    run_dir: Path | None,
+    base_seed: int,
+    num_iterations: int = 1,
+) -> list[Iteration]:
+    """v0.9 commit 7: build the single Iteration for a ``imgen video``
+    call.
+
+    Returns a one-element list so the orchestrator's run loop iterates
+    uniformly across draw (N iterations) and video (always 1 in
+    v0.9.0). The seed-ladder + ``--num-iterations N`` shape is shared
+    with build_draw_iterations but v0.9.0 video is single-shot per
+    §I parser stanza ("No --num-iterations N for v0.9.0. Video is
+    expensive enough that single-shot per call is the right UX;
+    batching is v0.9.x.").
+
+    The signature mirrors build_draw_iterations so the orchestrator
+    can pass ``build_iterations_fn=build_video_iteration`` and
+    ``build_iterations_fn=build_draw_iterations`` interchangeably.
+    Extra ``num_iterations`` arg accepted for symmetry; values >1 are
+    rejected at the parser level so this helper always sees 1.
+
+    Output naming:
+      * ``<run_dir>/<prompt_slug>.mp4`` with collision suffix if needed.
+      * OR ``explicit_output`` if user passed ``--output PATH`` (.mp4
+        extension enforced at parser-level for video).
+
+    Pulls ``args.num_frames`` + ``args.fps`` into the resulting
+    Iteration's GenParams. The parser-side --duration/--num-frames
+    mutex already resolved them into a single num_frames int.
+    """
+    if num_iterations != 1:
+        raise ValueError(
+            f"build_video_iteration: v0.9.0 supports single-shot only "
+            f"(got num_iterations={num_iterations}); --num-iterations "
+            "is deferred to v0.9.x"
+        )
+    if explicit_output is not None:
+        output_path = explicit_output
+    else:
+        if run_dir is None:
+            raise ValueError(
+                "build_video_iteration: either explicit_output or "
+                "run_dir must be provided"
+            )
+        slug = prompt_slug(prompt)
+        output_path = next_available_path(run_dir, slug, suffix=".mp4")
+
+    # Negative prompt: video parser may expose --negative-prompt
+    # (mirroring draw); if absent, default to "".
+    negative = getattr(args, "negative_prompt", None) or ""
+
+    # Resolve num_frames + fps from args via model.video config. Three
+    # paths per §I parser stanza:
+    #   * --num-frames N — explicit; wins.
+    #   * --duration S (mutex with --num-frames at parser) — round UP
+    #     to nearest valid alignment so output is >= requested seconds.
+    #   * Neither — fall back to model.video.default_num_frames.
+    # fps defaults to model.video.default_fps unless user supplies --fps.
+    num_frames, fps = _resolve_video_frames_and_fps(args)
+
+    iteration = _assemble_iteration_no_style(
+        args=args,
+        prompt=prompt,
+        merged_defaults=merged_defaults,
+        be=be,
+        input_path=None,  # t2v — no source media in v0.9.0
+        output_path=output_path,
+        width=width,
+        height=height,
+        seed=base_seed,
+        style_name="video",
+        negative=negative,
+        num_frames=num_frames,
+        fps=fps,
+    )
+    return [iteration]
 
 
 def build_draw_iteration(

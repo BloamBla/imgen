@@ -191,11 +191,23 @@ class TestV08BuiltinsUnaffectedByV09FieldAddition:
         from imgen.models import BUILTIN_MODELS
         assert len(BUILTIN_MODELS) >= 4
 
+    # v0.9 commit 7 (§K, pulled forward from commit 9): ltx-video is
+    # the first BUILTIN_MODELS row with video set. The lock-ins below
+    # scope to v0.8 rows only (Model.output_type == "image"); the
+    # bare "every row image" assertion is gone.
+
+    _V08_BUILTIN_NAMES = (
+        "flux-kontext", "qwen-image-edit-v1",
+        "flux-dev", "flux2-klein-edit-9b",
+    )
+
     def test_every_v08_builtin_has_video_none(self):
-        """v0.8 rows are image Models — video defaults to None
-        unconditionally."""
+        """v0.8 rows (the four mflux Models) remain image-only — video
+        defaults to None unconditionally. ltx-video added in v0.9
+        commit 7 is excluded."""
         from imgen.models import BUILTIN_MODELS
-        for name, m in BUILTIN_MODELS.items():
+        for name in self._V08_BUILTIN_NAMES:
+            m = BUILTIN_MODELS[name]
             assert m.video is None, (
                 f"v0.8 built-in {name!r} unexpectedly has video set "
                 "(v0.9 commit 1 should not touch v0.8 rows)"
@@ -203,7 +215,8 @@ class TestV08BuiltinsUnaffectedByV09FieldAddition:
 
     def test_every_v08_builtin_output_type_image(self):
         from imgen.models import BUILTIN_MODELS
-        for name, m in BUILTIN_MODELS.items():
+        for name in self._V08_BUILTIN_NAMES:
+            m = BUILTIN_MODELS[name]
             assert m.output_type == "image", (
                 f"v0.8 built-in {name!r} reports output_type={m.output_type!r}, "
                 "expected 'image' (video field defaulted to None)"

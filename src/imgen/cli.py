@@ -51,6 +51,7 @@ from .commands import (
     cmd_replay,
     cmd_setup,
     cmd_upgrade,
+    cmd_video,
 )
 from .config import ConfigError, effective_defaults, load_validated_config
 from .defaults import DEFAULTS
@@ -67,7 +68,7 @@ from .paths import CONFIG_FILE
 _KNOWN_SUBCOMMANDS = {
     "setup", "doctor", "upgrade", "clean",
     "history", "last", "replay", "generate", "batch", "draw", "refine",
-    "migrate-toml",
+    "video", "migrate-toml",
 }
 
 _HANDLERS = {
@@ -82,6 +83,7 @@ _HANDLERS = {
     "batch": cmd_batch,
     "draw": cmd_draw,
     "refine": cmd_refine,
+    "video": cmd_video,
     "migrate-toml": cmd_migrate_toml,
 }
 

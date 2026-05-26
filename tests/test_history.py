@@ -791,7 +791,7 @@ def test_history_entry_carries_command_field_for_draw(
         return ("flux-dev", BACKENDS["flux-dev"], "tok",
                 Path("/fake/mflux-generate"), None)
     monkeypatch.setattr(
-        "imgen.commands.draw.load_backend_and_token", fake_load,
+        "imgen.cmd_helpers.load_backend_and_token", fake_load,
     )
     # Stub the actual mflux subprocess + battery/disk preflight.
     def fake_run_subprocess(*args, **kwargs):
@@ -871,7 +871,7 @@ def test_history_n_iterations_records_per_row_seed_ladder(
         return ("flux-dev", BACKENDS["flux-dev"], "tok",
                 Path("/fake/mflux-generate"), None)
     monkeypatch.setattr(
-        "imgen.commands.draw.load_backend_and_token", fake_load,
+        "imgen.cmd_helpers.load_backend_and_token", fake_load,
     )
     _touch_and_zero2 = lambda cmd, *a, **kw: (
         Path(cmd[cmd.index("--output") + 1]).touch(),

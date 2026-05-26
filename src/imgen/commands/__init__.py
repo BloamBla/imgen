@@ -19,6 +19,7 @@ from .migrate_toml import cmd_migrate_toml
 from .refine import cmd_refine
 from .setup import cmd_setup
 from .upgrade import cmd_upgrade
+from .video import cmd_video
 
 __all__ = [
     "cmd_batch",
@@ -33,4 +34,5 @@ __all__ = [
     "cmd_replay",
     "cmd_setup",
     "cmd_upgrade",
+    "cmd_video",
 ]
