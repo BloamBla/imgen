@@ -78,11 +78,13 @@ def _make_enhance_result(original: str, enhanced: str) -> EnhanceResult:
 
 def test_apply_enhance_dual_updates_cmd_and_params():
     """v0.8.2 architect CRITICAL-3 closure: when the enhancer succeeds,
-    BOTH ``it.cmd`` (legacy argv) and ``it.params.prompt`` (Engine.run
-    payload) must be updated. Pre-fix only ``cmd`` was patched; after
-    the sub-commit M-1C dispatch flip, MfluxEngine.run would read the
-    un-patched ``params.prompt`` and the enhanced prompt would be
-    silently lost.
+    BOTH ``it.cmd`` (dry-run display) and ``it.params.prompt``
+    (Engine.run payload) are updated. v0.8.3 M-NEW-C retired the
+    legacy ``run_with_stderr_redaction(it.cmd, ...)`` fallback, so
+    ``cmd`` is no longer dispatched-from, but ``--dry-run`` still
+    prints ``format_cmd(it.cmd)`` — the dual-update preserves user-
+    visible argv preview for dry-run-with-enhance. Removal of the
+    dual-update + field itself is tracked as M-NEW-D for v0.8.4.
     """
     it = _make_iter_with_params(prompt="samurai")
     enhanced = "a fierce samurai standing on a misty mountain at dawn"
@@ -94,9 +96,9 @@ def test_apply_enhance_dual_updates_cmd_and_params():
 
     # Iteration.prompt updated (existing v0.5 contract)
     assert new_it.prompt == enhanced
-    # cmd argv has the enhanced prompt spliced
+    # cmd argv has the enhanced prompt spliced (dry-run display)
     assert enhanced in new_it.cmd
-    # NEW v0.8.2: params.prompt also carries the enhanced text
+    # params.prompt also carries the enhanced text (Engine.run dispatch)
     assert new_it.params is not None
     assert new_it.params.prompt == enhanced
 
@@ -132,7 +134,14 @@ def test_apply_enhance_legacy_iteration_without_params_still_works():
     test fixtures) keep working — the dual-update preserves
     ``params=None`` rather than crashing. ``Iteration.params`` has a
     None default for exactly this transition window per architect
-    MEDIUM-2."""
+    MEDIUM-2.
+
+    v0.8.3 M-NEW-C: post-legacy-fallback retirement, such Iterations
+    can no longer round-trip through ``run_one_iteration`` (which
+    hard-asserts both fields). They CAN still flow through
+    ``apply_enhance_results_to_iterations`` as a data shape — the
+    dual-update updates ``cmd`` but leaves ``params=None``.
+    """
     legacy_it = Iteration(
         style_name="legacy",
         prompt="original",

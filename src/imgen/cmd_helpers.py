@@ -88,10 +88,7 @@ from .runs import (
     next_available_run_dir,
 )
 from .styles import LoraRef, Style, StyleNotFound, get_style
-from .subprocess_helpers import (
-    InsufficientRAMError,
-    run_with_stderr_redaction,
-)
+from .subprocess_helpers import InsufficientRAMError
 from .tokens import load_token
 
 __all__ = [
@@ -662,6 +659,15 @@ def apply_enhance_results_to_iterations(
     final_prompt equals their original ``it.prompt`` anyway, so
     rebuilding would be a no-op.
 
+    v0.8.2 dual-update of ``cmd`` + ``params.prompt`` survives v0.8.3:
+    ``cmd`` is no longer dispatched-from (Engine.run reads
+    ``params.prompt``), but ``--dry-run`` still prints
+    ``format_cmd(it.cmd)`` for user-visible argv preview, and
+    dry-run-with-enhance MUST show the enhanced prompt. Removal of
+    the dual-update lands together with removal of the ``cmd`` field
+    itself + migration of dry-run to ``engine.build_cmd(it.model,
+    it.params)`` — tracked as M-NEW-D for v0.8.4.
+
     Asserts aligned lengths because misalignment would silently
     write the wrong prompt to the wrong iteration — louder failure
     is better.
@@ -675,15 +681,6 @@ def apply_enhance_results_to_iterations(
     for it, r in zip(iterations, enhance_results):
         if r.was_enhanced and r.final_prompt != it.prompt:
             new_cmd = replace_prompt_in_cmd(it.cmd, r.final_prompt)
-            # v0.8.2 M-1A architect CRITICAL-3 closure: also update
-            # ``it.params.prompt``. Pre-fix the rebuild patched only
-            # the legacy argv ``cmd``; after the M-1 dispatch flip,
-            # ``MfluxEngine.run`` would internally call
-            # ``self.build_cmd(model, params)`` and read
-            # ``params.prompt`` — the un-spliced ORIGINAL value, so the
-            # enhanced prompt would be silently dropped on Engine-
-            # dispatched iterations. Dual-update keeps both paths
-            # converged through the v0.8.x deprecation window.
             new_params = (
                 _dataclass_replace(it.params, prompt=r.final_prompt)
                 if it.params is not None else None
@@ -786,7 +783,6 @@ def run_one_iteration(
     """
     style_name = it.style_name
     output_path = it.output_path
-    cmd = it.cmd
 
     if is_batch:
         step(f"Generating [{idx}/{total}] {style_name} → {output_path.name}")
@@ -907,41 +903,41 @@ def run_one_iteration(
         logger.iteration_start(idx, total, style_name, started)
 
     try:
-        # v0.8.2 M-1C dispatch flip: when the iteration carries a
-        # resolved v0.8 Model (every production iteration post-M-1A
-        # does), route through Engine.run. Legacy fallback below
-        # stays for the v0.8.x deprecation window per architect
-        # HIGH-1 — unreachable in production today, kept for direct-
-        # construct test iterations (model=None) until v0.8.3
-        # cleanup retires it.
+        # v0.8.2 M-1C dispatch flip: every production iteration post-
+        # M-1A carries a resolved v0.8 Model + GenParams, and routes
+        # through Engine.run. v0.8.3 (M-NEW-C) retired the legacy
+        # ``run_with_stderr_redaction(it.cmd, ...)`` fallback after
+        # one tag cycle per architect HIGH-1 — direct-construct test
+        # fixtures (e.g. test_generate_helpers._full_iter) were
+        # migrated to populate model + params so this fence stays
+        # tight.
         #
-        # Argv byte-identity between paths is locked by
+        # Argv byte-identity between Engine.build_cmd and the legacy
+        # ``backends.build_mflux_cmd`` is locked by
         # tests/test_v082_engine_run_prep.py
         # ``test_mflux_engine_build_cmd_matches_legacy_*`` (CRITICAL-2
         # property tests across negative-prompt / LoRA / no-input
-        # axes). The dispatch flip is a behaviour-preserving refactor
-        # for mflux models.
+        # axes).
         #
         # Diffusers_mps Models route through DiffusersMpsEngine.run
-        # — implemented since v0.8.0 commit 6 but never reached by
-        # production code before this flip. v0.8.1 HIGH-2 closure +
-        # this commit are what make user-TOML diffusers_mps actually
-        # reachable end-to-end.
-        if it.model is not None and it.params is not None:
-            engine = _engine_for_model(it.model)
-            returncode = engine.run(
-                it.model, it.params,
-                env=ctx.env,
-                log_file=logger.borrow_fd() if logger else None,
+        # (Stati-runner subprocess via stdin-JSON) — reachable end-to-
+        # end since v0.8.1 HIGH-2 closure + the M-1C dispatch flip.
+        if it.model is None or it.params is None:
+            # Defensive — v0.8.3 invariant. Reached only if a build_*
+            # helper or test fixture silently leaves either None. The
+            # MEDIUM-2 cross-build lock-in catches construction-site
+            # drift before this fence ever sees it.
+            raise AssertionError(
+                "run_one_iteration: Iteration.model and "
+                ".params must both be populated (v0.8.3 M-NEW-C "
+                "invariant)"
             )
-        else:
-            # Legacy fallback (architect HIGH-1). Unreachable in
-            # production; retained for the v0.8.x deprecation window.
-            returncode = run_with_stderr_redaction(
-                cmd,
-                env=ctx.env,
-                log_file=logger.borrow_fd() if logger else None,
-            )
+        engine = _engine_for_model(it.model)
+        returncode = engine.run(
+            it.model, it.params,
+            env=ctx.env,
+            log_file=logger.borrow_fd() if logger else None,
+        )
     except KeyboardInterrupt:
         warn("Cancelled by user")
         cancel_duration = int(

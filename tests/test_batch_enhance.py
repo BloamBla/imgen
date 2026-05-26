@@ -50,11 +50,8 @@ def stub_mflux(monkeypatch):
         state["calls"].append({"cmd": cmd, "env": env, "log_file": log_file})
         return state["returncode"]
 
-    # v0.8.2 M-1C-prep: dual-patch — see test_batch.py fixture for the
-    # full rationale (post-M-1C-flip engine.run path covered).
-    monkeypatch.setattr(
-        "imgen.cmd_helpers.run_with_stderr_redaction", fake_run
-    )
+    # v0.8.3 M-NEW-C: single-patch — cmd_helpers no longer imports
+    # run_with_stderr_redaction after the legacy fallback retirement.
     monkeypatch.setattr(
         "imgen.subprocess_helpers.run_with_stderr_redaction", fake_run
     )

@@ -803,10 +803,7 @@ def test_history_entry_carries_command_field_for_draw(
         Path(cmd[cmd.index("--output") + 1]).touch(),
         0,
     )[1]
-    # v0.8.2 M-1C-prep dual-patch — see test_batch.py fixture for rationale.
-    monkeypatch.setattr(
-        "imgen.cmd_helpers.run_with_stderr_redaction", _touch_and_zero,
-    )
+    # v0.8.3 M-NEW-C: single-patch — Engine.run path only.
     monkeypatch.setattr(
         "imgen.subprocess_helpers.run_with_stderr_redaction", _touch_and_zero,
     )
@@ -880,10 +877,7 @@ def test_history_n_iterations_records_per_row_seed_ladder(
         Path(cmd[cmd.index("--output") + 1]).touch(),
         0,
     )[1]
-    # v0.8.2 M-1C-prep dual-patch — see test_batch.py fixture for rationale.
-    monkeypatch.setattr(
-        "imgen.cmd_helpers.run_with_stderr_redaction", _touch_and_zero2,
-    )
+    # v0.8.3 M-NEW-C: single-patch — Engine.run path only.
     monkeypatch.setattr(
         "imgen.subprocess_helpers.run_with_stderr_redaction", _touch_and_zero2,
     )

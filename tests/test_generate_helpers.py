@@ -1858,7 +1858,25 @@ def test_open_results_swallows_filenotfound_multi(monkeypatch, tmp_path):
 
 
 def _full_iter(tmp_path, style="anime") -> Iteration:
-    """Iteration with real-ish values for tests against the run loop."""
+    """Iteration with real-ish values for tests against the run loop.
+
+    v0.8.3 M-NEW-C: populates ``model`` + ``params`` so the post-
+    legacy-fallback ``run_one_iteration`` (which now hard-requires
+    both fields) routes through MfluxEngine.run. Tests patch
+    ``subprocess_helpers.run_with_stderr_redaction`` to intercept
+    the spawned subprocess.
+    """
+    from imgen.engines.base import GenParams
+    from imgen.models import BUILTIN_MODELS
+    model = BUILTIN_MODELS["flux-kontext"]
+    params = GenParams(
+        prompt="prompt text", negative="",
+        width=1024, height=1024,
+        steps=14, guidance=2.5, seed=42, quantize=8, strength=0.6,
+        input_path=tmp_path / "in.jpg",
+        output_path=tmp_path / f"out-{style}.png",
+        loras=(),
+    )
     return Iteration(
         style_name=style,
         prompt="prompt text",
@@ -1874,6 +1892,8 @@ def _full_iter(tmp_path, style="anime") -> Iteration:
         # used at run_one_iteration call time — fixtures keep them in
         # lockstep (ctx.seed=42 from _full_ctx; it.seed=42 here).
         seed=42,
+        model=model,
+        params=params,
     )
 
 
@@ -1901,16 +1921,11 @@ def stub_mflux(monkeypatch):
             raise state["raise"]
         return state["returncode"]
 
-    # v0.8.2 M-1C-prep: dual-patch both layers so the fixture catches
-    # BOTH the legacy ``run_one_iteration`` path (which used to call
-    # cmd_helpers' imported name) AND the v0.8.2+ engine.run path
-    # (which late-imports from subprocess_helpers). Without the second
-    # patch, post-M-1C-flip iterations would slip past the stub and
-    # spawn real mflux subprocesses — the v0.8.2 dev ops post-mortem
-    # 2026-05-26 caught this the hard way.
-    monkeypatch.setattr(
-        "imgen.cmd_helpers.run_with_stderr_redaction", fake_run
-    )
+    # v0.8.3 M-NEW-C: only the subprocess_helpers surface remains —
+    # cmd_helpers no longer re-imports ``run_with_stderr_redaction``
+    # after the legacy fallback retirement. MfluxEngine.run late-
+    # imports from subprocess_helpers, so the single patch covers
+    # every Engine.run dispatch.
     monkeypatch.setattr(
         "imgen.subprocess_helpers.run_with_stderr_redaction", fake_run
     )

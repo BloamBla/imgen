@@ -168,8 +168,25 @@ def test_run_one_iteration_catches_ram_safety_failure(
     monkeypatch.setattr(sh.subprocess, "Popen", FakePopen)
 
     from pathlib import Path
+    from imgen.engines.base import GenParams
+    from imgen.models import BUILTIN_MODELS
     from imgen.runs import BatchContext, Iteration
 
+    # v0.8.3 M-NEW-C: run_one_iteration now hard-requires Iteration
+    # to carry both ``model`` and ``params`` (legacy fallback was
+    # retired). Populate with BUILTIN_MODELS["flux-kontext"] so the
+    # MfluxEngine.run path is reached — the safety net inside
+    # ``subprocess_helpers.run_with_stderr_redaction`` trips before
+    # the (stubbed-to-explode) Popen ever runs.
+    model = BUILTIN_MODELS["flux-kontext"]
+    params = GenParams(
+        prompt="test", negative="",
+        width=1024, height=1024,
+        steps=20, guidance=3.5, seed=42, quantize=4, strength=0.55,
+        input_path=tmp_path / "in.jpg",
+        output_path=tmp_path / "out.png",
+        loras=(),
+    )
     iteration = Iteration(
         style_name="anime",
         prompt="test", negative="",
@@ -177,6 +194,7 @@ def test_run_one_iteration_catches_ram_safety_failure(
         final_guidance=3.5, final_strength=0.55,
         output_path=tmp_path / "out.png",
         cmd=["echo", "hello"],
+        model=model, params=params,
     )
 
     from types import SimpleNamespace

@@ -48,14 +48,10 @@ def stub_mflux(monkeypatch):
             raise state["raise"]
         return state["returncode"]
 
-    # v0.8.2 M-1C-prep: dual-patch both layers (legacy cmd_helpers
-    # binding + canonical subprocess_helpers) so the fixture covers
-    # both run_one_iteration paths post-M-1C-flip. Without the second
-    # patch, engine.run iterations would slip past the stub and spawn
-    # real mflux subprocesses — v0.8.2 ops post-mortem 2026-05-26.
-    monkeypatch.setattr(
-        "imgen.cmd_helpers.run_with_stderr_redaction", fake_run
-    )
+    # v0.8.3 M-NEW-C: single-patch — cmd_helpers no longer re-imports
+    # run_with_stderr_redaction after the legacy fallback retirement.
+    # Engine.run late-imports from subprocess_helpers, so one patch
+    # catches every dispatched subprocess.
     monkeypatch.setattr(
         "imgen.subprocess_helpers.run_with_stderr_redaction", fake_run
     )
@@ -424,12 +420,7 @@ def test_cmd_batch_partial_failure_returns_exit_5(
     # assignment) so teardown restores the original — otherwise an
     # assertion failure here would clobber run_with_stderr_redaction
     # for the rest of the suite.
-    # v0.8.2 M-1C-prep dual-patch: post-M-1C-flip engine.run resolves
-    # through subprocess_helpers, so we MUST override BOTH names for
-    # the varying-returncode behaviour to fire on every iteration.
-    monkeypatch.setattr(
-        "imgen.cmd_helpers.run_with_stderr_redaction", varying_run
-    )
+    # v0.8.3 M-NEW-C: single-patch — Engine.run path only.
     monkeypatch.setattr(
         "imgen.subprocess_helpers.run_with_stderr_redaction", varying_run
     )
