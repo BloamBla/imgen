@@ -227,7 +227,9 @@ def cmd_refine(args) -> int:
     prompt = args.prompt if args.prompt is not None else _DEFAULT_REFINE_PROMPT
 
     # 4) Backend + token
-    backend, be, token, binary, backend_secret = load_backend_and_token(args)
+    # v0.8.5: binary unused — Engine.run resolves it internally
+    # via VENV_BIN / model.binary post-M-NEW-D.
+    backend, be, token, _binary, backend_secret = load_backend_and_token(args)
 
     # v0.8.0 commit 7 (§M): the pre-commit-7 hardcoded
     # ``if backend == "flux2-klein-edit-9b": args.guidance = 1.0`` pin
@@ -256,7 +258,6 @@ def cmd_refine(args) -> int:
         prompt=prompt,
         merged_defaults=merged_defaults,
         be=be,
-        binary=binary,
         width=target_w,
         height=target_h,
         explicit_output=explicit_output,

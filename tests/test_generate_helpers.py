@@ -825,7 +825,6 @@ def _build(*, fake_styles, tmp_path, **overrides) -> list[Iteration]:
         effective_custom_prompt=None,
         merged_defaults=_FULL_DEFAULTS,
         be=BACKENDS["flux"],
-        binary=Path("/fake/bin/mflux-generate-kontext"),
         input_path=tmp_path / "photo.jpg",
         width=1024,
         height=1024,

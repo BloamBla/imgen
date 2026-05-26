@@ -218,7 +218,9 @@ def cmd_draw(args) -> int:
     prompt = _resolve_draw_prompt(args)
 
     # 2) Backend + token. flux-dev needs the gated HF token.
-    backend, be, token, binary, backend_secret = load_backend_and_token(args)
+    # v0.8.5: binary unused — Engine.run resolves it internally
+    # via VENV_BIN / model.binary post-M-NEW-D.
+    backend, be, token, _binary, backend_secret = load_backend_and_token(args)
 
     # 3) Output layout + N-iteration mutex check.
     explicit_output, run_dir = resolve_output_layout(args, config_output_dir)
@@ -274,7 +276,6 @@ def cmd_draw(args) -> int:
         prompt=enhanced_prompt,
         merged_defaults=merged_defaults,
         be=be,
-        binary=binary,
         width=args.width,
         height=args.height,
         explicit_output=explicit_output,
@@ -334,10 +335,12 @@ def cmd_draw(args) -> int:
     # run_one_iteration's history-entry + step() display gates.
     # command="draw" drives future replay routing.
     # v0.7.3: ctx.seed is the BASE seed of the ladder; each iteration's
-    # actual seed lives on Iteration.cmd's argv. The ctx.seed value
-    # ends up in history rows as a record of "what was the base seed"
-    # — replay rehydrates per-iteration seeds from each entry's stored
-    # `seed` field (already per-row in history).
+    # actual seed lives on ``Iteration.seed`` and ``Iteration.params.
+    # seed`` (v0.8.4 M-NEW-D — argv built at dispatch time via
+    # MfluxEngine.build_cmd). The ctx.seed value ends up in history
+    # rows as a record of "what was the base seed" — replay rehydrates
+    # per-iteration seeds from each entry's stored `seed` field
+    # (already per-row in history).
     env = build_mflux_env(token=token, backend_secret=backend_secret)
     ctx = BatchContext(
         model=backend,

@@ -218,7 +218,10 @@ def cmd_batch(args) -> int:
     )
 
     # 5) Backend, token, binary, custom-secret (shared across the whole grid).
-    backend, be, token, binary, backend_secret = load_backend_and_token(args)
+    # v0.8.5: binary is unused — Engine.run resolves it internally
+    # via VENV_BIN / model.binary post-M-NEW-D. Kept in the tuple
+    # shape so load_backend_and_token stays stable for v0.9.
+    backend, be, token, _binary, backend_secret = load_backend_and_token(args)
 
     # 6) Single seed for the whole batch so the same noise pattern
     # applies to every (input, style) — fair side-by-side preset
@@ -276,7 +279,6 @@ def cmd_batch(args) -> int:
                     effective_custom_prompt=effective_custom_prompt,
                     merged_defaults=merged_defaults,
                     be=be,
-                    binary=binary,
                     input_path=mflux_input,
                     width=width,
                     height=height,
@@ -296,7 +298,6 @@ def cmd_batch(args) -> int:
                     prompt=effective_custom_prompt,
                     merged_defaults=merged_defaults,
                     be=be,
-                    binary=binary,
                     width=width,
                     height=height,
                     explicit_output=None,
@@ -458,9 +459,10 @@ def cmd_batch(args) -> int:
                 input_start = _dt.datetime.now()
                 # BatchContext.input_path is the ORIGINAL path (not the
                 # sips-converted JPEG) so history.input records what the
-                # user typed. Iteration.cmd already references the
-                # converted path via build_iterations(input_path=
-                # mflux_input). (v0.3.0 design)
+                # user typed. Iteration.params.input_path already
+                # references the converted path via build_iterations(
+                # input_path=mflux_input). (v0.3.0 design; v0.8.4 M-NEW-D
+                # — MfluxEngine.run reads params at dispatch time.)
                 ctx = BatchContext(
                     model=backend,
                     seed=seed,

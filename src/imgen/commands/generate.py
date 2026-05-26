@@ -195,9 +195,11 @@ def cmd_generate(args) -> int:
     # when it isn't HEIC, so the only non-HEIC overhead is one mkdir +
     # one rmdir of an empty /tmp/imgen-heic-* — trivial vs the 30s-3min
     # mflux runtime. ``BatchContext.input_path`` stays the ORIGINAL so
-    # history.input records what the user typed; ``Iteration.cmd``
-    # references the converted JPEG via ``build_iterations(input_path=
-    # mflux_input)``.
+    # history.input records what the user typed; ``Iteration.params.
+    # input_path`` references the converted JPEG via
+    # ``build_iterations(input_path=mflux_input)`` (v0.8.4 M-NEW-D
+    # retired the legacy ``Iteration.cmd`` snapshot; MfluxEngine.run
+    # now reads input_path from params at dispatch time).
     with tempfile.TemporaryDirectory(prefix="imgen-heic-") as cache_str:
         mflux_input = resolve_to_mflux_input(input_path, Path(cache_str))
 
@@ -211,7 +213,10 @@ def cmd_generate(args) -> int:
         explicit_output, run_dir = resolve_output_layout(args, config_output_dir)
 
         # 6) Backend, token, binary, custom-secret (same for all M).
-        backend, be, token, binary, backend_secret = load_backend_and_token(args)
+        # v0.8.5: binary is unused — Engine.run resolves it internally
+        # via VENV_BIN / model.binary post-M-NEW-D. Kept in the tuple
+        # shape so load_backend_and_token stays stable for v0.9.
+        backend, be, token, _binary, backend_secret = load_backend_and_token(args)
 
         # 7) Seed — one seed for the whole invocation so multi-style runs use
         # the same noise pattern (only style differs → fair preset comparison).
@@ -231,7 +236,6 @@ def cmd_generate(args) -> int:
                 effective_custom_prompt=effective_custom_prompt,
                 merged_defaults=merged_defaults,
                 be=be,
-                binary=binary,
                 input_path=mflux_input,
                 width=width,
                 height=height,
@@ -250,7 +254,6 @@ def cmd_generate(args) -> int:
                 prompt=effective_custom_prompt,
                 merged_defaults=merged_defaults,
                 be=be,
-                binary=binary,
                 width=width,
                 height=height,
                 explicit_output=explicit_output,
@@ -394,8 +397,9 @@ def cmd_generate(args) -> int:
             # through the inner loop instead of nine. (architect IMP-3 from
             # v0.2.4 review). input_path here is the ORIGINAL (HEIC or
             # otherwise) so history.input records what the user typed —
-            # Iteration.cmd already points mflux at the sips-converted
-            # JPEG via mflux_input above.
+            # Iteration.params.input_path already points mflux at the
+            # sips-converted JPEG via mflux_input above (v0.8.4 M-NEW-D
+            # — argv is built at dispatch time from params).
             ctx = BatchContext(
                 model=backend,
                 seed=seed,
