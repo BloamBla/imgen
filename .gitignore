@@ -1,5 +1,6 @@
 # venv (recreated by bootstrap)
 .venv/
+.venv-diffusers/
 venv/
 env/
 
