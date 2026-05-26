@@ -163,33 +163,84 @@ class DiffusersMpsEngine:
         )
 
     def validate(self, model, params: GenParams) -> list[str]:
-        """Intentionally stubbed by design — payload validation lives
-        at the subprocess trust boundary in
-        ``_diffusers_runner._validate_payload_shape`` per memo §E.1.
+        """v0.9 commit 3 ([[project-v090-design]] §E.0 + §E.1): video
+        Models get parent-side validation that mirrors what the
+        runner-side ``_validate_payload_shape`` will re-check at the
+        trust boundary (commit 4). Image Models keep the v0.8.1 §R.4
+        M-4 no-op pattern — image payload checks live solely at the
+        runner boundary.
 
-        v0.8.1 §R.4 M-4 / architect docstring-drift closure: pre-v0.8.1
-        comment promised wiring "in commit 7" — that wiring never
-        landed across commits 7-11, and on reflection it shouldn't.
-        The runner re-validates EVERY field at the JSON-stdin boundary
-        with deny-by-default discipline; mirroring that here would
-        double-validate without catching anything new and risk drift
-        between the two checks. The Engine.validate surface stays
-        intentionally empty for diffusers_mps; MfluxEngine.validate
-        (which IS wired) catches per-Model invariants at the in-
-        process resolver layer where the runner has no presence.
-
-        Returns ``[]`` unconditionally — callers treat as "no errors".
+        Reopening for video is justified because video inputs have a
+        ~50ms parser-gate cost vs ~3-5s cold-import cost on the runner
+        side — a 60× speedup at the rejection path makes
+        the double-validation tradeoff worthwhile here.
         """
-        return []
+        if model.video is None:
+            # Image path — preserve v0.8.1 §R.4 M-4 no-op behaviour.
+            return []
+        return self._validate_video(model, params)
+
+    def _validate_video(self, model, params: GenParams) -> list[str]:
+        """§E.1 — num_frames range, alignment (8k+1 for LTX), fps
+        allowlist. Error messages include nearest-valid suggestion
+        for alignment violations per architect §R.1 MED-2.
+        """
+        errors: list[str] = []
+        vc = model.video
+        nf = params.num_frames
+
+        # Range
+        min_frames = vc.default_num_frames // 2
+        if nf < min_frames:
+            errors.append(
+                f"num_frames={nf} below model minimum {min_frames} "
+                f"(default_num_frames={vc.default_num_frames})"
+            )
+        if nf > vc.max_num_frames:
+            errors.append(
+                f"num_frames={nf} exceeds model cap {vc.max_num_frames}"
+            )
+
+        # Alignment: (nf - offset) % alignment == 0
+        if vc.num_frames_alignment > 1:
+            remainder = (nf - vc.num_frames_offset) % vc.num_frames_alignment
+            if remainder != 0:
+                # Floor to nearest valid <= nf so the suggestion never
+                # increases the user-requested duration.
+                k = (nf - vc.num_frames_offset) // vc.num_frames_alignment
+                nearest = k * vc.num_frames_alignment + vc.num_frames_offset
+                if nearest < vc.num_frames_offset:
+                    nearest = vc.num_frames_offset
+                errors.append(
+                    f"num_frames={nf} violates alignment "
+                    f"{vc.num_frames_alignment}k+{vc.num_frames_offset}; "
+                    f"nearest valid: {nearest}"
+                )
+
+        # FPS allowlist — v0.9.0 ships {24, 25, 30}.
+        if params.fps not in {24, 25, 30}:
+            errors.append(
+                f"fps={params.fps} not in {{24, 25, 30}}"
+            )
+
+        return errors
 
     def ram_estimate_gb(self, model, params: GenParams) -> float:
-        """v0.8.0 commit 8 (§L): peak RAM estimate (GB) for the
-        diffusers_mps engine. Same shape as
-        :meth:`MfluxEngine.ram_estimate_gb` but with a heavier
-        overhead constant — diffusers + torch + transformers cold
-        import is ~1.5-2 GB vs mflux's ~0.5 GB.
+        """v0.8.0 commit 8 (§L) image branch + v0.9 commit 3 (§L)
+        video branch. Image Models keep the pre-v0.9 formula; video
+        Models use a different shape because (a) LTX is bf16-only —
+        quantize doesn't scale weights; (b) baseline ALREADY includes
+        diffusers cold-import overhead per §L "T5-offloaded baseline"
+        definition (no separate +2.0 term); (c) encoder source is
+        ``model.video.encoder_ram_gb`` (transient T5-XXL peak), not
+        ``model.encoder_ram_gb`` (image-only field).
+        """
+        if model.video is None:
+            return self._ram_estimate_image(model, params)
+        return self._ram_estimate_video(model, params)
 
-        Formula:
+    def _ram_estimate_image(self, model, params: GenParams) -> float:
+        """Image branch — preserved pre-v0.9 formula:
           total = baseline * (quantize / 8) + slope * mp + encoder + 2.0
         """
         mp = params.width * params.height / 1_000_000.0
@@ -198,3 +249,17 @@ class DiffusersMpsEngine:
         encoder_gb = model.encoder_ram_gb
         overhead_gb = 2.0  # diffusers + torch import footprint
         return weights_gb + activations_gb + encoder_gb + overhead_gb
+
+    def _ram_estimate_video(self, model, params: GenParams) -> float:
+        """Video branch (§L):
+          baseline + slope*mp + video.encoder_ram_gb + 0.1*num_frames
+
+        No quantize term (LTX bf16-only); no +2.0 overhead (baseline
+        already includes cold-import footprint per §L definition).
+        """
+        mp = (params.width * params.height) / 1_000_000.0
+        baseline = model.ram_baseline_gb
+        mp_term = model.ram_slope_gb_per_mp * mp
+        encoder = model.video.encoder_ram_gb  # transient T5-XXL peak
+        frame_term = 0.1 * params.num_frames
+        return baseline + mp_term + encoder + frame_term
