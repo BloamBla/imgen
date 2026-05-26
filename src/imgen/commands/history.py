@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from .._safe import has_control_bytes
 from ..colors import C, dim, die, info
 from ..defaults import DEFAULTS, HISTORY_SCHEMA_VERSION
 from ..history import entry_model_name, load_history
@@ -273,6 +274,65 @@ def _replay_refine_entry(entry: dict) -> int:
     return cmd_refine(args)
 
 
+def _replay_video_entry(entry: dict) -> int:
+    """v0.9 commit 5 (§J): replay a ``command="video"`` history entry
+    through :func:`cmd_video`.
+
+    Mirror of :func:`_replay_draw_entry` for t2v entries. Video entries
+    have ``input=None`` (no source media — v0.9.0 LTX is t2v only) and
+    carry the prompt directly. ``num_frames`` + ``fps`` are pinned
+    from the stored entry so replay reproduces the same temporal
+    structure; ``seed=None`` so each replay rolls a fresh random
+    seed (same policy as draw/refine).
+
+    ``cmd_video`` lands at commit 7 — until then this function's body
+    will ImportError if reached. The dispatch branch in
+    :func:`replay_entry` is unreachable in practice between commits
+    5-6 because no user can WRITE a video entry without cmd_video.
+    Test surface mocks the cmd_video import via ``sys.modules``.
+    """
+    # Lazy import: keeps commit 5 importable before cmd_video lands
+    # at commit 7. Tests inject a fake module via sys.modules.
+    from .video import cmd_video
+
+    prompt = entry.get("prompt")
+    if not prompt:
+        die(f"History entry #{entry.get('id', '?')} (command=video) has "
+            f"no prompt — cannot replay.", code=1)
+    info(f"Replaying #{entry.get('id')}: video \"{prompt[:60]}"
+         f"{'...' if len(prompt) > 60 else ''}\"")
+    args = argparse.Namespace(
+        prompt=prompt,
+        output=None,
+        steps=entry.get("steps", DEFAULTS["steps"]),
+        guidance=entry.get("guidance", 3.0),
+        seed=None,  # new random seed each replay
+        model=entry_model_name(entry) or "ltx-video",
+        width=entry.get("width", 768),
+        height=entry.get("height", 512),
+        negative_prompt=entry.get("negative") or None,
+        # v0.9 video-specific Namespace surface — pinned from entry,
+        # so replay reproduces num_frames/fps exactly. duration left
+        # None because the parser (commit 7) treats --duration and
+        # --num-frames as mutex; replay always picks the explicit
+        # frame count to round-trip cleanly.
+        num_frames=entry.get("num_frames", 25),
+        fps=entry.get("fps", 24),
+        duration=None,
+        no_open=False,
+        dry_run=False,
+        force=False,
+        # Video LoRA is reserved for v0.9.x; commit 7 parser accepts
+        # but ignores --lora/--no-lora. Pinning here keeps the
+        # Namespace shape complete so an unknown-attr at runtime
+        # surfaces loudly instead of silently mis-resolving.
+        lora=None,
+        no_lora=False,
+        **_REPLAY_DEFAULTS,
+    )
+    return cmd_video(args)
+
+
 def replay_entry(entry: dict) -> int:
     entry_v = entry.get("v", 0)
     if entry_v > HISTORY_SCHEMA_VERSION:
@@ -290,11 +350,22 @@ def replay_entry(entry: dict) -> int:
     # cmd_generate (refine entries have non-null input + custom_prompt,
     # so the i2i path's guard passes but builds a Kontext-style
     # restyle invocation instead of the refine pipeline).
+    # v0.9 commit 5 (§J + security §R.1 NIT-1): ``video`` entries route
+    # to cmd_video. Control-byte filter applied to the command value
+    # mirrors the v0.8.1 LOW-3 filter on entry["backend"] /
+    # entry["model"] — a hand-edited history.jsonl with C0/DEL/C1
+    # bytes in command must NOT reach argparse / argv. Refuse with
+    # die() rather than silently routing through a fallback.
     command = entry.get("command", "generate")
+    if not isinstance(command, str) or has_control_bytes(command):
+        die(f"History entry #{entry.get('id', '?')}: command contains "
+            f"control bytes — refusing replay.", code=2)
     if command == "draw":
         return _replay_draw_entry(entry)
     if command == "refine":
         return _replay_refine_entry(entry)
+    if command == "video":
+        return _replay_video_entry(entry)
 
     image = entry.get("input")
     if not image:
