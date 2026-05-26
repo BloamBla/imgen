@@ -236,11 +236,17 @@ def _orchestrate_t2x(
         return 0
 
     # 8. Resource preflight (per-Model RAM math via Engine.ram_estimate_gb).
+    # v0.9 commit 7.1 (§R.2 HIGH-1): max_num_frames threaded so the
+    # video frame-term (0.1 GB per frame) is included AND the §L
+    # "+3 GB video safety buffer" gate fires when iteration plans
+    # video output.
     heaviest_quant = max(it.final_quantize for it in iterations)
     max_megapixels = megapixels_of(args.width, args.height)
+    max_num_frames = max(it.params.num_frames for it in iterations)
     preflight_resources(
         model=backend, heaviest_quant=heaviest_quant,
         force=args.force, max_megapixels=max_megapixels,
+        max_num_frames=max_num_frames,
     )
 
     # 9. Pre-dispatch hook — e.g. ensure_video_deps_or_die for

@@ -255,6 +255,38 @@ def test_diffusers_mps_dies_friendly_when_venv_missing(
     assert "IMGEN_INSTALL_DIFFUSERS=1" in combined
 
 
+def test_diffusers_mps_refuses_symlinked_venv_python(
+    monkeypatch, tmp_path, capsys,
+):
+    """v0.9 commit 7.1 (§R.2 security HIGH-1): a planted symlink at
+    .venv-diffusers/bin/python must be refused BEFORE subprocess
+    exec. Mirrors the install-path symlink guard in
+    ``ensure_video_deps_or_die`` (commit 6 closed §R.1 HIGH-2 for
+    the install path; this closes the execution path which was
+    missed at the same time).
+    """
+    from imgen import paths
+    from imgen.engines import DiffusersMpsEngine
+
+    install_root = tmp_path / "install_root_planted"
+    venv_bin = install_root / ".venv-diffusers" / "bin"
+    venv_bin.mkdir(parents=True)
+    target = tmp_path / "evil_python"
+    target.write_text("#!/usr/bin/env python3\n")
+    target.chmod(0o755)
+    (venv_bin / "python").symlink_to(target)
+    monkeypatch.setattr(paths, "IMGEN_INSTALL_ROOT", install_root)
+
+    engine = DiffusersMpsEngine()
+    with pytest.raises(SystemExit):
+        engine.run(_make_diffusers_model(), _make_genparams())
+
+    stderr = capsys.readouterr().err
+    assert "symlink" in stderr.lower(), (
+        f"refuse message should mention symlink; got: {stderr!r}"
+    )
+
+
 # ── Static runner payload validation (architect C2 + security CRITICAL+HIGH+M3) ─
 
 

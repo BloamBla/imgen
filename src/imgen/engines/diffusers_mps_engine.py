@@ -115,6 +115,20 @@ class DiffusersMpsEngine:
         venv_python = (
             IMGEN_INSTALL_ROOT / ".venv-diffusers" / "bin" / "python"
         )
+        # v0.9 commit 7.1 (§R.2 security HIGH-1): symlink guard on the
+        # execution path. §R.1 HIGH-2 closed the install-time guard in
+        # ensure_video_deps_or_die (commit 6) but missed the execution-
+        # time check here. ``Path.is_file()`` dereferences symlinks, so
+        # a same-uid attacker planting a symlink at venv_python would
+        # have flowed through to subprocess.Popen unchecked. Mirrors
+        # ensure_video_deps_or_die's pip/python check pattern.
+        if venv_python.is_symlink():
+            die(
+                f".venv-diffusers/bin/python is a symlink — refusing "
+                f"to exec. Same-uid attacker may have planted it. "
+                f"Remove .venv-diffusers/ and re-run bootstrap.sh.",
+                code=3,
+            )
         if not venv_python.is_file():
             die(
                 "diffusers_mps engine selected but the diffusers venv "
@@ -236,6 +250,22 @@ class DiffusersMpsEngine:
         if params.fps not in {24, 25, 30}:
             errors.append(
                 f"fps={params.fps} not in {{24, 25, 30}}"
+            )
+
+        # v0.9 commit 7.1 (§R.2 architect HIGH-2): quantize gate.
+        # Video Models with supported_quants=() (LTX-Video at v0.9.0
+        # is bf16-only) must reject non-zero quantize. Without this
+        # gate, merged_defaults["quantize"]=4 silently propagates
+        # through the resolver to the GenParams of every LTX
+        # iteration. Functionally inert (runner ignores quantize for
+        # video) but semantically wrong — future user-TOML video
+        # Model could misconfigure engine=diffusers_mps without
+        # video= and inherit silent quantize behaviour.
+        if not model.supported_quants and params.quantize > 0:
+            errors.append(
+                f"quantize={params.quantize} but model.supported_quants "
+                "is empty (model is bf16-only; pass --quantize 0 or "
+                "omit the flag)"
             )
 
         return errors

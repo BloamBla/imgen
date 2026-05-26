@@ -152,6 +152,7 @@ def find_running_mflux() -> int | None:
 
 def ram_required_gb(
     backend: str, quantize: int, megapixels: float,
+    num_frames: int = 1,
 ) -> float:
     """Per-Model peak RAM estimate (GB) for the given
     ``(model_name, quantize, megapixels)`` invocation.
@@ -202,12 +203,18 @@ def ram_required_gb(
     # fields are placeholders since the current formula only reads
     # quantize + dimensions.
     side = max(64, int((max(megapixels, 0.001) * 1_000_000) ** 0.5))
+    # v0.9 commit 7.1 (§R.2 HIGH-1): num_frames threaded so
+    # DiffusersMpsEngine._ram_estimate_video's ``0.1 * num_frames``
+    # frame-term reflects the actual planned video length, not the
+    # default placeholder. Image callers leave num_frames=1 and the
+    # video branch isn't reached anyway.
     params = GenParams(
         prompt="", negative="", width=side, height=side,
         steps=1, guidance=0.0, seed=0, quantize=quantize,
         strength=0.0, input_path=None,
         output_path=Path("/tmp/_ram_estimate_placeholder.png"),
         loras=(),
+        num_frames=num_frames,
     )
 
     if model is not None:
@@ -234,6 +241,7 @@ def ram_required_gb(
 
 def check_resources(
     backend: str, quantize: int, megapixels: float = 1.0,
+    num_frames: int = 1,
 ) -> dict:
     """Snapshot system resources vs requirements for this run.
 
@@ -242,8 +250,15 @@ def check_resources(
     pre-v0.7.14 behaviour for callers (tests, future extensions) that
     don't yet pass dimensions; the four real callers (cmd_generate /
     cmd_batch / cmd_refine / cmd_draw) all compute and pass it.
+
+    v0.9 commit 7.1 (§R.2 HIGH-1): ``num_frames`` threaded so video
+    callers (cmd_video) propagate the planned frame count into the
+    RAM estimate. Image callers leave the default 1; the video
+    branch of ``ram_estimate_gb`` is only reached for video Models.
     """
-    required = ram_required_gb(backend, quantize, megapixels)
+    required = ram_required_gb(
+        backend, quantize, megapixels, num_frames=num_frames,
+    )
     total, available = get_memory_gb()
     disk_free = check_disk_gb()
     battery_pct, on_ac = get_battery()

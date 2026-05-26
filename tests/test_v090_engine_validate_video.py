@@ -45,13 +45,19 @@ def _ltx_video_config(**overrides):
 
 def _ltx_model(**overrides):
     """LTX-shaped Model with the §K production VideoConfig.
-    Engine='diffusers_mps', ram_* per §L LTX envelope."""
+    Engine='diffusers_mps', ram_* per §L LTX envelope.
+
+    supported_quants=() matches the production BUILTIN_MODELS row —
+    LTX-Video is bf16-only at v0.9.0, no MLX-style quantization. The
+    §R.2 architect HIGH-2 quantize gate keys off this empty tuple.
+    """
     from imgen.models import Model
     defaults = dict(
         engine="diffusers_mps",
         repo="Lightricks/LTX-Video",
         ram_baseline_gb=10.0,        # §L "T5 offloaded baseline"
         ram_slope_gb_per_mp=4.0,
+        supported_quants=(),
         video=_ltx_video_config(),
     )
     defaults.update(overrides)
@@ -73,12 +79,17 @@ def _image_diffusers_model(**overrides):
 
 
 def _video_params(**overrides):
-    """LTX-shaped GenParams: 768×512 @ 25 frames / 24 fps default."""
+    """LTX-shaped GenParams: 768×512 @ 25 frames / 24 fps default.
+
+    ``quantize=0`` default reflects LTX bf16-only semantics — paired
+    with the supported_quants=() gate in _ltx_model so canonical
+    "valid LTX" payloads pass the quantize check.
+    """
     from imgen.engines.base import GenParams
     defaults = dict(
         prompt="a samurai walking", negative="",
         width=768, height=512,
-        steps=50, guidance=3.0, seed=42, quantize=8, strength=0.0,
+        steps=50, guidance=3.0, seed=42, quantize=0, strength=0.0,
         input_path=None, output_path=Path("/tmp/out.mp4"), loras=(),
         num_frames=25, fps=24,
     )
@@ -194,6 +205,40 @@ class TestEngineValidateVideoAlignment:
         from imgen.engines import DiffusersMpsEngine
         errors = DiffusersMpsEngine().validate(
             _ltx_model(), _video_params(num_frames=17, fps=24),
+        )
+        assert errors == []
+
+
+class TestEngineValidateVideoQuantizeGate:
+    """§R.2 architect HIGH-2 closure: video Models with
+    ``supported_quants=()`` must reject non-zero ``params.quantize``.
+    LTX-Video is bf16-only at v0.9.0 — no MLX-style quantization.
+    A user-TOML video Model leaving quantize at the v0.7 default of 4
+    would silently propagate a meaningless field; reject loudly."""
+
+    def test_video_with_quantize_4_rejected_when_supported_quants_empty(self):
+        """Default quantize=4 from merged_defaults flowing into a
+        video Model with supported_quants=() — reject."""
+        from imgen.engines import DiffusersMpsEngine
+        errors = DiffusersMpsEngine().validate(
+            _ltx_model(), _video_params(quantize=4),
+        )
+        assert errors, "quantize=4 on supported_quants=() must reject"
+        assert any("quantize" in e.lower() for e in errors)
+
+    def test_video_with_quantize_8_rejected_when_supported_quants_empty(self):
+        from imgen.engines import DiffusersMpsEngine
+        errors = DiffusersMpsEngine().validate(
+            _ltx_model(), _video_params(quantize=8),
+        )
+        assert errors, "quantize=8 on supported_quants=() must reject"
+
+    def test_video_with_quantize_0_accepted(self):
+        """quantize=0 means "no quantize" — the bf16-only semantic.
+        Acceptable even when supported_quants=()."""
+        from imgen.engines import DiffusersMpsEngine
+        errors = DiffusersMpsEngine().validate(
+            _ltx_model(), _video_params(quantize=0),
         )
         assert errors == []
 

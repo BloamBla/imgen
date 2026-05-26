@@ -538,32 +538,22 @@ def preflight_resources(
     heaviest_quant: int,
     force: bool,
     max_megapixels: float = 1.0,
+    max_num_frames: int = 1,
 ) -> None:
     """Check RAM / disk / battery / parallel-mflux against the heaviest
-    quant + largest output resolution in the batch.
+    quant + largest output resolution + (v0.9) longest video in the
+    batch. --force bypasses entirely. Hard failures share exit 4.
 
-    --force skips the entire check (caller already opted into the risk
-    of swap thrashing). Otherwise:
-      * another mflux PID detected → die(4); parallel runs OOM
-      * insufficient RAM → die(4); list specific fixes (--preview,
-        --quantize 4, --force)
-      * low disk → warn (model download might still fit)
-      * low battery → warn (charger may be nearby)
-
-    The two hard failures share exit code 4 (resource class) so callers
-    can grep by code without parsing messages.
-
-    v0.7.14 (gap 6): ``max_megapixels`` argument added — caller computes
-    ``max(it.width * it.height for it in iterations) / 1_000_000`` and
-    passes it so RAM estimate scales with actual output resolution
-    instead of the worst-case 2K² that pre-v0.7.14 baked into the
-    table. Default 1.0 preserves pre-v0.7.14 behaviour for callers
-    that haven't been updated yet (none in this codebase, but
-    documented for forward-compat).
+    Knobs scaling RAM math: ``max_megapixels`` (v0.7.14 gap 6),
+    ``max_num_frames`` (v0.9 commit 7.1 §R.2 HIGH-1 — video frame-
+    activations + §L "+3 GB" video buffer).
     """
     if force:
         return
-    res = check_resources(model, heaviest_quant, max_megapixels)
+    res = check_resources(
+        model, heaviest_quant, max_megapixels,
+        num_frames=max_num_frames,
+    )
 
     if res["other_mflux_pid"] is not None:
         die(f"Another mflux process is already running (PID "
@@ -574,12 +564,8 @@ def preflight_resources(
                  f"{res['other_mflux_pid']}), or pass --force.")
 
     if not res["ram_ok"]:
-        # v0.7.14 python NIT closure: format ram_required_gb to one
-        # decimal — pre-v0.7.14 the value was a dict-int; now it's a
-        # float from `ram_required_gb()` and the default __str__ would
-        # surface "14.239999999999999 GB" garbage in user-facing
-        # output. Matches the existing :.1f formatting on the
-        # available/total lines for visual symmetry.
+        # :.1f float format avoids "14.239999..." garbage in stderr
+        # (ram_required_gb returns a float since v0.7.14).
         die(f"Not enough RAM: need ~{res['ram_required_gb']:.1f} GB peak "
             f"for {model} q{heaviest_quant}, only "
             f"{res['ram_available_gb']:.1f} GB available "
@@ -590,6 +576,27 @@ def preflight_resources(
                   "     • Drop quant: --quantize 4 (needs ~9 GB for flux)\n"
                   "     • Or --preview (uses --quantize 4 automatically)\n"
                   "     • Or --force (swaps to disk, very slow, may freeze)"))
+
+    # v0.9 commit 7.1 (§R.2 HIGH-1 / §L locked buffer): video
+    # Models get +3 GB headroom over the base estimate — T5 encoder
+    # transient + transformer dispatch peak more sharply than image
+    # inference. The v0.8.2 absolute < 4 GB safety net stays the
+    # catastrophic backstop (architect §R.1 LOW-1 two-gate composition).
+    if max_num_frames > 1:
+        video_buffer_gb = 3.0
+        required_with_buffer = res["ram_required_gb"] + video_buffer_gb
+        if (res["ram_total_gb"] != 0 and
+                res["ram_available_gb"] < required_with_buffer):
+            die(
+                f"Insufficient RAM for video generation: need "
+                f"~{res['ram_required_gb']:.1f} GB + {video_buffer_gb:.1f} GB "
+                f"safety buffer, have {res['ram_available_gb']:.1f} GB "
+                f"available (of {res['ram_total_gb']:.0f} GB total).",
+                code=4,
+                hint=("Close other apps to free RAM (video peaks higher "
+                      "than image due to T5 encoder transient), or "
+                      "--force at your own risk (may swap-thrash)."),
+            )
 
     if not res["disk_ok"]:
         warn(f"Only {res['disk_free_gb']:.1f} GB disk free — risky if "
@@ -652,39 +659,21 @@ def exit_code(
 # ── Iteration plan + backend resolution + styles list ───────────────────
 
 
-
-
 def load_backend_and_token(
     args,
 ) -> tuple[str, Backend, str | None, Path, tuple[str, str] | None]:
-    """Resolve backend metadata, HF token, binary path, and custom secret.
+    """Resolve ``(backend_name, backend_dataclass, hf_token_or_None,
+    binary_path, custom_backend_secret_or_None)``. The 5th slot is the
+    v0.4 ``(env_var_name, value)`` pair for custom backends declaring
+    ``[secret]``.
 
-    Returns a 5-tuple:
-    ``(backend_name, backend_dataclass, token_or_none, binary_path,
-    backend_secret_or_none)``. The fifth slot is for v0.4 custom
-    backends: a ``(env_var_name, value)`` pair that the subprocess
-    env builder will inject under the declared name. None for
-    built-ins and for custom backends whose ``[secret]`` section is
-    absent.
-
-    Exits with code 3 (missing-tool class) on:
-      * gated built-in backend without an HF token (FLUX path)
-      * custom backend declaring ``secret_env_var`` with
-        ``required=True`` and the env var unset in the parent shell
-      * venv / mflux not installed
-      * the per-backend binary not present (on PATH for bare names,
-        or absent at the declared absolute path)
-
-    The HF token is loaded lazily — only when ``needs_token`` is True
-    (FLUX). Open backends (qwen) and custom backends never touch
-    ~/.imgen/hf_token.
-
-    Binary resolution branches on shape:
-      * Bare name (no '/') → ``VENV_BIN / be.binary``. Built-ins and
-        user backends installed alongside mflux land here.
-      * Absolute path (starts with '/') → used as-is. Lets a user
-        point at a fork or experimental binary outside VENV_BIN.
-      Schema validator enforces these two shapes; we trust that here.
+    Exits with code 3 on: gated built-in without HF token, custom
+    backend missing required ``secret_env_var``, venv / mflux not
+    installed, or binary not present (PATH for bare names, absolute
+    for ``/``-prefixed). HF token loaded lazily only when
+    ``needs_token``. v0.9 commit 7.1: diffusers_mps Models skip the
+    mflux + binary check (Engine.run resolves .venv-diffusers/python
+    internally with its own symlink + is_file guards).
     """
     # v0.8.0 commit 4b: argparse dest renamed `backend` → `model` in
     # lockstep with the registry source-of-truth flip. ``get_backend()``

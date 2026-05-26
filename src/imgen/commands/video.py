@@ -297,9 +297,10 @@ def cmd_video(args) -> int:
       gate for imageio/imageio-ffmpeg/sentencepiece. Skipped under
       --dry-run per §E.5.7.
 
-    The actual LTX-Video Model row lands in BUILTIN_MODELS at commit 9;
-    until then, cmd_video is testable in isolation (mock backend) but
-    not end-to-end-runnable via the CLI.
+    The LTX-Video BUILTIN_MODELS row was pulled forward from commit 9
+    into commit 7 (parser default --model="ltx-video" needs to resolve
+    at argparse time); the doctor RAM-forecast video extension stays
+    at commit 9.
     """
     from .._t2x_orchestrator import _orchestrate_t2x
     from ..build_iteration import build_video_iteration

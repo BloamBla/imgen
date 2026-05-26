@@ -1612,8 +1612,9 @@ def stub_check_resources(monkeypatch):
     captures the 3-tuple so tests can assert dim forwarding."""
     state = {"res": _clean_res()}
 
-    def fake_check(backend, quant, megapixels=1.0):
+    def fake_check(backend, quant, megapixels=1.0, num_frames=1):
         state["last_call"] = (backend, quant, megapixels)
+        state["last_num_frames"] = num_frames
         return state["res"]
 
     monkeypatch.setattr(
@@ -1629,7 +1630,7 @@ def test_preflight_resources_force_skips_check(monkeypatch):
     called = []
     monkeypatch.setattr(
         "imgen.cmd_helpers.check_resources",
-        lambda b, q, mp=1.0: called.append((b, q, mp)) or _clean_res(),
+        lambda b, q, mp=1.0, num_frames=1: called.append((b, q, mp)) or _clean_res(),
     )
 
     preflight_resources(model="flux", heaviest_quant=8, force=True)

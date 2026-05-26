@@ -542,8 +542,9 @@ def build_parser(
     # video — v0.9.0 text-to-video. New subcommand for the first
     # video output surface on imgen. Lazy deps install on first use
     # (imageio + imageio-ffmpeg + sentencepiece via .venv-diffusers).
-    # Default backend `ltx-video` lands in BUILTIN_MODELS at commit 9;
-    # commit 7 ships parser + cmd glue + orchestrator routing.
+    # Default model `ltx-video` registered in BUILTIN_MODELS at
+    # commit 7 (pulled forward from commit 9 so parser default
+    # resolves); doctor RAM-forecast video branch still at commit 9.
     v = sub.add_parser(
         "video",
         help="Text-to-video: generate from a prompt with no input "
@@ -1079,9 +1080,9 @@ def _add_video_args(
         "--seed", type=_int_range(0, 2**32 - 1), default=None,
         help="Seed (default: random).",
     )
-    # v0.9.0 default model is "ltx-video" (lands in BUILTIN_MODELS at
-    # commit 9). Until then cmd_video dies at load_backend_and_token
-    # for any missing built-in — testable via user TOML or mock.
+    # v0.9.0 default model is "ltx-video" (BUILTIN_MODELS row landed
+    # at commit 7 — pulled forward from commit 9 so the argparse-
+    # time default resolves cleanly via _resolve_v07_alias).
     _video_default = defaults.get("backend_video", "ltx-video")
     p.add_argument(
         "--model", type=_resolve_v07_alias, dest="model",
