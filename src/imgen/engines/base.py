@@ -48,6 +48,13 @@ class GenParams:
     # config.py to keep MfluxEngine argv bit-identical with v0.7.17. —
     mlx_cache_gb: int = 12
     battery_stop: int = 20
+    # — v0.9 commit 2 — video output extensions [[project-v090-design]] §D.
+    # APPENDED AT END so positional construction is byte-additive for
+    # v0.8 image callers (num_frames default 1 ⇒ image; fps default 24
+    # is ignored when num_frames == 1). Reading these requires keyword
+    # access; v0.8 positional argv stops at battery_stop. —
+    num_frames: int = 1
+    fps: int = 24
 
 
 @runtime_checkable
