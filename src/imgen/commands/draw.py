@@ -32,6 +32,7 @@ from ..colors import C, info
 from ..cmd_helpers import (
     build_draw_iterations,
     format_duration,
+    prompt_yes_no,
 )
 from .._t2x_orchestrator import _orchestrate_t2x
 
@@ -76,12 +77,7 @@ def _confirm_draw(
             print(f"   {C.DIM}eta:{C.END}    {format_duration(total_eta)} total "
                   f"({per_image} per image, ±50%)")
     print()
-    try:
-        ans = input("Continue? [y/N] ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        print()
-        return False
-    return ans in ("y", "yes")
+    return prompt_yes_no()
 
 
 def _draw_post_success_hint(*, succeeded, failed, is_batch, run_dir) -> None:

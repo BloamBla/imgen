@@ -250,3 +250,96 @@ def test_confirm_batch_eta_shown_with_per_image_breakdown(monkeypatch, capsys):
     # Total = 3 × 300s = 15 min, per image = ~5 min
     assert "~15 min total" in out
     assert "~5 min per image" in out
+
+
+# ── v0.9.4 D5: prompt_yes_no shared confirm-gate helper ───────────────────
+
+
+class TestPromptYesNo:
+    """v0.9.4 D5 (python MED-5): the try/input/EOFError-or-KeyboardInterrupt/
+    return-False block was copy-pasted in 5 ``_confirm_*`` functions
+    (draw, refine, generate, batch, video). Extracted to ``prompt_yes_no``
+    in cmd_helpers — pure function, fully unit-tested here so the helper's
+    contract is the single source of truth.
+
+    Contract:
+      * input lowercased + stripped before comparison
+      * 'y' / 'yes' (any case, any surrounding whitespace) → True
+      * Anything else, including empty, → False
+      * EOFError or KeyboardInterrupt → print newline + return False
+      * Question string is passed verbatim to input()
+    """
+
+    def test_y_returns_true(self, monkeypatch):
+        from imgen.cmd_helpers import prompt_yes_no
+        monkeypatch.setattr("builtins.input", lambda _: "y")
+        assert prompt_yes_no() is True
+
+    def test_yes_returns_true(self, monkeypatch):
+        from imgen.cmd_helpers import prompt_yes_no
+        monkeypatch.setattr("builtins.input", lambda _: "yes")
+        assert prompt_yes_no() is True
+
+    def test_uppercase_yes_returns_true(self, monkeypatch):
+        from imgen.cmd_helpers import prompt_yes_no
+        monkeypatch.setattr("builtins.input", lambda _: "YES")
+        assert prompt_yes_no() is True
+
+    def test_capitalised_y_returns_true(self, monkeypatch):
+        from imgen.cmd_helpers import prompt_yes_no
+        monkeypatch.setattr("builtins.input", lambda _: "Y")
+        assert prompt_yes_no() is True
+
+    def test_whitespace_around_y_returns_true(self, monkeypatch):
+        from imgen.cmd_helpers import prompt_yes_no
+        monkeypatch.setattr("builtins.input", lambda _: "  y  ")
+        assert prompt_yes_no() is True
+
+    def test_n_returns_false(self, monkeypatch):
+        from imgen.cmd_helpers import prompt_yes_no
+        monkeypatch.setattr("builtins.input", lambda _: "n")
+        assert prompt_yes_no() is False
+
+    def test_empty_returns_false(self, monkeypatch):
+        from imgen.cmd_helpers import prompt_yes_no
+        monkeypatch.setattr("builtins.input", lambda _: "")
+        assert prompt_yes_no() is False
+
+    def test_eof_returns_false_and_prints_newline(self, monkeypatch, capsys):
+        from imgen.cmd_helpers import prompt_yes_no
+        def _eof(_):
+            raise EOFError
+        monkeypatch.setattr("builtins.input", _eof)
+        assert prompt_yes_no() is False
+        # Final newline preserves shell prompt layout after interrupt.
+        assert capsys.readouterr().out == "\n"
+
+    def test_keyboard_interrupt_returns_false_and_prints_newline(
+        self, monkeypatch, capsys,
+    ):
+        from imgen.cmd_helpers import prompt_yes_no
+        def _ctrl_c(_):
+            raise KeyboardInterrupt
+        monkeypatch.setattr("builtins.input", _ctrl_c)
+        assert prompt_yes_no() is False
+        assert capsys.readouterr().out == "\n"
+
+    def test_question_passed_to_input(self, monkeypatch):
+        from imgen.cmd_helpers import prompt_yes_no
+        captured: list[str] = []
+        def _capture(prompt):
+            captured.append(prompt)
+            return "y"
+        monkeypatch.setattr("builtins.input", _capture)
+        prompt_yes_no(question="Proceed? [Y/n] ")
+        assert captured == ["Proceed? [Y/n] "]
+
+    def test_default_question_is_continue_yN(self, monkeypatch):
+        from imgen.cmd_helpers import prompt_yes_no
+        captured: list[str] = []
+        monkeypatch.setattr(
+            "builtins.input",
+            lambda prompt: captured.append(prompt) or "n",
+        )
+        prompt_yes_no()
+        assert captured == ["Continue? [y/N] "]

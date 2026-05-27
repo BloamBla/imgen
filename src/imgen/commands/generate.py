@@ -43,6 +43,7 @@ from ..cmd_helpers import (
     open_results,
     preflight_resources,
     print_batch_summary,
+    prompt_yes_no,
     resolve_enhance_config,
     resolve_output_layout,
     resolve_styles_list,
@@ -89,12 +90,7 @@ def _confirm_batch(
         print(f"   {C.DIM}eta:{C.END}     {total} total "
               f"({per_image} per image, ±50%)")
     print()
-    try:
-        ans = input("Continue? [y/N] ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        print()
-        return False
-    return ans in ("y", "yes")
+    return prompt_yes_no()
 
 
 def _check_output_style_mutex(args, styles_list: list[str]) -> None:

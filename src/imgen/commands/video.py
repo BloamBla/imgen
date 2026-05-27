@@ -291,7 +291,7 @@ def _confirm_video(
     review M-1 closure).
     """
     from ..colors import C, info
-    from ..cmd_helpers import format_duration
+    from ..cmd_helpers import format_duration, prompt_yes_no
     from .._safe import safe_path_display
 
     it = iterations[0]
@@ -317,12 +317,7 @@ def _confirm_video(
         # but note it's not directly applicable to video timing.
         print(f"   {C.DIM}eta:{C.END}    {format_duration(eta_seconds)} (image-history estimate, video TBD)")
     print()
-    try:
-        ans = input("Continue? [y/N] ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        print()
-        return False
-    return ans in ("y", "yes")
+    return prompt_yes_no()
 
 
 from .._t2x_orchestrator import _orchestrate_t2x

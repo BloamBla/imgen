@@ -41,6 +41,7 @@ from ..cmd_helpers import (
     open_results,
     megapixels_of,
     preflight_resources,
+    prompt_yes_no,
     resolve_output_layout,
     run_one_iteration,
 )
@@ -174,12 +175,7 @@ def _confirm_refine(
     if eta_seconds is not None:
         print(f"   {C.DIM}eta:{C.END}    {format_duration(eta_seconds)} (±50%)")
     print()
-    try:
-        ans = input("Continue? [y/N] ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        print()
-        return False
-    return ans in ("y", "yes")
+    return prompt_yes_no()
 
 
 def cmd_refine(args) -> int:

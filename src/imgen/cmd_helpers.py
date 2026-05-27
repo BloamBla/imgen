@@ -280,6 +280,32 @@ def require_style_or_prompt(
         )
 
 
+# ── Interactive confirm-gate helper ─────────────────────────────────────
+
+
+def prompt_yes_no(question: str = "Continue? [y/N] ") -> bool:
+    """Render ``question`` and return True iff the user types ``y`` /
+    ``yes`` (case-insensitive, surrounding whitespace tolerated).
+
+    Treats EOF (piped stdin closed) and KeyboardInterrupt (Ctrl-C) as
+    "no" — prints a trailing newline so the shell prompt re-appears
+    cleanly after the interrupt, then returns False.
+
+    v0.9.4 D5 (python MED-5) consolidates the identical try/input/
+    return-False boilerplate copied across 5 ``_confirm_*`` callers
+    (cmd_draw / cmd_refine / cmd_generate / cmd_batch / cmd_video).
+    Single source of truth for the [y/N] semantics: any future
+    contract change (e.g. accept ``yeah``, treat ``yn`` as ambiguous)
+    lands here.
+    """
+    try:
+        ans = input(question).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    return ans in ("y", "yes")
+
+
 # ── Output layout ───────────────────────────────────────────────────────
 
 
