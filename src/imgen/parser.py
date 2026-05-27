@@ -7,17 +7,35 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import re
+import unicodedata
 from pathlib import Path
 
 from typing import Any
 
 from . import __version__
+from ._safe import has_control_bytes
 from .backends import BUILTIN_BACKENDS, get_backend, list_backends
 from .colors import C, die, step
 from .defaults import DEFAULTS, MFLUX_PIN, PREVIEW_OVERRIDES
-from .models import _V07_TO_V08_MODEL_RENAMES, BUILTIN_MODELS, list_models
+from .models import (
+    _V07_TO_V08_MODEL_RENAMES,
+    _VALID_LORA_RANKS,
+    _VALID_QUANTIZE_TRAIN,
+    _VALID_TRAIN_RESOLUTIONS,
+    BUILTIN_MODELS,
+    list_models,
+)
 from .paths import DEFAULT_OUTPUT_DIR, HF_CACHE, SAFE_OUTPUT_EXTS
 from .styles import get_style, list_styles, parse_style_list
+
+
+# §R.1 python H-3: ``[a-z0-9]`` boundaries reject pure-dash slugs
+# (``---``, ``-foo``, ``foo-``) and stray punctuation. Body may contain
+# ``-`` and ``_``; total length 1-32 enforced by length checks in
+# :func:`_lora_name_arg` (regex itself stays anchored + permissive on
+# length so the length error path stays user-readable).
+_LORA_NAME_RE = re.compile(r"[a-z0-9](?:[a-z0-9_\-]*[a-z0-9])?")
 
 
 def _style_list_type(value: str) -> list[str]:
@@ -274,6 +292,113 @@ def _lora_refs_arg(s: str):
             f"(check for stray commas in {s!r})"
         )
     return [_lora_ref_arg(p) for p in parts]
+
+
+# ── v0.10.0 — training argparse validators (commit 4) ──────────────────
+#
+# Per [[project-v100-design]] §F + §R.1 ROUND-1 CLOSURES. The
+# ``--name`` slug flows into a filesystem path component
+# (``~/.imgen/loras/<name>.safetensors``), a CLI argument
+# (``--lora <name>`` on draw/refine/generate), and a meta-json dict key
+# — one tight grammar guards all three. The ``--trigger`` value flows
+# into the auto-prepended prompt string used at inference time, and is
+# rendered in confirm-gate output + history.jsonl + meta.json display,
+# so it gets the same C0/DEL/C1 control-byte rejection as
+# ``_clean_prompt_arg`` plus a Unicode ``Cf``/``Mn`` rejection (security
+# M-2 — RLO/ZWSP/combining marks would let a benign-looking trigger
+# spoof another LoRA's identity in Finder / `imgen lora list` display).
+
+def _lora_name_arg(s: str) -> str:
+    """argparse validator for ``imgen train --name`` and the future
+    ``imgen lora rm/rename --name`` surface.
+
+    Slug grammar: ``[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?`` — must start
+    and end with ASCII alnum, body may contain ``-`` or ``_``. Total
+    length 1-32 chars. Single character is allowed (start == end).
+
+    Why this grammar:
+
+    * **Filesystem-safe**: lowercase-only, no traversal (`/`, `..`),
+      no shell metachars (`;`, `|`, `&`, `$`, backslash), no control
+      bytes — the slug is concatenated into a path component without
+      further sanitisation.
+    * **CLI-safe**: no flag-shape collisions (`--name -foo` would be
+      mistaken for a flag; rejecting leading `-` blocks that). No
+      whitespace splits.
+    * **Display-safe**: no non-ASCII — display in mixed terminals /
+      Finder / HTML logs stays predictable. (Trigger words ARE
+      Unicode-capable; the slug is more constrained because it's
+      also a CLI handle.)
+    """
+    if not s:
+        raise argparse.ArgumentTypeError("--name cannot be empty")
+    if len(s) > 32:
+        raise argparse.ArgumentTypeError(
+            f"--name too long ({len(s)} > 32 chars)"
+        )
+    if not _LORA_NAME_RE.fullmatch(s):
+        raise argparse.ArgumentTypeError(
+            f"--name must match [a-z0-9](?:[a-z0-9_-]*[a-z0-9])? — "
+            f"lowercase ASCII alnum at both ends, body may contain "
+            f"'-' or '_'. Got {s!r}."
+        )
+    return s
+
+
+def _trigger_token_arg(s: str) -> str:
+    """argparse validator for ``imgen train --trigger``.
+
+    Trigger words are natural-language prompt fragments
+    auto-prepended at inference time (e.g. ``"al1na woman"`` for a
+    person-identity LoRA). The grammar is permissive on script
+    (English, Cyrillic, CJK, punctuation, spaces) but strict on
+    invisible/control characters.
+
+    Rejected:
+
+    * Empty or longer than 64 characters.
+    * Leading/trailing whitespace (strip before passing — silent
+      strip would mask "did the user really mean a leading space?").
+    * C0 (0x00-0x1F) / DEL (0x7F) / C1 (0x80-0x9F) control bytes —
+      escape sequences would corrupt confirm-gate display and log
+      files (§R.1 security M-2 + same posture as
+      :func:`_clean_prompt_arg`).
+    * Unicode ``Cf`` (format) category: RLO/LRO/ZWSP/ZWNJ/BOM — bidi
+      overrides can flip the visual order of a string; zero-width
+      chars can make ``"al1na"`` and ``"al\\u200B1na"`` look
+      identical in CLI display.
+    * Unicode ``Mn`` (nonspacing mark) category: combining
+      diacritics — ``"e\\u0301"`` (e + combining acute) visually
+      equals ``"é"`` but compares unequal as a string, which would
+      let two LoRAs share a "display name" while having different
+      triggers (§R.1 security M-2).
+    """
+    if not s:
+        raise argparse.ArgumentTypeError("--trigger cannot be empty")
+    if s != s.strip():
+        raise argparse.ArgumentTypeError(
+            "--trigger has leading/trailing whitespace (strip it; "
+            "silent strip would mask intent)"
+        )
+    if len(s) > 64:
+        raise argparse.ArgumentTypeError(
+            f"--trigger too long ({len(s)} > 64 chars)"
+        )
+    if has_control_bytes(s):
+        raise argparse.ArgumentTypeError(
+            "--trigger contains control bytes (C0/DEL/C1) — reject so "
+            "they don't inject escape sequences into confirm-gate / "
+            "history.jsonl / meta.json display"
+        )
+    for ch in s:
+        cat = unicodedata.category(ch)
+        if cat in ("Cf", "Mn"):
+            raise argparse.ArgumentTypeError(
+                f"--trigger contains disallowed Unicode (category {cat}, "
+                f"U+{ord(ch):04X} {ch!r}): bidi-override / zero-width / "
+                f"combining-mark characters can spoof identity"
+            )
+    return s
 
 
 # ── v0.8.0 — CLI rename helpers (commits 4a + 4b) ───────────────────────
@@ -552,6 +677,18 @@ def build_parser(
     )
     _add_video_args(v, defaults)
 
+    # train — v0.10.0 LoRA fine-tuning. New subcommand for the first
+    # training surface on imgen. Wraps mflux-train via the
+    # MfluxEngine.train Protocol verb (commit 5+); klein-4b is the
+    # only base in v0.10.0 (other bases trigger-gated for v0.10.x).
+    # See [[project-v100-design]] §F.
+    t = sub.add_parser(
+        "train",
+        help="Train a LoRA adapter from a dataset of images. "
+             "v0.10.0+ — uses mflux-train via flux2-klein-4b base.",
+    )
+    _add_train_args(t, defaults)
+
     return p
 
 
@@ -563,12 +700,13 @@ def _add_run_control_args(
     yes_help: str = "Skip the [y/N] confirm gate",
     dry_run_help: str = "Show mflux command without running",
     force_help: str = "Skip resource checks (RAM, parallel mflux, etc.) and try anyway. Use at your own risk.",
+    preview_supported: bool = True,
 ) -> None:
     """Universal run-control flags shared by every subcommand
-    (generate / batch / draw / refine). v0.7.9 extraction — closes
-    python NIT #6 from the v0.7.5 review trail (deferred until
-    pattern emerged; the 3rd subcommand `refine` crossed the
-    threshold and v0.7.8 architect re-confirmed the rule).
+    (generate / batch / draw / refine / video / train). v0.7.9
+    extraction — closes python NIT #6 from the v0.7.5 review trail
+    (deferred until pattern emerged; the 3rd subcommand `refine`
+    crossed the threshold and v0.7.8 architect re-confirmed the rule).
 
     Per-subcommand help text via kwargs — flag SHAPE (action,
     dashes, short-form) centralised so a future flag-shape change
@@ -577,10 +715,19 @@ def _add_run_control_args(
     keyword default is a generic phrasing that works without
     customisation when a future subcommand wants minimum-overhead
     onboarding.
+
+    ``preview_supported`` (§R.1 memo M.5 — v0.10.0 commit 4): when
+    ``False``, the ``-p/--preview`` flag is **omitted entirely** (not
+    suppressed via ``argparse.SUPPRESS``). Subcommands without a
+    preview mode (``imgen train``) need ``--preview`` to fail at
+    parse time so a user typing it gets an immediate error instead
+    of silent acceptance. ``argparse.SUPPRESS`` only hides help;
+    omission rejects the argument.
     """
-    p.add_argument(
-        "-p", "--preview", action="store_true", help=preview_help,
-    )
+    if preview_supported:
+        p.add_argument(
+            "-p", "--preview", action="store_true", help=preview_help,
+        )
     p.add_argument("--no-open", action="store_true", help=no_open_help)
     p.add_argument("-y", "--yes", action="store_true", help=yes_help)
     p.add_argument("--dry-run", action="store_true", help=dry_run_help)
@@ -1130,6 +1277,125 @@ def _add_video_args(
     )
     _add_enhance_args(p)
     _add_lora_args(p)
+
+
+def _add_train_args(
+    p: argparse.ArgumentParser,
+    defaults: dict[str, Any],
+) -> None:
+    """Argparse stanza for ``imgen train`` — v0.10.0 LoRA training.
+
+    All required values via flags (no positional). Trigger is REQUIRED
+    per [[project-v100-lora-train-locked-decisions]] — auto-suggest
+    deliberately not supported (the user must take ownership of the
+    trigger word so collisions with existing vocabulary are visible at
+    train time, not surprises at inference time).
+
+    Optional parameters default to ``None``; cmd_train resolves
+    ``None`` against the base model's :class:`TrainingConfig` defaults
+    so the registry remains the single source of truth (§R.1 python
+    H-13 closure — argparse ``choices=`` reference the same shared
+    constants used by ``TrainingConfig.__post_init__``).
+    """
+    # Required: dataset directory, LoRA name, trigger word.
+    p.add_argument(
+        "--dataset", type=Path, required=True, metavar="DIR",
+        help="Path to dataset directory containing images "
+             "(+ optional <stem>.txt sidecars). Non-recursive. "
+             "Convention: ~/.imgen/datasets/<NAME>/.",
+    )
+    p.add_argument(
+        "--name", type=_lora_name_arg, required=True, metavar="NAME",
+        help="LoRA output name (a-z, 0-9, -, _; 1-32 chars). "
+             "Output: ~/.imgen/loras/<NAME>.safetensors + .meta.json. "
+             "Use --lora <NAME> on imgen draw/refine/generate to load.",
+    )
+    p.add_argument(
+        "--trigger", type=_trigger_token_arg, required=True, metavar="TOKEN",
+        help="Trigger word/phrase auto-prepended to imgen draw prompts "
+             "when this LoRA is loaded (e.g. 'al1na woman' for a person "
+             "identity LoRA). 1-64 chars; control-byte + bidi/zero-width "
+             "filter applied.",
+    )
+
+    # Optional: training params. Defaults come from
+    # :class:`TrainingConfig` at resolve time (commit 8); ``None``
+    # here is the sentinel for "no CLI override".
+    p.add_argument(
+        "--base", type=str, default="flux2-klein-4b", metavar="NAME",
+        help="Training base model (default flux2-klein-4b). v0.10.0 "
+             "ships klein-4b only; other bases trigger-gated for v0.10.x.",
+    )
+    p.add_argument(
+        "--steps", type=_int_range(50, 5000), default=None,
+        help="Total training steps (default: 88 × N_images per "
+             "TrainingConfig.default_steps_per_image).",
+    )
+    p.add_argument(
+        "--rank", type=int, choices=sorted(_VALID_LORA_RANKS), default=None,
+        help="LoRA rank (default 16). Higher = stronger likeness but "
+             "larger .safetensors + more RAM.",
+    )
+    p.add_argument(
+        "--quantize", type=int, choices=sorted(_VALID_QUANTIZE_TRAIN),
+        default=None,
+        help="mflux-train quantization (default 4). Lower = less RAM "
+             "but slower convergence. ``0`` (bf16) is not accepted by "
+             "mflux-train for training.",
+    )
+    p.add_argument(
+        "--max-resolution", type=int,
+        choices=sorted(_VALID_TRAIN_RESOLUTIONS),
+        default=None,
+        help="Training image resolution (default 512). 512 fits 32 GB "
+             "envelope; 768+ pushes RAM ceiling on M2 Pro.",
+    )
+    # §R.1 memo §M.12 (round-2 N-3): mflux-train rejects
+    # ``monitoring.generate_image_frequency=0`` with
+    # ``ValueError: Monitoring generate_image_frequency must be > 0``
+    # (verified via ``mflux-train --dry-run`` 2026-05-28). Floor stays
+    # at 1; "disable previews" path goes through a high-N sentinel
+    # (e.g. ``--preview-every 999`` with --steps below it).
+    p.add_argument(
+        "--preview-every", type=_int_range(1, 1000), default=None,
+        metavar="N",
+        help="Generate preview image every N steps (default 100; "
+             "colleague recipe used 10 which doubled wall time). "
+             "Floor 1 — mflux-train rejects 0; use a value above "
+             "--steps to skip previews entirely.",
+    )
+    p.add_argument(
+        "--seed", type=_int_range(0, 2**32 - 1), default=None,
+        help="Training seed (default: random base seed).",
+    )
+    p.add_argument(
+        "--battery-stop", type=_int_range(0, 100), default=20, metavar="PCT",
+        help="Stop training if battery drops below this %% (default 20; "
+             "mflux-train default 5 — too risky for overnight runs).",
+    )
+    p.add_argument(
+        "--overwrite", action="store_true",
+        help="Overwrite existing ~/.imgen/loras/<name>.safetensors "
+             "(default: refuse if exists).",
+    )
+
+    # Universal run-control flags. ``preview_supported=False`` (§R.1
+    # memo M.5 lock-in): train has no preview mode, so ``--preview``
+    # is NOT registered. Help text customised for the training
+    # surface (10h wall, scratch cleanup, mflux-train config).
+    _add_run_control_args(
+        p,
+        no_open_help="Don't open ~/.imgen/loras/ in Finder after training",
+        yes_help="Skip the [y/N] confirm gate (~10h wall acknowledged)",
+        dry_run_help="Show mflux-train config + invocation without running",
+        force_help="Skip preflight (RAM/battery/binary checks) and try "
+                   "anyway. Use at your own risk.",
+        preview_supported=False,
+    )
+
+    # Enhance flags NOT added — training has no prompt to enhance.
+    # LoRA flags NOT added — training PRODUCES a LoRA, doesn't consume
+    # one. See [[project-v100-design]] §F.
 
 
 def _add_enhance_args(p: argparse.ArgumentParser) -> None:

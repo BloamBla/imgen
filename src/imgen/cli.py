@@ -50,6 +50,7 @@ from .commands import (
     cmd_refine,
     cmd_replay,
     cmd_setup,
+    cmd_train,
     cmd_upgrade,
     cmd_video,
 )
@@ -68,7 +69,7 @@ from .paths import CONFIG_FILE
 _KNOWN_SUBCOMMANDS = {
     "setup", "doctor", "upgrade", "clean",
     "history", "last", "replay", "generate", "batch", "draw", "refine",
-    "video", "migrate-toml",
+    "video", "train", "migrate-toml",
 }
 
 _HANDLERS = {
@@ -84,6 +85,7 @@ _HANDLERS = {
     "draw": cmd_draw,
     "refine": cmd_refine,
     "video": cmd_video,
+    "train": cmd_train,
     "migrate-toml": cmd_migrate_toml,
 }
 
