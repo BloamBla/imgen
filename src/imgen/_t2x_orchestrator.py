@@ -326,10 +326,17 @@ def _orchestrate_t2x(
     # Post-run: gated-repo hint, results open, summary, hint, exit code.
     emit_gated_repo_hint_if_failed(failed=failed, backend_obj=be)
 
+    # v0.9.4 D3: ``Path()`` (= cwd) fallback replaced with ``None``.
+    # ``open_results`` skips the Finder open when ``run_dir`` is None;
+    # the pre-fix expression would have silently opened the process's
+    # cwd in Finder if both run_dir and explicit_output were ever None
+    # (today unreachable per resolve_output_layout invariant). For
+    # ``is_batch=True`` paths the Finder skip is the safer no-op vs the
+    # pre-fix silent-wrong-dir open.
     open_results(
         succeeded=succeeded,
         run_dir=run_dir if run_dir is not None else (
-            explicit_output.parent if explicit_output is not None else Path()
+            explicit_output.parent if explicit_output is not None else None
         ),
         is_batch=is_batch,
         no_open=args.no_open,

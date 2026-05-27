@@ -369,11 +369,17 @@ def cmd_refine(args) -> int:
 
     emit_gated_repo_hint_if_failed(failed=failed, backend_obj=be)
 
-    # 14) Open + summary + exit
+    # 14) Open + summary + exit. v0.9.4 D3: ``Path()`` (= cwd) fallback
+    # replaced with ``None``. ``open_results`` handles None by skipping
+    # the Finder open for is_batch=False (current refine shape always);
+    # the pre-fix expression would have silently opened the process's
+    # cwd in Finder if both run_dir and explicit_output were ever None
+    # (today unreachable per resolve_output_layout invariant — exactly
+    # one of the pair is non-None).
     open_results(
         succeeded=succeeded,
         run_dir=run_dir if run_dir is not None else (
-            explicit_output.parent if explicit_output is not None else Path()
+            explicit_output.parent if explicit_output is not None else None
         ),
         is_batch=False,
         no_open=args.no_open,
