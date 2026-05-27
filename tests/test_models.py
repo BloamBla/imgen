@@ -194,7 +194,9 @@ class TestBuiltinModelsLiteral:
         (flux→flux-kontext, qwen→qwen-image-edit-v1) per §I; other names
         unchanged. v0.9 commit 7 added ``ltx-video`` (§K, pulled forward
         from commit 9 in lockstep with cmd_video so parser default
-        resolves)."""
+        resolves). v0.10 commit 2 added ``flux2-klein-4b`` — the first
+        inference+training-capable Model per
+        [[project-v100-design]] §B.3."""
         from imgen.models import BUILTIN_MODELS
         assert set(BUILTIN_MODELS.keys()) == {
             "flux-kontext",
@@ -202,12 +204,14 @@ class TestBuiltinModelsLiteral:
             "flux-dev",
             "flux2-klein-edit-9b",
             "ltx-video",
+            "flux2-klein-4b",
         }
 
     def test_builtin_models_engine_routing(self):
         """Per-row engine routing — mflux for image, diffusers_mps for
         video. Pre-v0.9 this was an "all mflux" invariant; v0.9 added
-        the first diffusers_mps built-in (ltx-video) for t2v."""
+        the first diffusers_mps built-in (ltx-video) for t2v. v0.10
+        added flux2-klein-4b (mflux, inference+training)."""
         from imgen.models import BUILTIN_MODELS
         expected_engines = {
             "flux-kontext": "mflux",
@@ -215,6 +219,7 @@ class TestBuiltinModelsLiteral:
             "flux-dev": "mflux",
             "flux2-klein-edit-9b": "mflux",
             "ltx-video": "diffusers_mps",
+            "flux2-klein-4b": "mflux",
         }
         for name, m in BUILTIN_MODELS.items():
             assert m.engine == expected_engines[name], (
@@ -249,7 +254,9 @@ class TestBuiltinModelsLiteral:
         rename map). v0.7.x test fixtures like ``BACKENDS["flux"]``
         keep working unchanged. v0.9 commit 7 added ``ltx-video`` — no
         v0.7 alias rename map entry (v0.7 never had a video name);
-        passes through as-is."""
+        passes through as-is. v0.10 commit 2 added ``flux2-klein-4b``
+        — also not in the v0.7 rename map (klein-4b didn't exist in
+        v0.7); passes through unchanged."""
         from imgen.backends import BUILTIN_BACKENDS
         assert set(BUILTIN_BACKENDS.keys()) == {
             "flux",
@@ -257,6 +264,7 @@ class TestBuiltinModelsLiteral:
             "flux-dev",
             "flux2-klein-edit-9b",
             "ltx-video",
+            "flux2-klein-4b",
         }
 
     def test_backend_from_model_preserves_v07_shape(self):
@@ -272,6 +280,148 @@ class TestBuiltinModelsLiteral:
         assert be.needs_token is True
         assert be.lora_compat_group == "flux-1"
         assert be.hf_gated_repo == "black-forest-labs/FLUX.1-Kontext-dev"
+
+
+class TestFlux2Klein4bRow:
+    """v0.10.0 commit 2 — ``flux2-klein-4b`` BUILTIN_MODELS row per
+    [[project-v100-design]] §B.3 + §R.1 ROUND-1 CLOSURES.
+
+    First inference+training-capable Model. Honest-framed 6 added
+    surfaces per architect H-2 closure:
+    1. ``--list-models`` entry
+    2. doctor RAM forecast row (covered by per-Model RAM math)
+    3. parser default propagation (commit 4 for parser stanza)
+    4. ``lora_compat_group="flux2-klein-4b"`` for LoRA compat checks
+    5. real-mflux-smoke obligation (pre-tag gate per §K)
+    6. ``enhance_system_prompt`` decision (v0.10.0: None — klein-4b's
+       prompt conventions differ from FLUX.1; defer enhancer to v0.10.x)
+    """
+
+    def test_klein_4b_in_registry(self):
+        from imgen.models import BUILTIN_MODELS
+        assert "flux2-klein-4b" in BUILTIN_MODELS
+
+    def test_klein_4b_uses_mflux_generate_flux2_binary(self):
+        """Per colleague's recipe + mflux 0.17.5: klein-4b base t2i
+        inference uses ``mflux-generate-flux2``. The edit variant
+        (klein-9b) uses ``mflux-generate-flux2-edit``."""
+        from imgen.models import BUILTIN_MODELS
+        m = BUILTIN_MODELS["flux2-klein-4b"]
+        assert m.binary == "mflux-generate-flux2"
+        assert m.extra_args == ("-m", "flux2-klein-4b")
+
+    def test_klein_4b_is_t2i_not_edit(self):
+        """klein-4b is the base distilled t2i model — no input image,
+        no strength. Distinct from klein-edit-9b which IS i2i."""
+        from imgen.models import BUILTIN_MODELS
+        m = BUILTIN_MODELS["flux2-klein-4b"]
+        # No image flag for pure t2i — same shape as flux-dev (which
+        # has image_flag set for dataclass-shape consistency but the
+        # binary doesn't accept input). Per the FLUX.1 precedent in
+        # flux-dev's row (image_flag="--image-path" but gated by
+        # input_path is None at build_cmd), klein-4b mirrors that
+        # pattern. The build_cmd gate fires per existing logic.
+        assert m.supports_strength is False, (
+            "klein-4b is t2i base, not i2i edit — no strength"
+        )
+
+    def test_klein_4b_flux2_family_no_negative_no_cfg(self):
+        """FLUX.2 family (klein-4b + klein-9b-edit) deliberately
+        dropped negative prompt + CFG support. Per existing klein-9b
+        row pattern: min_guidance=max_guidance=1.0, supports_negative=False."""
+        from imgen.models import BUILTIN_MODELS
+        m = BUILTIN_MODELS["flux2-klein-4b"]
+        assert m.supports_negative is False, (
+            "FLUX.2 family does not support negative prompt"
+        )
+        assert m.default_guidance == 1.0
+        assert m.min_guidance == 1.0
+        assert m.max_guidance == 1.0, (
+            "klein-4b distilled — mflux pins guidance to 1.0 exactly"
+        )
+
+    def test_klein_4b_gated_repo(self):
+        from imgen.models import BUILTIN_MODELS
+        m = BUILTIN_MODELS["flux2-klein-4b"]
+        assert m.needs_token is True
+        assert m.hf_gated_repo == "black-forest-labs/FLUX.2-klein-4B"
+
+    def test_klein_4b_lora_compat_group_distinct(self):
+        """§R.1 architect H-5 closure: per-base lora_compat_group so
+        LoRAs trained on klein-4b don't silently mis-route to klein-9b
+        (architecturally different — 4B vs 9B params, distinct LoRA
+        weight tensors)."""
+        from imgen.models import BUILTIN_MODELS
+        m = BUILTIN_MODELS["flux2-klein-4b"]
+        assert m.lora_compat_group == "flux2-klein-4b"
+        # Distinct from klein-9b-edit row (which is "flux2-klein-9b")
+        m9b = BUILTIN_MODELS["flux2-klein-edit-9b"]
+        assert m.lora_compat_group != m9b.lora_compat_group, (
+            "klein-4b and klein-9b LoRAs are architecturally incompatible "
+            "— compat groups MUST differ to prevent silent mis-routing"
+        )
+
+    def test_klein_4b_inference_ram_lighter_than_klein_9b(self):
+        """Sanity: klein-4b has ~half the params of klein-9b, so
+        ram_baseline_gb should be meaningfully lower. Klein-9b row
+        sets baseline=27.0 (Q8 1MP); klein-4b should be ~half. Exact
+        value calibrated from real-mflux smoke (pre-tag gate per §L)."""
+        from imgen.models import BUILTIN_MODELS
+        m4b = BUILTIN_MODELS["flux2-klein-4b"]
+        m9b = BUILTIN_MODELS["flux2-klein-edit-9b"]
+        assert m4b.ram_baseline_gb > 0  # sentinel rule
+        assert m4b.ram_slope_gb_per_mp > 0
+        assert m4b.ram_baseline_gb < m9b.ram_baseline_gb, (
+            f"klein-4b ({m4b.ram_baseline_gb} GB) should have lower "
+            f"baseline than klein-9b ({m9b.ram_baseline_gb} GB)"
+        )
+
+    def test_klein_4b_training_supported(self):
+        """v0.10.0 FIRST training-capable Model. ``Model.training`` is
+        a TrainingConfig instance (not None)."""
+        from imgen.models import BUILTIN_MODELS, TrainingConfig
+        m = BUILTIN_MODELS["flux2-klein-4b"]
+        assert m.training_supported is True
+        assert isinstance(m.training, TrainingConfig)
+
+    def test_klein_4b_training_uses_module_constant(self):
+        """§R.1 architect C-2 closure: klein-4b row references
+        ``_KLEIN_4B_TARGET_MODULES`` module constant by NAME, not
+        embedded literal. Single source of truth (no schema-vs-content
+        drift)."""
+        from imgen.models import BUILTIN_MODELS, _KLEIN_4B_TARGET_MODULES
+        m = BUILTIN_MODELS["flux2-klein-4b"]
+        assert m.training.target_modules is _KLEIN_4B_TARGET_MODULES, (
+            "klein-4b row's target_modules MUST be the module-level "
+            "_KLEIN_4B_TARGET_MODULES constant (identity check), NOT "
+            "an inline copy — B-1 anti-pattern shape per v0.9.3 precedent."
+        )
+
+    def test_klein_4b_training_peak_ram_calibrated(self):
+        """Per colleague's M5 Pro 48 GB recipe: klein-4b training peaks
+        at 26-30 GB. v0.10.0 ships with training_peak_ram_gb=28.0
+        midpoint. Pre-tag smoke on M2 Pro 32 GB refines this (§M.1
+        open S-question)."""
+        from imgen.models import BUILTIN_MODELS
+        m = BUILTIN_MODELS["flux2-klein-4b"]
+        # Allow some range — exact value may be adjusted by smoke.
+        # Hard floor: must be > 0 (sentinel rule) and < total system
+        # RAM (sanity); soft target: in colleague's observed 26-30 range.
+        assert m.training.training_peak_ram_gb > 0
+        assert m.training.training_peak_ram_gb < 64.0, (
+            "training_peak_ram_gb of 64+ GB would mean klein-4b doesn't "
+            "fit M5 Pro 48 GB — contradicts colleague's evidence"
+        )
+
+    def test_klein_4b_no_enhance_system_prompt_at_v0_10_0(self):
+        """v0.10.0 ships klein-4b with ``enhance_system_prompt=None`` per
+        §B.3 honest framing: klein-4b prompt conventions differ from
+        FLUX.1 family; enhancer needs a dedicated per-Model prompt that
+        v0.10.0 defers. User can add via models.d/ TOML or v0.10.x can
+        ship one."""
+        from imgen.models import BUILTIN_MODELS
+        m = BUILTIN_MODELS["flux2-klein-4b"]
+        assert m.enhance_system_prompt is None
 
 
 class TestModelTrainingField:

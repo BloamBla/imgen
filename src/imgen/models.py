@@ -801,6 +801,77 @@ BUILTIN_MODELS: dict[str, Model] = {
         ),
     ),
 
+    # FLUX.2-klein-4b — v0.10.0 commit 2 (first inference+training-capable
+    # Model per [[project-v100-design]] §B.3 + §R.1 round-1 closures).
+    #
+    # FLUX.2 family base distilled t2i model. ``mflux-generate-flux2``
+    # binary (NOT ``-edit``) per colleague's [[project-colleague-lora-
+    # training-2026-05-27]] recipe. mflux pins guidance to 1.0 (distilled
+    # family); supports_negative=False per FLUX.2 family deliberate
+    # design (CFG/neg dropped upstream).
+    #
+    # Training capability: nested TrainingConfig with
+    # ``target_modules=_KLEIN_4B_TARGET_MODULES`` (module-level constant
+    # — single source of truth per architect C-2 closure; B-1
+    # anti-pattern shape that v0.9.3 fixed for pipeline_class).
+    # training_peak_ram_gb=28.0 calibrated from colleague's M5 Pro 48 GB
+    # observation (~26-30 GB resident at q4/rank-16/low_ram/sparse
+    # preview); M2 Pro 32 GB smoke at pre-tag gate refines this number
+    # (§M.1 open S-question — THE ship blocker for v0.10.0).
+    #
+    # RAM math: roughly half klein-9b (which has ram_baseline_gb=27.0
+    # at Q8 1MP). Klein-4b lighter ≈ 14 GB Q8 1MP baseline; same
+    # ~4 GB/MP activations slope (FLUX.2 attention shape).
+    #
+    # lora_compat_group="flux2-klein-4b" DISTINCT from klein-9b's
+    # "flux2-klein-9b" — 4B vs 9B param counts mean LoRAs are
+    # architecturally incompatible across the two; compat groups MUST
+    # differ to prevent silent mis-routing on `--lora bare-name`
+    # resolution (architect H-5 closure).
+    #
+    # enhance_system_prompt=None at v0.10.0 — klein-4b prompt
+    # conventions differ from FLUX.1 family; dedicated enhancer prompt
+    # deferred to v0.10.x once user shows demand (§B.3 honest framing
+    # of 6 added surfaces).
+    "flux2-klein-4b": Model(
+        engine="mflux",
+        binary="mflux-generate-flux2",
+        needs_token=True,
+        image_flag="--image-path",  # dataclass-shape consistency;
+                                    # build_cmd gates emission on
+                                    # input_path is None per existing
+                                    # flux-dev pattern (klein-4b base
+                                    # is t2i, not edit).
+        supports_strength=False,
+        supports_negative=False,  # FLUX.2 family deliberately dropped CFG/neg
+        extra_args=("-m", "flux2-klein-4b"),
+        enhance_system_prompt=None,
+        enhance_invariants=(),
+        lora_compat_group="flux2-klein-4b",
+        hf_gated_repo="black-forest-labs/FLUX.2-klein-4B",
+        # Per-Model RAM math: roughly half klein-9b (which is 27.0 at
+        # Q8 1MP). Klein-4b at Q8 1MP ≈ 14 GB; same ~4 GB/MP slope.
+        # Real-mflux-smoke per [[feedback-new-backend-real-smoke]]
+        # refines these at pre-tag gate per §K. Initial values
+        # conservative enough that preflight will gate gracefully even
+        # if smoke reveals slight under-estimation.
+        ram_baseline_gb=14.0,
+        ram_slope_gb_per_mp=4.0,
+        encoder_ram_gb=0.0,
+        # FLUX.2-klein distilled — mflux pins guidance to 1.0; reject
+        # anything else via min=max=1.0. Same posture as klein-9b row.
+        default_steps=20,
+        default_guidance=1.0,
+        min_guidance=1.0,
+        max_guidance=1.0,
+        # — v0.10.0 commit 2: training enabled —
+        training=TrainingConfig(
+            training_peak_ram_gb=28.0,  # colleague's M5 Pro observation;
+                                        # M2 Pro 32 GB smoke refines (§M.1)
+            target_modules=_KLEIN_4B_TARGET_MODULES,
+        ),
+    ),
+
     # FLUX.2-klein-edit-9b — Hires-Fix refine default (name unchanged at 4b).
     "flux2-klein-edit-9b": Model(
         engine="mflux",

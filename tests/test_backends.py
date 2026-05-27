@@ -18,10 +18,13 @@ def test_BACKENDS_contains_flux_qwen_flux_dev_flux2():
     ``imgen draw`` (t2i). v0.7.5: fourth backend ``flux2-klein-edit-9b``
     lands for ``imgen refine`` (Hires-Fix i2i via FLUX.2-klein-9B).
     v0.9 commit 7: fifth backend ``ltx-video`` lands for ``imgen video``
-    (t2v via diffusers_mps + LTX-Video). User TOMLs extend via
-    backends.d/ but BUILTIN_BACKENDS stays tight."""
+    (t2v via diffusers_mps + LTX-Video). v0.10 commit 2: sixth backend
+    ``flux2-klein-4b`` — first inference+training-capable Model per
+    [[project-v100-design]] §B.3. User TOMLs extend via backends.d/ but
+    BUILTIN_BACKENDS stays tight."""
     assert set(BACKENDS.keys()) == {
         "flux", "qwen", "flux-dev", "flux2-klein-edit-9b", "ltx-video",
+        "flux2-klein-4b",
     }
 
 
