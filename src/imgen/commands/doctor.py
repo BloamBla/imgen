@@ -867,11 +867,14 @@ def _render_ram_forecast_rows(available_ram: float) -> None:
     HF-whoami network probes + system reads that the RAM-table lock-
     in doesn't need to exercise).
     """
-    from ..engines import DiffusersMpsEngine, MfluxEngine
+    from ..engines import ENGINES, get_engine
     from ..engines.base import GenParams
     from ..models import BUILTIN_MODELS
-    mflux_engine = MfluxEngine()
-    diffusers_engine = DiffusersMpsEngine()
+    # v0.9.5 M-2: prebuild one instance per registered engine to avoid
+    # N-loop allocations across the per-Model grid. Single source of
+    # truth (ENGINES) for the engine-name → class mapping; a future
+    # 3rd engine automatically lands here once registered.
+    engine_instances = {name: get_engine(name) for name in ENGINES}
     # Sort by model name then quant for deterministic ordering.
     # Image rows (per-quant grid) — skips video Models whose
     # ``supported_quants=()`` makes the inner loop a no-op anyway.
@@ -882,10 +885,7 @@ def _render_ram_forecast_rows(available_ram: float) -> None:
             # (resolution × num_frames envelopes per §L instead of
             # per-quant rows; LTX is bf16-only at v0.9.0).
             continue
-        engine = (
-            mflux_engine if model.engine == "mflux"
-            else diffusers_engine
-        )
+        engine = engine_instances[model.engine]
         for q in sorted(model.supported_quants):
             params = GenParams(
                 prompt="", negative="", width=1024, height=1024,
@@ -926,7 +926,7 @@ def _render_ram_forecast_rows(available_ram: float) -> None:
                     loras=(),
                     num_frames=num_frames,
                 )
-                need = diffusers_engine.ram_estimate_gb(model, params)
+                need = engine_instances[model.engine].ram_estimate_gb(model, params)
                 # Video preflight adds a +3 GB safety buffer (§L);
                 # surface ✅ only when there's headroom for it,
                 # ⚠️ when base fits but buffer doesn't, ❌ otherwise.

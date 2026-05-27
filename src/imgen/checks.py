@@ -218,10 +218,12 @@ def ram_required_gb(
     )
 
     if model is not None:
-        engine = (
-            MfluxEngine() if model.engine == "mflux"
-            else DiffusersMpsEngine()
-        )
+        # v0.9.5 M-2: dispatch via ENGINES registry (single source of
+        # truth for engine-name → class). Old if/elif kept the
+        # ``"mflux" else default-to-DiffusersMps`` branch implicit —
+        # any future 3rd engine would silently land in the else.
+        from .engines import get_engine
+        engine = get_engine(model.engine)
         return engine.ram_estimate_gb(model, params)
 
     # Unknown model → conservative flux-class fallback. Same formula

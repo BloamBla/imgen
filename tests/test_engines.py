@@ -181,3 +181,111 @@ class TestMfluxEngineBuildCmdMatchesV07_17:
             f"  legacy: {legacy_argv}\n"
             f"  new:    {new_argv}"
         )
+
+
+# ── v0.9.5 M-2: Engine registry + get_engine helper ────────────────────
+
+
+class TestEngineRegistry:
+    """v0.9.5 architect M-2 closure: ``ENGINES`` dict + ``get_engine``
+    helper consolidate the previously-duplicated ``if engine == "mflux"
+    / elif "diffusers_mps"`` dispatch at 3 sites (``_engine_for_model``
+    in engine_dispatch, ``ram_required_gb`` in checks, doctor RAM
+    forecast). The registry is the single source of truth for the
+    ``engine name → Engine class`` mapping; adding a 3rd engine
+    becomes one-line in the dict instead of editing every dispatch
+    site.
+
+    ``Model.__post_init__`` keeps its literal ``{'mflux',
+    'diffusers_mps'}`` guard — its engine-conditional invariants
+    (mflux requires binary=, diffusers_mps requires repo=) are
+    intrinsically per-engine, not pure dispatch. A drift-lock test
+    (``test_engines_registry_matches_model_post_init``) pins the
+    registry key set against Model's accept set.
+
+    ``iteration_dryrun_display`` also keeps its branched code path —
+    its diffusers branch routes through ``_format_diffusers_dryrun``
+    / ``_format_diffusers_video_dryrun`` helpers (different shape per
+    output_type), NOT through ``Engine.format_dryrun`` (Engine
+    Protocol doesn't define that method). Moving the dryrun
+    rendering into the Engine Protocol is a v0.10.x design call.
+    """
+
+    def test_get_engine_mflux_returns_mflux_engine(self):
+        from imgen.engines import MfluxEngine, get_engine
+        engine = get_engine("mflux")
+        assert isinstance(engine, MfluxEngine)
+
+    def test_get_engine_diffusers_mps_returns_diffusers_mps_engine(self):
+        from imgen.engines import DiffusersMpsEngine, get_engine
+        engine = get_engine("diffusers_mps")
+        assert isinstance(engine, DiffusersMpsEngine)
+
+    def test_get_engine_unknown_raises_value_error(self):
+        from imgen.engines import get_engine
+        with pytest.raises(ValueError) as exc_info:
+            get_engine("nonexistent_engine")
+        msg = str(exc_info.value)
+        assert "nonexistent_engine" in msg
+        # Error message should list the valid engine names for
+        # discoverability.
+        assert "mflux" in msg
+        assert "diffusers_mps" in msg
+
+    def test_engines_registry_keys_match_model_post_init_accepts(self):
+        """Drift lock: ENGINES keys must match the engine names
+        Model.__post_init__ accepts. Adding a 3rd engine row to ENGINES
+        without extending Model's per-engine invariant block (or vice
+        versa) creates a silent registration gap — this test surfaces it.
+        """
+        from imgen.engines import ENGINES
+        from imgen.models import Model
+        # Probe each registered engine name through Model() — must NOT
+        # raise on the engine= check. Use minimal-but-valid Model fields
+        # per the engine's requirements (mflux: binary=; diffusers_mps:
+        # repo=).
+        for engine_name in ENGINES:
+            try:
+                if engine_name == "mflux":
+                    Model(
+                        engine=engine_name,
+                        binary="mflux-generate-fake",
+                        repo=None,
+                        ram_baseline_gb=1.0,
+                        ram_slope_gb_per_mp=0.1,
+                    )
+                elif engine_name == "diffusers_mps":
+                    Model(
+                        engine=engine_name,
+                        binary=None,
+                        repo="fake/fake",
+                        ram_baseline_gb=1.0,
+                        ram_slope_gb_per_mp=0.1,
+                    )
+                else:
+                    # New engine name in ENGINES but no probe known here
+                    # → drift between registry and this lock test. Either
+                    # the new engine row also needs a Model() probe
+                    # added here, or the drift is real.
+                    raise AssertionError(
+                        f"ENGINES has engine={engine_name!r} but this "
+                        "drift-lock test doesn't know how to construct "
+                        "a probe Model for it — extend the test."
+                    )
+            except ValueError as e:
+                raise AssertionError(
+                    f"Model.__post_init__ rejected engine={engine_name!r} "
+                    f"despite ENGINES registering it: {e}. "
+                    "Likely drift between the two sources of truth."
+                ) from e
+
+        # Reverse direction: a known-unaccepted engine name SHOULD raise
+        # at Model.__post_init__, confirming the literal guard still
+        # fires for unregistered names.
+        with pytest.raises(ValueError, match=r"engine='unknown'"):
+            Model(
+                engine="unknown",
+                binary="fake",
+                ram_baseline_gb=1.0,
+                ram_slope_gb_per_mp=0.1,
+            )

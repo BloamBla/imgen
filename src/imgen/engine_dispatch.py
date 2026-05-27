@@ -233,24 +233,29 @@ def _format_diffusers_video_dryrun(it: Iteration) -> str:
 def _engine_for_model(model):
     """Return the Engine implementation matching ``model.engine``.
 
-    v0.8.1 N-3 closure: unknown-engine path now dies with exit 2 (user
-    input class) rather than raising bare ValueError. The unknown
-    branch is theoretically unreachable today — ``Model.__post_init__``
-    enforces ``engine in {'mflux', 'diffusers_mps'}`` at construction
-    — but the v0.8.1 user-TOML schema extension widened the surface
-    area enough that hardening this gate is cheap defence-in-depth.
+    v0.8.1 N-3 closure: unknown-engine path dies with exit 2 (user
+    input class). The unknown branch is theoretically unreachable
+    today — ``Model.__post_init__`` enforces ``engine in {'mflux',
+    'diffusers_mps'}`` at construction — but the v0.8.1 user-TOML
+    schema extension widened the surface area enough that hardening
+    this gate is cheap defence-in-depth.
+
+    v0.9.5 M-2: dispatch via ``ENGINES`` registry instead of inline
+    if/elif. Same defence-in-depth via the registry's ValueError;
+    caught and re-raised as SystemExit(2) at this application
+    boundary so the user sees the canonical imgen die() format with
+    the engine name in the message.
     """
-    from .engines import DiffusersMpsEngine, MfluxEngine
-    if model.engine == "mflux":
-        return MfluxEngine()
-    if model.engine == "diffusers_mps":
-        return DiffusersMpsEngine()
-    die(
-        f"Model {getattr(model, 'binary', None) or getattr(model, 'repo', None)!r}: "
-        f"engine={model.engine!r} not recognised. "
-        "Expected one of {'mflux', 'diffusers_mps'}.",
-        code=2,
-    )
+    from .engines import get_engine
+    try:
+        return get_engine(model.engine)
+    except ValueError:
+        die(
+            f"Model {getattr(model, 'binary', None) or getattr(model, 'repo', None)!r}: "
+            f"engine={model.engine!r} not recognised. "
+            "Expected one of {'mflux', 'diffusers_mps'}.",
+            code=2,
+        )
 
 
 def validate_engine_params_or_die(model, *, params: GenParams) -> None:
