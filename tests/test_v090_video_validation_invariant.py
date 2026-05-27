@@ -102,6 +102,12 @@ class TestValidationParityParentVsRunner:
             (25, 60, True, "fps out of {24,25,30}"),
             (25, 15, True, "fps below allowlist"),
             (25, 23, True, "fps not in allowlist (close miss)"),
+            # num_frames lower-bound parity (v0.9.1 B-12 closure of
+            # §R.3 r2 python NIT-1): both layers must reject 0. The
+            # =1 case lives in TestKnownDivergence below because it
+            # exposes the per-model minimum (parent rejects via
+            # VideoConfig, runner accepts via basic 1..1024 sanity).
+            (0, 24, True, "num_frames below sanity minimum"),
         ],
     )
     def test_parent_and_runner_agree_on_matrix(
@@ -181,3 +187,21 @@ class TestKnownDivergence:
 
         assert parent_errors, "parent must reject 258 > max=257"
         assert runner_rc == 0, "runner sanity cap 1024 accepts 258"
+
+    def test_per_model_min_caught_only_by_parent(self):
+        """v0.9.1 B-12 lower-bound divergence: parent enforces a
+        per-Model floor derived from VideoConfig.default_num_frames
+        (~12 for LTX's default of 25). Runner only enforces the basic
+        sanity floor of 1. ``num_frames=1`` therefore rejects at the
+        parent layer but accepts at the runner — same structural
+        divergence as ``num_frames=258`` (max side) and alignment."""
+        from imgen.engines import DiffusersMpsEngine
+        from imgen.engines._diffusers_runner import _validate_payload_shape
+
+        parent_errors = DiffusersMpsEngine().validate(
+            _ltx_model(), _video_params(num_frames=1, fps=24),
+        )
+        runner_rc = _validate_payload_shape(_runner_payload(1, 24))
+
+        assert parent_errors, "parent must reject num_frames=1 < per-Model floor"
+        assert runner_rc == 0, "runner sanity floor 1 accepts 1"
