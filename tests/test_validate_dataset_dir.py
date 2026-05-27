@@ -393,14 +393,6 @@ class TestCmdTrainStub:
         from imgen.commands.train import cmd_train
         assert callable(cmd_train)
 
-    def test_cmd_train_raises_not_implemented_until_commit_8(self):
-        from imgen.commands.train import cmd_train
-        from types import SimpleNamespace
-        # Empty Namespace — cmd_train should raise BEFORE doing any
-        # arg-reading work (this is a stub, not even early validation).
-        with pytest.raises(NotImplementedError, match=r"(?i)(commit 8|cmd_train)"):
-            cmd_train(SimpleNamespace())
-
     def test_cmd_train_exported_from_commands_package(self):
         """commands/__init__.py re-exports cmd_train per the project's
         dispatch convention."""

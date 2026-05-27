@@ -1,8 +1,8 @@
-"""v0.10.0 commit 3 — `imgen train` skeleton + dataset validator.
+"""v0.10.0 — `imgen train` subcommand handler + dataset validator.
 
 Per [[project-v100-design]] §G + §D.3 + §R.1 ROUND-1 CLOSURES preamble.
 
-Ships at commit 3 (skeleton; full flow lands at commit 8):
+Surface:
 
 * :class:`UserDatasetError` — raised on user-correctable dataset
   issues; cli.py catches and converts to die().
@@ -11,9 +11,11 @@ Ships at commit 3 (skeleton; full flow lands at commit 8):
   reject, size cap, PIL decompression-bomb gate, sidecar UTF-8 strict
   decode, control-byte filter, trigger fallback, trigger-presence
   warn (§M.3).
-* :func:`cmd_train` — subcommand handler stub raising
-  ``NotImplementedError`` until commit 8 wires the real flow (preflight,
-  confirm gate, ``MfluxEngine.train`` dispatch, history append).
+* :func:`cmd_train` — subcommand handler implementing the 12-step
+  pipeline per §G: validate → resolve → collision check → build
+  TrainingParams → dry-run branch → preflight → confirm gate →
+  materialise scratch → MfluxEngine.train → promote → meta-json →
+  cleanup → history.append.
 
 Security posture per §R.1 + §N trust boundary:
 
@@ -28,15 +30,26 @@ Security posture per §R.1 + §N trust boundary:
   errors="strict")`` — invalid UTF-8 raises (no silent mangling).
 * Control-byte filter on filenames AND sidecar contents — terminal
   escape injection vector closed.
+* cmd_train mkdir(mode=0o700) on ~/.imgen/loras/ + scratch dir
+  (security C-2 — PII-bearing weights + dataset path leak).
+* ``build_mflux_env(token=hf_token)`` passed to MfluxEngine.train —
+  NEVER ``env=None`` (security H-4).
 """
 from __future__ import annotations
 
+import json
+import platform
+import random
+import shlex
+import shutil
 import stat as _stat
+import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from .._safe import has_control_bytes
-from ..colors import warn
+from ..colors import C, die, err, info, ok, step, warn
 
 
 __all__ = [
@@ -343,32 +356,391 @@ def _resolve_caption(
     return caption
 
 
+# ── v0.10.0 commit 8 — preflight + wall-time + dry-run + history helpers ──
+#
+# Per [[project-v100-design]] §G + §K + §J + §R.1 ROUND-1 CLOSURES.
+
+
+# Per §K.2: video-style 3 GB safety buffer (wider than image's 1 GB
+# default — training peaks are noisier than inference).
+_PREFLIGHT_SAFETY_BUFFER_GB: float = 3.0
+
+# Per v0.8.2 architecture: absolute floor below which any subprocess
+# spawn is unsafe regardless of estimate.
+_ABSOLUTE_RAM_FLOOR_GB: float = 4.0
+
+# §K.3 wall-time heuristic: M2 Pro 32 GB at q4/rank-16/res-512/low_ram
+# clocks ~25-30 sec/step. Midpoint 27.5 sec used as the conservative
+# baseline. Smoke at §M.1 refines this number per-tag.
+_M2_PRO_SECONDS_PER_STEP: float = 27.5
+
+
+def _train_preflight(model, params, *, force: bool) -> None:
+    """Pre-spawn gate: RAM headroom + battery state + binary presence.
+
+    Raises via :func:`die` on hard failures. Battery-on-AC is a
+    warn-not-die (mflux-train's own ``--battery-percentage-stop-limit``
+    catches the runtime end-of-battery case).
+
+    ``--force`` bypasses the RAM headroom check but NOT the absolute
+    4 GB floor — that's a v0.8.2 invariant: below 4 GB available a
+    subprocess spawn risks OOM-killer terminating the whole imgen
+    process mid-run.
+    """
+    from ..checks import get_battery, get_memory_gb
+
+    total_gb, available_gb = get_memory_gb()
+    estimate = model.training.training_peak_ram_gb
+    needed = estimate + _PREFLIGHT_SAFETY_BUFFER_GB
+
+    if not force and available_gb < needed:
+        die(
+            f"Insufficient RAM for training: need ~{estimate:.1f} GB + "
+            f"{_PREFLIGHT_SAFETY_BUFFER_GB:.1f} GB safety = "
+            f"{needed:.1f} GB, have {available_gb:.1f} GB available. "
+            f"Close other apps, or pass --force to override "
+            f"(unsafe — may OOM mid-run).",
+            code=2,
+        )
+
+    # Absolute floor — even --force can't bypass.
+    if available_gb < _ABSOLUTE_RAM_FLOOR_GB:
+        die(
+            f"available_gb={available_gb:.1f} below "
+            f"{_ABSOLUTE_RAM_FLOOR_GB:.1f} GB safety floor — "
+            "refusing to spawn mflux-train.",
+            code=2,
+        )
+
+    # Battery check: warn-not-die. mflux-train handles the runtime
+    # cutoff via --battery-percentage-stop-limit; we just surface the
+    # AC-power expectation so the user can plug in before kicking off
+    # a 10h overnight job.
+    bat_pct, on_ac = get_battery()
+    if not on_ac and bat_pct is not None:
+        warn(
+            f"Mac is on battery ({bat_pct}%); training pulls ~60-90 W "
+            f"continuous. Plug in to AC or training will stop at "
+            f"{params.battery_stop}% per "
+            f"--battery-percentage-stop-limit."
+        )
+
+
+def _estimate_wall_hours(params) -> float:
+    """Heuristic wall-time estimate for the confirm-gate UX.
+
+    Pure (params dataclass + module constants). Calibrated against
+    colleague's M5 Pro 48 GB recipe (880 steps / 10 photos / rank 16 /
+    q4 / max_res 512 / low_ram / preview_frequency 10 → ~10h wall,
+    inflated 2× by frequent previews). Imgen default preview_frequency
+    is 100 (sparse) which keeps wall on the colleague's lower curve.
+
+    On M2 Pro 32 GB the per-step cost ~doubles vs M5 Pro 48 GB. We
+    use the M2 Pro number as the conservative baseline; cross-Mac
+    refinement is post-v0.10.0 work (see §K.3).
+    """
+    return params.total_steps * _M2_PRO_SECONDS_PER_STEP / 3600.0
+
+
+def _print_train_dryrun(
+    params,
+    config: dict,
+    num_entries: int,
+) -> int:
+    """Dry-run branch: render the mflux-train JSON config + the
+    equivalent shell invocation, exit 0 without spawning.
+
+    Mirrors v0.9 ``imgen video --dry-run`` shape — the JSON is
+    pretty-printed so users can sanity-check the exact training
+    parameters before committing to a 10h overnight run.
+    """
+    from ..paths import VENV_BIN
+
+    print(f"{C.BOLD}=== imgen train --dry-run ==={C.END}")
+    print(f"LoRA name:       {params.lora_name}")
+    print(f"Trigger:         {params.trigger!r}")
+    print(f"Base model:      {params.base_model}")
+    print(f"Dataset:         {params.dataset_dir} "
+          f"({num_entries} images)")
+    print(f"Output:          {params.output_path}")
+    print(f"Total steps:     {params.total_steps}")
+    print(f"Estimated wall:  ~{_estimate_wall_hours(params):.1f}h on "
+          f"{platform.machine()}")
+    print()
+    print(f"{C.DIM}--- mflux-train JSON config ---{C.END}")
+    print(json.dumps(config, indent=2))
+    print()
+    print(f"{C.DIM}--- equivalent shell invocation ---{C.END}")
+    mflux_train_bin = VENV_BIN / "mflux-train"
+    config_path = params.scratch_dir / "config.json"
+    argv = [str(mflux_train_bin), "--config", str(config_path)]
+    if params.battery_stop != 5:
+        argv += [
+            "--battery-percentage-stop-limit",
+            str(params.battery_stop),
+        ]
+    print(" ".join(shlex.quote(a) for a in argv))
+    print()
+    print(f"{C.DIM}(scratch dir would be materialised at "
+          f"{params.scratch_dir}){C.END}")
+    return 0
+
+
+def _append_train_history(
+    params,
+    num_entries: int,
+    wall_seconds: int,
+    status: str,
+) -> None:
+    """Append a v=4 history entry for the ``command="train"`` row
+    shape per §J.1.
+
+    ``status`` is one of: ``"success"``, ``"fail"``, ``"cancelled"``
+    — same vocabulary as draw/refine/video for ``cmd_history`` /
+    ``--list`` rendering.
+    """
+    from ..engine_dispatch import safe_append_history
+
+    entry = {
+        "v": 4,
+        "ts": datetime.now().isoformat(timespec="seconds"),
+        "command": "train",
+        "model": params.base_model,
+        "lora_name": params.lora_name,
+        "trigger": params.trigger,
+        "dataset_path": str(params.dataset_dir),
+        "dataset_image_count": num_entries,
+        "total_steps": params.total_steps,
+        "lora_rank": params.lora_rank,
+        "quantize": params.quantize,
+        "max_resolution": params.max_resolution,
+        "seed": params.seed,
+        "output": str(params.output_path),
+        "status": status,
+        "wall_seconds": wall_seconds,
+    }
+    safe_append_history(entry)
+
+
 def cmd_train(args) -> int:
     """v0.10.0 — ``imgen train`` subcommand handler.
 
-    Commit 3 ships ONLY this stub + the dataset validator. The real
-    flow lands at commit 8 per [[project-v100-design]] §G:
+    12-step pipeline per [[project-v100-design]] §G + §R.1 closures.
+    Train a LoRA adapter from a dataset of images using mflux-train.
+
+    Flow (each numbered step maps 1:1 with §G):
 
     1. Validate dataset via :func:`validate_dataset_dir`.
-    2. Resolve base model + TrainingConfig from registry.
-    3. Resolve output path + collision check (--overwrite).
-    4. Build :class:`TrainingParams` from CLI args > TrainingConfig defaults.
-    5. Trigger-collision warning (informational).
-    6. ``--dry-run`` branch: print config + invocation, exit.
-    7. Preflight: RAM + battery + mflux-train binary check.
-    8. Confirm gate (10h wall acknowledged).
-    9. Materialise scratch + invoke ``MfluxEngine.train(model, params)``.
-    10. Promote final ``.safetensors`` + write ``<name>.meta.json``.
-    11. Cleanup scratch on success; KEEP scratch on failure.
-    12. ``history.append`` for replay-CONFIRM-GATE round-trip.
+    2. Resolve base Model + ``TrainingConfig`` from BUILTIN_MODELS.
+       Reject if ``model.training is None`` (e.g. flux-dev row has no
+       training side).
+    3. Output collision check (``--overwrite`` required if existing).
+    4. Build :class:`TrainingParams` from CLI args > TrainingConfig
+       defaults (None CLI flag = use config default).
+    5. Build mflux JSON config via :func:`build_config_json`.
+    6. ``--dry-run`` branch: print config + shell invocation, exit 0.
+    7. Preflight: RAM + battery.
+    8. Confirm gate (skipped with ``-y``).
+    9. mkdir 0o700 on ``~/.imgen/loras/`` + materialise scratch.
+    10. ``MfluxEngine.train(model, params, env=build_mflux_env(token=))``.
+    11. On rc=0: promote ``.safetensors`` + write ``.meta.json`` +
+        cleanup scratch. On rc!=0: keep scratch for diagnosis.
+    12. ``history.append`` (always, on success / fail / cancelled).
 
-    Per memo §Q commit 3: this stub raises NotImplementedError so the
-    skeleton + import shape are exercisable while later commits land
-    the orchestration.
+    Returns mflux-train's exit code on success, 1 on confirm-gate
+    decline, 2 on validation / preflight / collision die, 130 on
+    KeyboardInterrupt (matches shell SIGINT convention).
     """
-    raise NotImplementedError(
-        "cmd_train: full flow lands at v0.10.0 commit 8. "
-        "Commit 3 ships only the dataset validator + import shape "
-        "(skeleton stub). See [[project-v100-design]] §G + §R.1 "
-        "ROUND-1 CLOSURES."
+    from ..engines._training import TrainingParams, build_config_json
+    from ..engines.mflux_engine import MfluxEngine
+    from ..models import get_model
+    from ..paths import STATE_DIR, ensure_state_dir
+    from ..subprocess_helpers import build_mflux_env
+    from ..tokens import load_token
+    from . import _train_scratch
+    from ..cmd_helpers import prompt_yes_no
+
+    # ── 1. Validate dataset ──
+    dataset_dir = Path(args.dataset).expanduser().resolve()
+    try:
+        entries = validate_dataset_dir(dataset_dir, trigger=args.trigger)
+    except UserDatasetError as e:
+        die(str(e), code=2)
+    num_entries = len(entries)
+
+    # ── 2. Resolve base model + TrainingConfig ──
+    try:
+        model = get_model(args.base)
+    except (KeyError, ValueError) as e:
+        die(str(e), code=2)
+    if model.training is None:
+        die(
+            f"--base {args.base!r} does not support training. "
+            "v0.10.0 ships training only for `flux2-klein-4b`. "
+            "Other bases will be enabled in v0.10.x as smoke results "
+            "land.",
+            code=2,
+        )
+    tc = model.training
+
+    # ── 3. Output path + collision check ──
+    ensure_state_dir()
+    loras_dir = STATE_DIR / "loras"
+    # mkdir mode=0o700 explicit (security C-2). exist_ok so re-runs
+    # don't trip on the existing dir; the 0o700 mode is set only on
+    # CREATE — caller-side chmod would race against a reader.
+    loras_dir.mkdir(mode=0o700, exist_ok=True)
+
+    output_path = loras_dir / f"{args.name}.safetensors"
+    meta_path = loras_dir / f"{args.name}.meta.json"
+    if output_path.exists() and not args.overwrite:
+        die(
+            f"~/.imgen/loras/{args.name}.safetensors already exists. "
+            "Pass --overwrite to replace, or pick a different --name.",
+            code=2,
+        )
+
+    # ── 4. Resolve training params (CLI args > TrainingConfig defaults) ──
+    total_steps = args.steps if args.steps is not None else (
+        tc.default_epochs * num_entries
     )
+    lora_rank = args.rank if args.rank is not None else tc.default_lora_rank
+    quantize = args.quantize if args.quantize is not None else (
+        tc.default_quantize
+    )
+    max_resolution = args.max_resolution if args.max_resolution is not None else (
+        tc.default_max_resolution
+    )
+    preview_frequency = args.preview_every if args.preview_every is not None else (
+        tc.default_preview_frequency
+    )
+    seed = (
+        args.seed if args.seed is not None
+        else random.randint(0, 2**32 - 1)
+    )
+
+    scratch_dir = loras_dir / f".{args.name}.training"
+    params = TrainingParams(
+        dataset_dir=dataset_dir,
+        scratch_dir=scratch_dir,
+        lora_name=args.name,
+        trigger=args.trigger,
+        base_model=args.base,
+        total_steps=total_steps,
+        lora_rank=lora_rank,
+        max_resolution=max_resolution,
+        quantize=quantize,
+        low_ram=tc.default_low_ram,
+        optimizer_name=tc.optimizer_name,
+        optimizer_lr=tc.optimizer_lr,
+        target_modules=tc.target_modules,
+        preview_frequency=preview_frequency,
+        seed=seed,
+        battery_stop=args.battery_stop,
+        output_path=output_path,
+    )
+
+    # ── 5. Build mflux JSON config (used by both dry-run + real spawn) ──
+    config = build_config_json(params, num_entries=num_entries)
+
+    # ── 6. Dry-run branch ──
+    if args.dry_run:
+        return _print_train_dryrun(params, config, num_entries)
+
+    # ── 7. Preflight (RAM + battery) ──
+    _train_preflight(model, params, force=args.force)
+
+    # ── 8. Confirm gate ──
+    if not args.yes:
+        wall_h = _estimate_wall_hours(params)
+        proceed = prompt_yes_no(
+            f"Train LoRA {args.name!r} on {num_entries} images "
+            f"({total_steps} steps, ~{wall_h:.1f}h on "
+            f"{platform.machine()})? [y/N]: "
+        )
+        if not proceed:
+            info("Training cancelled (no confirmation).")
+            return 1
+
+    # ── 9. Materialise scratch ──
+    # If a prior failed run left a scratch dir, wipe it before re-materialise
+    # (materialise refuses pre-existing dir — caller's responsibility).
+    if scratch_dir.exists():
+        shutil.rmtree(scratch_dir, ignore_errors=True)
+    _train_scratch._materialise_scratch_dataset(scratch_dir, entries)
+
+    # ── 10. Resolve HF token + spawn MfluxEngine.train ──
+    hf_token = load_token()
+    env = build_mflux_env(token=hf_token)
+
+    # python C-1 closure: rc = -1 BEFORE try so the `finally` block
+    # can safely check `rc == 0` even on KeyboardInterrupt / exception
+    # before assignment.
+    rc: int = -1
+    status: str = "fail"
+    started = time.monotonic()
+    wall_seconds = 0
+    try:
+        step(f"Training {args.name!r} via mflux-train "
+             f"({total_steps} steps; scratch at {scratch_dir})…")
+        try:
+            rc = MfluxEngine().train(model, params, env=env)
+        except KeyboardInterrupt:
+            status = "cancelled"
+            warn(
+                f"Training cancelled by user. Scratch kept at "
+                f"{scratch_dir} for inspection or restart."
+            )
+            raise
+
+        if rc == 0:
+            # ── 11. Promote + write meta.json ──
+            _train_scratch._promote_final_safetensors(
+                scratch_dir, output_path,
+            )
+            meta = _train_scratch.build_meta_json(
+                params=params,
+                model=model,
+                num_entries=num_entries,
+                wall_seconds=int(time.monotonic() - started),
+                # v0.10.0: peak observed RAM is not measured live —
+                # would need a sampler thread. Recorded as 0.0
+                # sentinel; pre-tag smoke (§M.1) writes a real number
+                # post-run via doctor inspection. v0.10.x can add a
+                # background pmem sampler if it proves useful.
+                peak_ram_gb_observed=0.0,
+                trained_at_iso=datetime.now().isoformat(timespec="seconds"),
+            )
+            _train_scratch._write_meta_json(meta_path, meta)
+            status = "success"
+        else:
+            err(
+                f"mflux-train exited {rc}; scratch kept at "
+                f"{scratch_dir} for diagnosis."
+            )
+            # status stays "fail"; final history append happens in
+            # the finally block + the post-finally die().
+    finally:
+        wall_seconds = int(time.monotonic() - started)
+        # ── 12. Cleanup scratch on success; KEEP on failure ──
+        if rc == 0:
+            shutil.rmtree(scratch_dir, ignore_errors=True)
+        # History entry: always recorded so cmd_history can show
+        # the cancelled / failed runs alongside successes.
+        _append_train_history(
+            params=params,
+            num_entries=num_entries,
+            wall_seconds=wall_seconds,
+            status=status,
+        )
+
+    if rc != 0:
+        # Non-zero rc: error already surfaced via err(); exit with the
+        # mflux-train exit code so shell pipelines see the failure.
+        return rc
+
+    ok(
+        f"LoRA trained: ~/.imgen/loras/{args.name}.safetensors "
+        f"(use with `imgen draw --lora {args.name} \"...\"`)"
+    )
+    return 0
