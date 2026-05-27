@@ -278,6 +278,10 @@ def _confirm_video(
     fps, resolution.
 
     Single-shot in v0.9.0 — iterations always has length 1.
+
+    v0.9.3 C5: when the iteration's ``params.input_path`` is non-None
+    (i2v mode), append a "conditioned on: PATH" line so the user sees
+    explicitly which still LTX will animate.
     """
     from ..colors import C, info
     from ..cmd_helpers import format_duration
@@ -289,6 +293,8 @@ def _confirm_video(
     preview = prompt if len(prompt) <= 80 else prompt[:77] + "..."
     info("About to generate 1 video:")
     print(f"   {C.DIM}prompt:{C.END} {preview}")
+    if p.input_path is not None:
+        print(f"   {C.DIM}conditioned on:{C.END} {p.input_path}")
     print(f"   {C.DIM}output:{C.END} {it.output_path}")
     print(
         f"   {C.DIM}params:{C.END} {p.width}×{p.height} · "
@@ -308,6 +314,9 @@ def _confirm_video(
     return ans in ("y", "yes")
 
 
+from .._t2x_orchestrator import _orchestrate_t2x
+
+
 def cmd_video(args) -> int:
     """``imgen video <prompt>`` — text-to-video via diffusers_mps engine.
 
@@ -317,20 +326,44 @@ def cmd_video(args) -> int:
     * ``build_video_iteration`` — single-element iteration list with
       num_frames/fps resolved from --duration or --num-frames.
     * ``_confirm_video`` — confirm gate showing duration + fps +
-      resolution.
+      resolution (v0.9.3 also shows the conditioning image path
+      when --image is set).
     * ``enhancer_die_early_message`` — ``args.enhance=True`` triggers
       die() before any heavy work per §S.4.
     * ``pre_dispatch_fn=ensure_video_deps_or_die`` — lazy install
       gate for imageio/imageio-ffmpeg/sentencepiece. Skipped under
       --dry-run per §E.5.7.
 
-    The LTX-Video BUILTIN_MODELS row was pulled forward from commit 9
-    into commit 7 (parser default --model="ltx-video" needs to resolve
-    at argparse time); the doctor RAM-forecast video extension stays
-    at commit 9.
+    v0.9.3 C5: ``--image PATH`` opt-in for image-to-video. cmd_video
+    validates the path at the CLI boundary (existence, allowlist
+    extension, narrow symlink guard) and bakes the i2v motion
+    defaults (guidance=5, motion-aware negative prompt) onto args
+    when the user didn't override. The path on args.image is
+    resolved to its absolute form so all downstream consumers (build_
+    video_iteration, history, dry-run display) see the canonical
+    form. Engine dispatch + runner image-load handled in C4.
     """
-    from .._t2x_orchestrator import _orchestrate_t2x
     from ..build_iteration import build_video_iteration
+    from .._i2v_resolve import (
+        resolve_i2v_motion_defaults,
+        validate_image_path_or_die,
+    )
+
+    # v0.9.3 C5 — i2v opt-in. Validate + canonicalise the image path,
+    # then resolve motion defaults onto args so the rest of the
+    # pipeline reads guidance + negative_prompt the same way it does
+    # for t2v.
+    raw_image = getattr(args, "image", None)
+    if raw_image is not None:
+        resolved = validate_image_path_or_die(raw_image)
+        args.image = resolved
+        eff_guidance, eff_negative = resolve_i2v_motion_defaults(
+            image=resolved,
+            cli_guidance=args.guidance,
+            cli_negative=getattr(args, "negative_prompt", None),
+        )
+        args.guidance = eff_guidance
+        args.negative_prompt = eff_negative
 
     return _orchestrate_t2x(
         args,

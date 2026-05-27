@@ -927,6 +927,17 @@ def build_video_iteration(
     # (mirroring draw); if absent, default to "".
     negative = getattr(args, "negative_prompt", None) or ""
 
+    # v0.9.3 C5 — i2v conditioning resolution. cmd_video pre-validates
+    # ``args.image`` to a resolved absolute Path; we read it here as
+    # the authoritative source (the ``image_path`` kwarg is a test
+    # override). When set, flip the resolved Model's VideoConfig
+    # pipeline_class via ``dataclasses.replace`` so the Engine dispatches
+    # i2v. This keeps the Engine layer policy-free per the C2/B-1
+    # architecture: VideoConfig.pipeline_class IS the truth, and the
+    # video-domain builder owns the t2v-to-i2v flip semantics.
+    args_image = getattr(args, "image", None)
+    effective_image_path = args_image if args_image is not None else image_path
+
     # Resolve num_frames + fps from args via model.video config. Three
     # paths per §I parser stanza:
     #   * --num-frames N — explicit; wins.
@@ -941,7 +952,7 @@ def build_video_iteration(
         prompt=prompt,
         merged_defaults=merged_defaults,
         be=be,
-        input_path=image_path,  # v0.9.3: None → t2v, set → i2v
+        input_path=effective_image_path,
         output_path=output_path,
         width=width,
         height=height,
@@ -951,6 +962,20 @@ def build_video_iteration(
         num_frames=num_frames,
         fps=fps,
     )
+    # v0.9.3 C5 — flip Model's VideoConfig.pipeline_class to the i2v
+    # variant when an image is set. ``dataclasses.replace`` returns a
+    # new Model with the same identity-bearing fields; BUILTIN_MODELS
+    # stays pristine. The Engine reads ``model.video.pipeline_class``
+    # per C2 (B-1 closure), so no engine-side change is needed.
+    if effective_image_path is not None and iteration.model is not None \
+            and iteration.model.video is not None:
+        from dataclasses import replace
+        i2v_video_cfg = replace(
+            iteration.model.video,
+            pipeline_class="LTXImageToVideoPipeline",
+        )
+        i2v_model = replace(iteration.model, video=i2v_video_cfg)
+        iteration = replace(iteration, model=i2v_model)
     return [iteration]
 
 

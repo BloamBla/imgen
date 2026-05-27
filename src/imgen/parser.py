@@ -1104,6 +1104,24 @@ def _add_video_args(
         "--height", type=_int_range(64, 4096), default=512,
         help="Output height 64..4096 (default 512, LTX canonical)",
     )
+    # v0.9.3 — image-to-video conditioning. When PATH is supplied,
+    # LTX-Video runs the ``LTXImageToVideoPipeline`` against the still
+    # instead of pure text-to-video. cmd_video validates the path via
+    # :func:`imgen._i2v_resolve.validate_image_path_or_die` (existence,
+    # .png/.jpg/.jpeg ext, narrow symlink guard) before any heavy work.
+    # The motion-aware i2v defaults (guidance=5, negative-prompt with
+    # motion-anchor clause) bake onto args when --guidance /
+    # --negative-prompt aren't user-supplied.
+    p.add_argument(
+        "--image", type=Path, default=None, metavar="PATH",
+        help="Conditioning image for image-to-video mode. When set, "
+             "LTX-Video animates the still per the text --prompt "
+             "instead of generating from scratch. Supported "
+             "extensions: .png, .jpg, .jpeg. With --image, default "
+             "guidance bumps from 3 to 5 and a motion-aware "
+             "negative prompt is injected (override both via "
+             "--guidance / --negative-prompt).",
+    )
     _add_run_control_args(
         p,
         preview_help="Fast preview mode (smaller resolution + steps; "
