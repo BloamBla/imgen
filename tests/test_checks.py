@@ -244,3 +244,48 @@ class TestMegapixelsOf:
         `--height` overrides may hit."""
         from imgen.cmd_helpers import megapixels_of
         assert megapixels_of(1920, 1080) == 2.0736
+
+
+# ── v0.10.0 commit 7 — get_battery pmset absolute path (security H-3) ──
+
+
+class TestGetBatteryAbsolutePmsetPath:
+    """§R.1 security H-3 closure: ``checks.get_battery`` hardcodes
+    ``/usr/bin/pmset`` instead of relying on $PATH lookup.
+
+    A $PATH-hijack attack on a compromised parent could otherwise
+    redirect the pmset call to a malicious binary that returns
+    fake battery readings (e.g. always 100% — letting an overnight
+    training run continue past the safe battery threshold)."""
+
+    def test_argv_uses_absolute_path(self, monkeypatch):
+        import subprocess
+        recorded = {"argv": None}
+
+        def fake_check_output(cmd, *args, **kwargs):
+            recorded["argv"] = list(cmd)
+            return b"Battery Power\n -InternalBattery-0 (id=12345)\t85%; discharging; 4:00 remaining present: true\n"
+
+        monkeypatch.setattr(subprocess, "check_output", fake_check_output)
+        from imgen.checks import get_battery
+        get_battery()
+        actual = recorded["argv"][0]
+        assert actual == "/usr/bin/pmset", (
+            "§R.1 security H-3: get_battery must use absolute "
+            f"/usr/bin/pmset path; got argv[0]={actual!r}"
+        )
+
+    def test_returns_desktop_sentinel_on_missing_pmset(self, monkeypatch):
+        """Defence-in-depth: if /usr/bin/pmset is missing (broken
+        macOS install, sandbox), fall back to (None, True) — same
+        as the pre-§R.1 FileNotFoundError handling."""
+        import subprocess
+
+        def boom(cmd, *args, **kwargs):
+            raise FileNotFoundError(cmd[0])
+
+        monkeypatch.setattr(subprocess, "check_output", boom)
+        from imgen.checks import get_battery
+        pct, on_ac = get_battery()
+        assert pct is None
+        assert on_ac is True

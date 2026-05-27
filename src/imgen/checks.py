@@ -108,10 +108,24 @@ def get_memory_gb() -> tuple[float, float]:
 
 
 def get_battery() -> tuple[int | None, bool]:
-    """Return (percent, on_ac). For desktop Macs returns (None, True)."""
+    """Return (percent, on_ac). For desktop Macs returns (None, True).
+
+    v0.10.0 §R.1 security H-3: hardcoded ``/usr/bin/pmset`` absolute
+    path (NOT ``$PATH`` lookup). pmset ships at the same absolute
+    location on every supported macOS version; a $PATH-hijack attack
+    on a compromised parent could otherwise redirect to a malicious
+    binary returning fake battery percentages (e.g. always 100% —
+    letting an overnight training run continue past the
+    battery-safety threshold).
+
+    If ``/usr/bin/pmset`` is missing (broken install, hardened
+    sandbox), the existing FileNotFoundError fallback returns
+    ``(None, True)`` so callers degrade to the desktop-Mac path.
+    """
     try:
         out = subprocess.check_output(
-            ["pmset", "-g", "batt"], stderr=subprocess.DEVNULL, timeout=5
+            ["/usr/bin/pmset", "-g", "batt"],
+            stderr=subprocess.DEVNULL, timeout=5,
         ).decode()
     except (subprocess.CalledProcessError, FileNotFoundError,
             subprocess.TimeoutExpired):

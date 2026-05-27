@@ -235,39 +235,143 @@ class MfluxEngine:
         overhead_gb = 0.5
         return weights_gb + activations_gb + encoder_gb + overhead_gb
 
-    def train(self, model, params: "TrainingParams") -> int:
-        """v0.10.0 placeholder — raises ``NotImplementedError`` until
-        commit 7 wires the real ``mflux-train --config <FILE>``
-        subprocess dispatch per [[project-v100-design]] §E.1.
+    def train(
+        self,
+        model,
+        params: "TrainingParams",
+        env: Mapping[str, str] | None = None,
+    ) -> int:
+        """Spawn ``mflux-train --config <FILE>``. Returns exit code.
 
-        Commit-by-commit progression:
+        v0.10.0 commit 7: real subprocess dispatch per
+        [[project-v100-design]] §E.1 + §R.1 ROUND-1 CLOSURES.
 
-        * Commit 1: Protocol verb declared; this body raises.
-        * Commit 5: signature flipped to :class:`TrainingParams`
-          (NOT ``GenParams``); :class:`TrainingParams` +
-          :func:`imgen.engines._training.build_config_json` ship as
-          pure surface so the JSON schema is testable without
-          spawning mflux-train.
-        * Commit 6: scratch-dir + meta-json materialisation helpers
-          (still no subprocess).
-        * Commit 7: real ``mflux-train --config <generated>`` spawn
-          via ``run_with_stderr_redaction`` + ``build_mflux_env``
-          (HF token redaction + DYLD_*/LD_*/PYTHONPATH denylist).
-          Glob-pick the highest-iteration
-          ``{NNNNNNN}_adapter.safetensors`` from checkpoints dir,
-          atomic-rename to ``~/.imgen/loras/<name>.safetensors``,
-          write ``<name>.meta.json``, return mflux-train exit code.
+        **Caller contract** (cmd_train at commit 8 honours this; tests
+        construct the same shape directly):
 
-        Until commit 7: the lock-in test
-        ``tests/test_engines.py::TestEngineTrainProtocolMethod::
-        test_mflux_engine_train_raises_not_implemented_until_commit_7``
-        pins this placeholder.
+        1. ``params.scratch_dir / "data"`` already exists with the
+           materialised dataset (images + ``.txt`` caption sidecars)
+           per :func:`commands._train_scratch._materialise_scratch_dataset`.
+        2. ``params.scratch_dir`` is writable + mode 0o700.
+        3. ``env`` is either ``None`` (rare — tests / direct calls) or
+           the result of ``build_mflux_env(token=hf_token)`` from the
+           caller. The default ``build_mflux_env()`` fallback won't
+           carry an HF_TOKEN, so a real klein-4b training run requires
+           the explicit-token path. Security H-4: NEVER ``env=None``
+           at ``subprocess.Popen`` boundary — must be the allowlisted
+           env from ``build_mflux_env``.
+
+        **Steps**:
+
+        1. Count materialised images in ``scratch_dir/data`` (non-.txt
+           files = images). ``build_config_json(params, num_entries)``
+           builds the JSON dict; written to ``scratch_dir/config.json``
+           with mode 0o600 (PII-bearing dataset_path + trigger).
+        2. Locate ``VENV_BIN / "mflux-train"``. Refuse symlink
+           (``stat.S_ISLNK``) and non-regular-file
+           (``not stat.S_ISREG``). Same posture as v0.4 backends.d
+           + v0.9 ``.venv-diffusers`` binary validators.
+        3. Build argv: ``[mflux-train, --config, <path>]``. Emit
+           ``--battery-percentage-stop-limit N`` only when N differs
+           from mflux-train's own default (5) — keeps argv shape
+           minimal.
+        4. Dispatch through ``run_with_stderr_redaction`` for the
+           same HF-token-redaction + ``$HOME→~`` scrubbing pipeline
+           as inference. KeyboardInterrupt propagates unwrapped
+           (mirror v0.8.2 architect HIGH-2 for inference) so cmd_train
+           can write the cancel-history marker.
+
+        Returns mflux-train's exit code. cmd_train (commit 8) handles
+        the promote / meta-json / cleanup-on-success orchestration.
         """
-        raise NotImplementedError(
-            "MfluxEngine.train: subprocess dispatch lands at v0.10.0 "
-            "commit 7. Commit 5 shipped TrainingParams + "
-            "build_config_json pure surface; commit 6 will land "
-            "scratch-dir materialisation; commit 7 wires the actual "
-            "mflux-train invocation. Engine.train Protocol method was "
-            "declared at commit 1 to preserve structural conformance."
+        import json
+        import stat as stat_module
+        from .. import paths as paths_module
+        from ..colors import die
+        from ..subprocess_helpers import (
+            build_mflux_env,
+            run_with_stderr_redaction,
         )
+        from ._training import build_config_json
+
+        # ── 1. Count materialised entries + write config.json ──
+        data_dir = params.scratch_dir / "data"
+        if not data_dir.is_dir():
+            die(
+                f"scratch dataset dir missing: {data_dir}. "
+                "Caller must materialise the scratch dataset before "
+                "MfluxEngine.train (see commands/_train_scratch.py).",
+                code=2,
+            )
+        num_entries = sum(
+            1 for f in data_dir.iterdir()
+            if f.is_file() and f.suffix.lower() != ".txt"
+        )
+        if num_entries == 0:
+            die(
+                f"scratch dataset dir {data_dir} has zero image files "
+                "— materialise step did not run or produced no images.",
+                code=2,
+            )
+
+        config = build_config_json(params, num_entries=num_entries)
+        config_path = params.scratch_dir / "config.json"
+        # Atomic-enough: short JSON write, parent dir already 0o700.
+        # mode set via os.open so the umask doesn't widen the perms.
+        import os
+        fd = os.open(
+            config_path,
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+            0o600,
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=2)
+            f.write("\n")
+
+        # ── 2. Locate + validate mflux-train binary ──
+        mflux_train_bin = paths_module.VENV_BIN / "mflux-train"
+        try:
+            st = mflux_train_bin.lstat()
+        except FileNotFoundError:
+            die(
+                f"mflux-train not found at {mflux_train_bin}. "
+                f"Run ./bootstrap.sh to install mflux (pinned "
+                f"{__import__('imgen.defaults', fromlist=['MFLUX_PIN']).MFLUX_PIN}).",
+                code=2,
+            )
+        if stat_module.S_ISLNK(st.st_mode):
+            die(
+                f"mflux-train at {mflux_train_bin} is a symlink — "
+                "refusing to exec for security (mirror v0.4/v0.9 "
+                "binary-validation discipline).",
+                code=2,
+            )
+        if not stat_module.S_ISREG(st.st_mode):
+            die(
+                f"mflux-train at {mflux_train_bin} is not a regular "
+                "file (directory/special). Refusing to exec.",
+                code=2,
+            )
+
+        # ── 3. Build argv + dispatch ──
+        argv: list[str] = [
+            str(mflux_train_bin), "--config", str(config_path),
+        ]
+        # mflux-train's own --battery-percentage-stop-limit default
+        # is 5; emit the flag only when imgen wants a different floor.
+        # imgen's default (TrainingConfig + parser stanza) is 20 —
+        # safer for overnight runs on battery.
+        _MFLUX_TRAIN_DEFAULT_BATTERY_STOP = 5
+        if params.battery_stop != _MFLUX_TRAIN_DEFAULT_BATTERY_STOP:
+            argv += [
+                "--battery-percentage-stop-limit",
+                str(params.battery_stop),
+            ]
+
+        # Security H-4: NEVER env=None — always an allowlisted dict.
+        # The fallback env (build_mflux_env() w/o token) is enough for
+        # tests + offline development; real klein-4b training requires
+        # the caller to pass env=build_mflux_env(token=hf_token).
+        effective_env = dict(env) if env is not None else build_mflux_env()
+
+        return run_with_stderr_redaction(argv, effective_env)

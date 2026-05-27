@@ -244,11 +244,9 @@ class TestEngineTrainProtocolMethod:
     raise ``NotImplementedError`` with the engine name in the message —
     same posture as ``abc.abstractmethod`` conventions. v0.10.0 ships:
 
-    * ``MfluxEngine.train`` raises NotImplementedError until commit 7
-      wires the subprocess invocation of ``mflux-train`` (commit 5
-      lands :class:`TrainingParams` + :func:`build_config_json` pure
-      surface; commit 6 lands scratch dir + meta-json materialisation;
-      commit 7 wires the actual ``mflux-train --config`` spawn).
+    * ``MfluxEngine.train`` real subprocess body landed at commit 7
+      (see ``tests/test_mflux_engine_train.py`` for the argv-shape +
+      binary-validation + env-allowlist lock-ins).
     * ``DiffusersMpsEngine.train`` raises NotImplementedError
       permanently (v0.10.0 doesn't train via diffusers_mps; video
       Models stay inference-only).
@@ -261,17 +259,6 @@ class TestEngineTrainProtocolMethod:
             "v0.10 commit 1 added Engine.train; missing here means "
             "the Protocol declaration regressed."
         )
-
-    def test_mflux_engine_train_raises_not_implemented_until_commit_7(self):
-        """Commit 5 added :class:`TrainingParams` + the pure-function
-        :func:`build_config_json` surface — but ``MfluxEngine.train``
-        still raises until commit 7 wires the actual ``mflux-train``
-        subprocess invocation (commit 6 lands scratch-dir + meta-json
-        materialisation first)."""
-        from imgen.engines.mflux_engine import MfluxEngine
-        params = _make_minimal_training_params()
-        with pytest.raises(NotImplementedError, match="mflux"):
-            MfluxEngine().train(model=None, params=params)
 
     def test_diffusers_mps_engine_train_raises_not_implemented_permanent(self):
         """v0.10.0: diffusers_mps doesn't train. Permanent
