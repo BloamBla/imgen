@@ -243,6 +243,58 @@ class TestBuildVideoIteration:
         )
         assert iters[0].params.num_frames == 17
 
+    def test_duration_rounding_emits_warn(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """v0.9.2 B-5 closure of design memo §I.1 'Warn line if rounding
+        occurred'. When --duration produces a num_frames different from
+        the naive int(duration*fps), surface a warn line so the user
+        knows the output is longer than requested."""
+        from imgen.build_iteration import build_video_iteration
+        _ltx_model_via_user_toml(tmp_path, monkeypatch)
+        # 0.5s → naive target 12 → aligned ceil 17 (≠ 12, warn must fire).
+        args = _make_video_args(duration=0.5)
+        build_video_iteration(
+            args=args, prompt="x", merged_defaults=DEFAULTS, be=_ltx_backend(),
+            width=768, height=512,
+            explicit_output=None, run_dir=tmp_path,
+            base_seed=42, num_iterations=1,
+        )
+        # warn() writes to stdout (only err() routes to stderr in
+        # colors.py); see test_parser.py convention.
+        out = capsys.readouterr().out
+        assert "--duration" in out and "0.5" in out, (
+            f"warn must mention --duration value; got: {out!r}"
+        )
+        assert "17" in out and "frames" in out, (
+            f"warn must mention resolved frame count; got: {out!r}"
+        )
+
+    def test_duration_exact_alignment_no_warn(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """If --duration happens to land precisely on the alignment
+        (rare but possible with future Models), no warn line. v0.9.0
+        LTX with alignment 8k+1 has no exact-integer-second match at
+        24 fps so we use --num-frames explicit (which bypasses the
+        rounding path entirely) as the negative case."""
+        from imgen.build_iteration import build_video_iteration
+        _ltx_model_via_user_toml(tmp_path, monkeypatch)
+        # Explicit --num-frames bypasses _resolve's duration branch
+        # entirely; no rounding consideration → no warn.
+        args = _make_video_args(num_frames=25)
+        build_video_iteration(
+            args=args, prompt="x", merged_defaults=DEFAULTS, be=_ltx_backend(),
+            width=768, height=512,
+            explicit_output=None, run_dir=tmp_path,
+            base_seed=42, num_iterations=1,
+        )
+        out = capsys.readouterr().out
+        assert "rounded" not in out.lower(), (
+            f"explicit --num-frames must not trigger rounding warn; "
+            f"got: {out!r}"
+        )
+
     def test_neither_uses_default_num_frames(self, tmp_path, monkeypatch):
         from imgen.build_iteration import build_video_iteration
         _ltx_model_via_user_toml(tmp_path, monkeypatch)

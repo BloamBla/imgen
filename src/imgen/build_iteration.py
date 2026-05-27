@@ -844,6 +844,17 @@ def _resolve_video_frames_and_fps(args) -> tuple[int, int]:
             k = (target - vc.num_frames_offset
                  + vc.num_frames_alignment - 1) // vc.num_frames_alignment
             num_frames = k * vc.num_frames_alignment + vc.num_frames_offset
+        # v0.9.2 B-5: surface the ceil so the user knows the output is
+        # longer than requested. design memo §I.1: "Warn line if
+        # rounding occurred."
+        if num_frames != target:
+            actual_duration = num_frames / vc.default_fps
+            warn(
+                f"--duration {float(explicit_duration):.2f}s rounded UP to "
+                f"{num_frames} frames at {vc.default_fps} fps "
+                f"(≈{actual_duration:.2f}s output) to fit alignment "
+                f"{vc.num_frames_alignment}k+{vc.num_frames_offset}"
+            )
     else:
         num_frames = vc.default_num_frames
 
