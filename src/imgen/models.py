@@ -59,6 +59,28 @@ __all__ = [
 # All fields are hashable types (int / float / bool / tuple of str).
 
 
+# v0.9.3 C2 (B-1 closure): video-pipeline allowlist. The Engine reads
+# ``model.video.pipeline_class`` and threads it into the runner
+# payload; both the parent-side construction (here) and the runner-
+# side trust boundary (``_diffusers_runner._PIPELINE_CLASS_ALLOWLIST``)
+# enforce a literal allowlist to avoid introspection-style attacks.
+#
+# This parent-side set is a STRICT subset of the runner-side set:
+# the runner also allows ``"DiffusionPipeline"`` for the v0.8 image
+# fallback, but a VideoConfig declaring an image pipeline class would
+# mis-route inside the runner — reject one layer earlier here.
+#
+# To add a new video pipeline: extend BOTH this set and the runner
+# set, plus add the matching ``from diffusers import …`` line in
+# ``_resolve_pipeline_class``. The test
+# ``test_v093_pipeline_class.TestAllowlistSubsetInvariant`` locks
+# the subset relationship.
+_VIDEO_PIPELINE_CLASS_ALLOWLIST: frozenset[str] = frozenset({
+    "LTXPipeline",                 # v0.9.0 t2v
+    "LTXImageToVideoPipeline",     # v0.9.3 i2v
+})
+
+
 @dataclass(frozen=True, slots=True)
 class VideoConfig:
     """v0.9 video-specific Model config. Absent on a Model ⇒ image;
@@ -75,6 +97,13 @@ class VideoConfig:
     supports_video_codecs: tuple[str, ...] = ("libx264",)
     force_cpu_offload: bool = True    # video defaults to forced offload (T5-XXL pressure)
     encoder_ram_gb: float = 3.0       # T5-XXL transient peak when offloaded; not optional for video
+    # v0.9.3 C2 (B-1 closure): pipeline class threaded into the runner
+    # payload. Default ``"LTXPipeline"`` preserves v0.9.0 t2v
+    # behaviour for existing Model rows. v0.9.3 i2v opts in by
+    # constructing a derivative VideoConfig with
+    # ``pipeline_class="LTXImageToVideoPipeline"``. Validated against
+    # :data:`_VIDEO_PIPELINE_CLASS_ALLOWLIST` in __post_init__.
+    pipeline_class: str = "LTXPipeline"
 
     def __post_init__(self) -> None:
         if self.default_num_frames < 9:
@@ -106,6 +135,13 @@ class VideoConfig:
             raise ValueError(
                 f"VideoConfig.encoder_ram_gb={self.encoder_ram_gb} must be > 0 "
                 "(text encoder peak RAM is load-bearing for video preflight)"
+            )
+        if self.pipeline_class not in _VIDEO_PIPELINE_CLASS_ALLOWLIST:
+            raise ValueError(
+                f"VideoConfig.pipeline_class={self.pipeline_class!r} not in "
+                f"video allowlist {sorted(_VIDEO_PIPELINE_CLASS_ALLOWLIST)!r}. "
+                "Adding a new video pipeline requires extending the parent "
+                "and runner allowlists in lockstep (B-1 closure pattern)."
             )
 
 

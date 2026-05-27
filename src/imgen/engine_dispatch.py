@@ -180,11 +180,12 @@ def _format_diffusers_video_dryrun(it: Iteration) -> str:
     Same ``$HOME`` rewriting + ``safe_display()`` prompt escaping
     (security §R.2 MEDIUM-1) as the image path.
 
-    The runner-payload key ``pipeline_class`` is hardcoded to
-    "LTXPipeline" at v0.9.0 (Engine.run hardcodes; backlog item B-1
-    moves this onto VideoConfig when a 2nd video Model lands). The
-    display surfaces the literal value so dry-run shows what the
-    runner actually receives.
+    v0.9.3 C2 (B-1 closure): ``pipeline_class`` is read from the
+    Model's VideoConfig rather than hardcoded. v0.9.0 t2v Model rows
+    keep showing ``"LTXPipeline"`` (the VideoConfig default); v0.9.3
+    i2v shows ``"LTXImageToVideoPipeline"``. The dry-run truth must
+    match the payload truth — diverging the two would let a user
+    inspecting ``--dry-run`` see the wrong pipeline name.
     """
     from ._safe import safe_display
     from .paths import IMGEN_INSTALL_ROOT
@@ -206,12 +207,13 @@ def _format_diffusers_video_dryrun(it: Iteration) -> str:
     vc = model.video
     force_offload = vc.force_cpu_offload if vc is not None else False
 
+    pipeline_class = vc.pipeline_class if vc is not None else "LTXPipeline"
     lines = [
         f"{runner_str} -m imgen.engines._diffusers_runner",
         "  (stdin-JSON payload)",
         f"  repo:            {model.repo}",
         f"  output_type:     video",
-        f"  pipeline_class:  LTXPipeline",
+        f"  pipeline_class:  {pipeline_class}",
         f"  prompt:          {safe_display(params.prompt)}",
         f"  negative:        {safe_display(params.negative)}",
         f"  steps: {params.steps}  guidance: {params.guidance}  "

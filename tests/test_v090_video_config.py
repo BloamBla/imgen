@@ -78,7 +78,12 @@ class TestVideoConfigShape:
         assert {vc, vc} == {vc}
 
     def test_video_config_field_surface_locked(self):
-        """Schema lock — v0.9.x can't silently drop a field."""
+        """Schema lock — v0.9.x can't silently drop a field.
+
+        v0.9.3 C2 (B-1 closure): ``pipeline_class`` field added so the
+        engine reads from VideoConfig instead of hardcoding the v0.9.0
+        ``"LTXPipeline"`` string. See [[project-v093-i2v]] for design.
+        """
         from imgen.models import VideoConfig
         names = {f.name for f in fields(VideoConfig)}
         expected = {
@@ -90,6 +95,7 @@ class TestVideoConfigShape:
             "supports_video_codecs",
             "force_cpu_offload",
             "encoder_ram_gb",
+            "pipeline_class",
         }
         assert expected == names, (
             f"Field surface drift: missing={expected - names}, "

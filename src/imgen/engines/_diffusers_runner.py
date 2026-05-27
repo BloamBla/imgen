@@ -100,9 +100,17 @@ _PIL_FORMAT_BY_EXT: dict[str, str] = {
 # BEFORE the diffusers import so introspection / path-traversal /
 # dunder strings never reach getattr-on-module. The actual class
 # objects resolve via literal dict in _resolve_pipeline_class().
+#
+# v0.9.3 C2 (B-1 closure): expanded to include LTXImageToVideoPipeline
+# for i2v dispatch. This runner set is a STRICT superset of the
+# parent-side ``models._VIDEO_PIPELINE_CLASS_ALLOWLIST`` (the parent
+# omits image-only ``"DiffusionPipeline"`` because it's wrong on a
+# video Model). The subset invariant is locked by
+# ``tests/test_v093_pipeline_class.TestAllowlistSubsetInvariant``.
 _PIPELINE_CLASS_ALLOWLIST: frozenset[str] = frozenset({
-    "DiffusionPipeline",   # generic v0.8 image fallback
-    "LTXPipeline",         # v0.9.0 LTX-Video first built-in video class
+    "DiffusionPipeline",         # generic v0.8 image fallback
+    "LTXPipeline",               # v0.9.0 LTX-Video t2v class
+    "LTXImageToVideoPipeline",   # v0.9.3 LTX-Video i2v class
 })
 
 # v0.9 commit 4 — fps allowlist for video payloads. Mirrors
@@ -426,10 +434,19 @@ def _resolve_pipeline_class(name: str):
     if name not in _PIPELINE_CLASS_ALLOWLIST:
         raise ValueError("pipeline_class not in allowlist")
     # Lazy diffusers import — only reached after allowlist passes.
-    from diffusers import DiffusionPipeline, LTXPipeline
+    # v0.9.3 C2 (B-1 closure): LTXImageToVideoPipeline added for i2v
+    # dispatch. LTXImageToVideoPipeline has been in diffusers ≥0.32
+    # alongside LTXPipeline — same checkpoint, image-conditioning
+    # frontend.
+    from diffusers import (
+        DiffusionPipeline,
+        LTXImageToVideoPipeline,
+        LTXPipeline,
+    )
     classes = {
         "DiffusionPipeline": DiffusionPipeline,
         "LTXPipeline": LTXPipeline,
+        "LTXImageToVideoPipeline": LTXImageToVideoPipeline,
     }
     return classes[name]
 

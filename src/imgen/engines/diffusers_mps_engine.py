@@ -195,12 +195,14 @@ class DiffusersMpsEngine:
             payload["num_frames"] = params.num_frames
             payload["fps"] = params.fps
             payload["force_cpu_offload"] = model.video.force_cpu_offload
-            # v0.9.0 ships LTX-Video as the only built-in video Model
-            # → pipeline_class hardcoded to "LTXPipeline". v0.9.x with
-            # a second built-in video Model will move this onto
-            # VideoConfig as a typed field; backlog item documented in
-            # the commit body.
-            payload["pipeline_class"] = "LTXPipeline"
+            # v0.9.3 C2 (B-1 closure): read from VideoConfig typed
+            # field instead of hardcoding. v0.9.0 t2v rows keep working
+            # via the default "LTXPipeline"; v0.9.3 i2v constructs a
+            # derivative VideoConfig with
+            # ``pipeline_class="LTXImageToVideoPipeline"``. The runner
+            # re-validates against its own allowlist before the
+            # diffusers import (security §R.1 HIGH-1).
+            payload["pipeline_class"] = model.video.pipeline_class
 
         # STATIC argv — no user data interpolated. Security pre-vet
         # confirmed: str(Path) is a stable stringification; no shell
