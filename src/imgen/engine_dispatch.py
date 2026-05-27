@@ -52,6 +52,7 @@ from pathlib import Path
 
 from .backends import Backend
 from .colors import C, die, err, info, ok, step, warn
+from .engines.base import GenParams
 from .enhance import EnhanceResult
 from .history import append_history
 from .runs import BatchContext, BatchLogger, Iteration, PerInputBatch
@@ -331,7 +332,6 @@ def _genparams_from_iteration_inputs(
     Engine paths (architect CRITICAL-2 lock-in: see
     ``test_mflux_engine_build_cmd_matches_legacy_build_mflux_cmd``).
     """
-    from .engines.base import GenParams
     return GenParams(
         prompt=prompt,
         negative=negative,
