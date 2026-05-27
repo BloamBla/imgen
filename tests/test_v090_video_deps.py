@@ -410,6 +410,44 @@ class TestAuditAndSentinelLifecycle:
             "sentinel must be removed after successful install"
         )
 
+    def test_sentinel_unlink_failure_warns_with_recovery_hint(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """v0.9.2 B-6 closure of §R.2 python MEDIUM-2: if sentinel
+        removal fails after a successful install, the user must get a
+        warn line with recovery instructions so the spurious
+        'interrupted install' message on the next invocation isn't a
+        mystery."""
+        from imgen.commands.video import ensure_video_deps_or_die
+        _, _, state_dir = _setup_fake_venv(tmp_path, monkeypatch)
+        self._stub_install_success(monkeypatch)
+        monkeypatch.setenv("IMGEN_INSTALL_VIDEO_DEPS", "1")
+
+        # Mock Path.unlink to raise PermissionError so the post-success
+        # cleanup branch fires. Other unlinks in the test scope are not
+        # called by the install flow so blanket-patching is safe here.
+        import pathlib
+        original_unlink = pathlib.Path.unlink
+
+        def racing_unlink(self, *args, **kwargs):
+            if self.name == ".video_deps_installing":
+                raise PermissionError("simulated EACCES")
+            return original_unlink(self, *args, **kwargs)
+
+        monkeypatch.setattr(pathlib.Path, "unlink", racing_unlink)
+
+        # Function returns normally (install succeeded); the failure is
+        # observability-only.
+        ensure_video_deps_or_die()
+
+        out = capsys.readouterr().out
+        assert "sentinel" in out.lower(), (
+            f"warn must mention sentinel; got: {out!r}"
+        )
+        assert "delete" in out.lower() and "manually" in out.lower(), (
+            f"warn must include recovery hint; got: {out!r}"
+        )
+
 
 class TestPipInstallFailure:
 

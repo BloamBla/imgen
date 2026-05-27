@@ -24,7 +24,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..colors import die
+from ..colors import die, warn
 
 __all__ = ["_VIDEO_DEPS_PINNED", "cmd_video", "ensure_video_deps_or_die"]
 
@@ -242,11 +242,17 @@ def ensure_video_deps_or_die() -> None:
     _write_audit_marker(STATE_DIR)
     try:
         sentinel.unlink()
-    except OSError:
-        # Sentinel removal failure is non-fatal — install succeeded.
-        # Worst case: next invocation surfaces the stale sentinel,
-        # which is recoverable.
-        pass
+    except OSError as e:
+        # v0.9.2 B-6: surface the failure with a recovery hint so the
+        # user knows the next `imgen video` will surface a spurious
+        # 'previous install interrupted' message and how to clear it.
+        # Install succeeded, so this is non-fatal — just observability.
+        warn(
+            f"Could not remove video-deps sentinel {sentinel} ({e}). "
+            f"Install succeeded but next `imgen video` will report an "
+            f"interrupted install — delete the sentinel manually to "
+            f"clear the false alarm."
+        )
 
 
 # ── cmd_video subcommand (commit 7 §I) ────────────────────────────────
