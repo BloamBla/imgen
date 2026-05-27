@@ -14,7 +14,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO, Mapping, Protocol, runtime_checkable
+from typing import (
+    TYPE_CHECKING,
+    BinaryIO,
+    Mapping,
+    Protocol,
+    runtime_checkable,
+)
+
+if TYPE_CHECKING:
+    # Forward reference: TrainingParams lives in engines/_training.py
+    # which imports from models.py. Importing it at type-check time
+    # keeps base.py's runtime import surface unchanged (no new
+    # transitive imports for callers that don't touch training).
+    from ._training import TrainingParams
 
 __all__ = ["Engine", "GenParams"]
 
@@ -137,7 +150,7 @@ class Engine(Protocol):
         """
         ...
 
-    def train(self, model, params: GenParams) -> int:
+    def train(self, model, params: "TrainingParams") -> int:
         """Execute LoRA training. Returns exit code (0 success,
         non-zero failure).
 
@@ -147,8 +160,17 @@ class Engine(Protocol):
         on the existing Engine Protocol to preserve the v0.9.5 M-2
         Engine-registry as single source of truth for runtime
         dispatch. ``Engine.validate`` and ``Engine.ram_estimate_gb``
-        already coexist as parallel verbs on the same Protocol; ``train``
-        continues the pattern.
+        already coexist as parallel verbs on the same Protocol;
+        ``train`` continues the pattern.
+
+        v0.10.0 commit 5: ``params`` is :class:`TrainingParams`
+        (NOT ``GenParams``). Training has a fundamentally different
+        parameter shape from inference (dataset_dir + target_modules
+        + optimizer settings vs prompt + width/height + steps), and
+        sharing a single envelope would either inflate ``GenParams``
+        with training-only fields or leave training callers stuffing
+        sentinel values into inference-only fields. Separate
+        dataclasses keep both surfaces honest.
 
         **Convention** (§R.1 round-2 N-1 closure): engines that don't
         support training MUST raise ``NotImplementedError`` with the
@@ -156,8 +178,9 @@ class Engine(Protocol):
         ``abc.abstractmethod`` conventions. v0.10.0 ships:
 
         * ``MfluxEngine.train`` — raises ``NotImplementedError`` at
-          commit 1; commit 5 wires the real mflux-train subprocess
-          dispatch.
+          commits 1-6; commit 7 wires the real
+          ``mflux-train --config <FILE>`` subprocess dispatch via
+          ``run_with_stderr_redaction`` + ``build_mflux_env``.
         * ``DiffusersMpsEngine.train`` — raises ``NotImplementedError``
           PERMANENTLY (v0.10.0 doesn't train via diffusers_mps; video
           Models stay inference-only per §B.4).

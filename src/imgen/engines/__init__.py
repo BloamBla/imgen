@@ -17,6 +17,7 @@ can't register one without the other.
 """
 from __future__ import annotations
 
+from ._training import TrainingParams, build_config_json
 from .base import Engine, GenParams
 from .diffusers_mps_engine import DiffusersMpsEngine
 from .mflux_engine import MfluxEngine
@@ -27,6 +28,8 @@ __all__ = [
     "ENGINES",
     "GenParams",
     "MfluxEngine",
+    "TrainingParams",
+    "build_config_json",
     "get_engine",
 ]
 

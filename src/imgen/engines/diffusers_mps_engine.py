@@ -24,9 +24,12 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Mapping
+from typing import TYPE_CHECKING, Mapping
 
 from .base import GenParams
+
+if TYPE_CHECKING:
+    from ._training import TrainingParams
 
 __all__ = ["DiffusersMpsEngine"]
 
@@ -338,7 +341,7 @@ class DiffusersMpsEngine:
         frame_term = 0.1 * params.num_frames
         return baseline + mp_term + encoder + frame_term
 
-    def train(self, model, params: GenParams) -> int:
+    def train(self, model, params: "TrainingParams") -> int:
         """v0.10.0 — diffusers_mps does NOT support LoRA training.
 
         v0.10.0 ships mflux-train-based training only;

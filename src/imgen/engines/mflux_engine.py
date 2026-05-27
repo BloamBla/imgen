@@ -13,10 +13,13 @@ land in commits 6 (run via redaction wrapper), 7 (validate), 8 (RAM).
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Mapping
+from typing import TYPE_CHECKING, Mapping
 
 from ..backends import filter_compatible_loras
 from .base import GenParams
+
+if TYPE_CHECKING:
+    from ._training import TrainingParams
 
 __all__ = ["MfluxEngine"]
 
@@ -232,35 +235,39 @@ class MfluxEngine:
         overhead_gb = 0.5
         return weights_gb + activations_gb + encoder_gb + overhead_gb
 
-    def train(self, model, params: GenParams) -> int:
-        """v0.10.0 commit 1 placeholder — raises ``NotImplementedError``
-        until commit 5 wires the real ``mflux-train --config FILE``
+    def train(self, model, params: "TrainingParams") -> int:
+        """v0.10.0 placeholder — raises ``NotImplementedError`` until
+        commit 7 wires the real ``mflux-train --config <FILE>``
         subprocess dispatch per [[project-v100-design]] §E.1.
 
-        Engine.train Protocol contract: this verb is THE training-side
-        dispatch method (parallel to ``run`` for inference). When fully
-        wired at commit 5, it will:
+        Commit-by-commit progression:
 
-        * Materialise scratch dataset dir (hardlinks where possible)
-        * Generate JSON config matching real mflux ``lora_layers.targets[]``
-          shape (§E.1)
-        * Invoke ``.venv/bin/mflux-train --config <generated>`` via
-          ``run_with_stderr_redaction`` + ``build_mflux_env`` (HF token
-          redaction + DYLD_*/LD_*/PYTHONPATH denylist)
-        * Glob-pick the highest-iteration ``{NNNNNNN}_adapter.safetensors``
-          from checkpoints dir, atomic-rename to
-          ``~/.imgen/loras/<name>.safetensors``
-        * Write the ``<name>.meta.json`` sidecar
-        * Return mflux-train exit code
+        * Commit 1: Protocol verb declared; this body raises.
+        * Commit 5: signature flipped to :class:`TrainingParams`
+          (NOT ``GenParams``); :class:`TrainingParams` +
+          :func:`imgen.engines._training.build_config_json` ship as
+          pure surface so the JSON schema is testable without
+          spawning mflux-train.
+        * Commit 6: scratch-dir + meta-json materialisation helpers
+          (still no subprocess).
+        * Commit 7: real ``mflux-train --config <generated>`` spawn
+          via ``run_with_stderr_redaction`` + ``build_mflux_env``
+          (HF token redaction + DYLD_*/LD_*/PYTHONPATH denylist).
+          Glob-pick the highest-iteration
+          ``{NNNNNNN}_adapter.safetensors`` from checkpoints dir,
+          atomic-rename to ``~/.imgen/loras/<name>.safetensors``,
+          write ``<name>.meta.json``, return mflux-train exit code.
 
-        Until commit 5: the lock-in test
+        Until commit 7: the lock-in test
         ``tests/test_engines.py::TestEngineTrainProtocolMethod::
-        test_mflux_engine_train_raises_not_implemented_until_commit_5``
+        test_mflux_engine_train_raises_not_implemented_until_commit_7``
         pins this placeholder.
         """
         raise NotImplementedError(
-            "MfluxEngine.train: not implemented until v0.10.0 commit 5 "
-            "(real mflux-train subprocess dispatch lands then). "
-            "Engine.train Protocol method declared at commit 1 to "
-            "preserve structural conformance."
+            "MfluxEngine.train: subprocess dispatch lands at v0.10.0 "
+            "commit 7. Commit 5 shipped TrainingParams + "
+            "build_config_json pure surface; commit 6 will land "
+            "scratch-dir materialisation; commit 7 wires the actual "
+            "mflux-train invocation. Engine.train Protocol method was "
+            "declared at commit 1 to preserve structural conformance."
         )

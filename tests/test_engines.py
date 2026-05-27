@@ -22,6 +22,37 @@ def _make_minimal_genparams(**overrides):
     return GenParams(**defaults)
 
 
+def _make_minimal_training_params(**overrides):
+    """v0.10.0 commit 5: ``Engine.train`` Protocol takes
+    :class:`TrainingParams` (NOT ``GenParams``). Helper builds a
+    klein-4b-shaped envelope reusable by every train-side test that
+    only needs structural conformance (placeholders, validation
+    smokes)."""
+    from imgen.engines._training import TrainingParams
+    from imgen.models import _KLEIN_4B_TARGET_MODULES
+    defaults = dict(
+        dataset_dir=Path("/Users/me/.imgen/datasets/alina"),
+        scratch_dir=Path("/Users/me/.imgen/loras/.alina.training"),
+        lora_name="alina",
+        trigger="al1na woman",
+        base_model="flux2-klein-4b",
+        total_steps=800,
+        lora_rank=16,
+        max_resolution=512,
+        quantize=4,
+        low_ram=True,
+        optimizer_name="AdamW",
+        optimizer_lr=1e-4,
+        target_modules=_KLEIN_4B_TARGET_MODULES,
+        preview_frequency=100,
+        seed=42,
+        battery_stop=20,
+        output_path=Path("/Users/me/.imgen/loras/alina.safetensors"),
+    )
+    defaults.update(overrides)
+    return TrainingParams(**defaults)
+
+
 class _MinimalCompliantEngine:
     """Test double with the exact Protocol surface — used to verify
     `isinstance(eng, Engine)` works for structural typing.
@@ -213,8 +244,11 @@ class TestEngineTrainProtocolMethod:
     raise ``NotImplementedError`` with the engine name in the message —
     same posture as ``abc.abstractmethod`` conventions. v0.10.0 ships:
 
-    * ``MfluxEngine.train`` raises NotImplementedError until commit 5
-      wires the real impl (subprocess invocation of ``mflux-train``).
+    * ``MfluxEngine.train`` raises NotImplementedError until commit 7
+      wires the subprocess invocation of ``mflux-train`` (commit 5
+      lands :class:`TrainingParams` + :func:`build_config_json` pure
+      surface; commit 6 lands scratch dir + meta-json materialisation;
+      commit 7 wires the actual ``mflux-train --config`` spawn).
     * ``DiffusersMpsEngine.train`` raises NotImplementedError
       permanently (v0.10.0 doesn't train via diffusers_mps; video
       Models stay inference-only).
@@ -228,13 +262,14 @@ class TestEngineTrainProtocolMethod:
             "the Protocol declaration regressed."
         )
 
-    def test_mflux_engine_train_raises_not_implemented_until_commit_5(self):
-        """Commit 5 will replace the NotImplementedError with the
-        actual mflux-train subprocess dispatch. Until then this is a
-        load-bearing placeholder so Protocol structural conformance
-        holds."""
+    def test_mflux_engine_train_raises_not_implemented_until_commit_7(self):
+        """Commit 5 added :class:`TrainingParams` + the pure-function
+        :func:`build_config_json` surface — but ``MfluxEngine.train``
+        still raises until commit 7 wires the actual ``mflux-train``
+        subprocess invocation (commit 6 lands scratch-dir + meta-json
+        materialisation first)."""
         from imgen.engines.mflux_engine import MfluxEngine
-        params = _make_minimal_genparams()
+        params = _make_minimal_training_params()
         with pytest.raises(NotImplementedError, match="mflux"):
             MfluxEngine().train(model=None, params=params)
 
@@ -242,7 +277,7 @@ class TestEngineTrainProtocolMethod:
         """v0.10.0: diffusers_mps doesn't train. Permanent
         NotImplementedError per [[project-v100-design]] §B.4."""
         from imgen.engines.diffusers_mps_engine import DiffusersMpsEngine
-        params = _make_minimal_genparams()
+        params = _make_minimal_training_params()
         with pytest.raises(NotImplementedError, match="diffusers_mps"):
             DiffusersMpsEngine().train(model=None, params=params)
 
