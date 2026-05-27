@@ -337,3 +337,33 @@ class DiffusersMpsEngine:
         encoder = model.video.encoder_ram_gb  # transient T5-XXL peak
         frame_term = 0.1 * params.num_frames
         return baseline + mp_term + encoder + frame_term
+
+    def train(self, model, params: GenParams) -> int:
+        """v0.10.0 — diffusers_mps does NOT support LoRA training.
+
+        v0.10.0 ships mflux-train-based training only;
+        ``DiffusersMpsEngine.train`` raises ``NotImplementedError``
+        PERMANENTLY per [[project-v100-design]] §B.4. Video Models
+        (ltx-video and future LTX variants) stay inference-only.
+
+        Per the Engine.train docstring convention (§R.1 round-2 N-1):
+        engines that don't support training raise NotImplementedError
+        with the engine name in the message.
+
+        Lifting training onto diffusers_mps would require:
+          * A separate training-side runner subprocess in
+            ``.venv-diffusers/`` (training peak RAM is incompatible
+            with the inference runner's mid-process state)
+          * A DiffusionPipeline-shaped training adapter (no equivalent
+            of mflux-train's targeted-layer LoRA injection)
+          * Per-Model target-module specs covering the diffusers
+            transformer attribute paths (NOT mflux's `transformer_blocks`
+            naming)
+        — a v0.11+ design call, NOT a v0.10.x extension.
+        """
+        raise NotImplementedError(
+            "DiffusersMpsEngine.train: diffusers_mps does not support "
+            "LoRA training. v0.10.0 ships training via the mflux engine "
+            "only; video/diffusers Models stay inference-only. "
+            "See [[project-v100-design]] §B.4."
+        )

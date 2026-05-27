@@ -39,8 +39,14 @@ from typing import Literal, Mapping
 __all__ = [
     "BUILTIN_MODELS",
     "Model",
+    "TrainingConfig",
+    "TrainingTargetSpec",
     "VideoConfig",
+    "_KLEIN_4B_TARGET_MODULES",
     "_V07_TO_V08_MODEL_RENAMES",
+    "_VALID_LORA_RANKS",
+    "_VALID_QUANTIZE_TRAIN",
+    "_VALID_TRAIN_RESOLUTIONS",
     "get_model",
     "list_models",
 ]
@@ -145,6 +151,268 @@ class VideoConfig:
             )
 
 
+# ── TrainingConfig + TrainingTargetSpec (v0.10 commit 1, [[project-v100-design]] §C) ──
+#
+# Nested training config on ``Model.training``. Absent (None) ⇒ Model
+# cannot be a LoRA-training target. Present ⇒ Model is a valid
+# ``imgen train --base <name>`` target. Mirrors the v0.9 VideoConfig
+# nested-config pattern.
+#
+# §R.1 ROUND-1 CLOSURES (canonical post-amendment shape):
+# * NO ``mflux_train_model`` field — derived from registry key in
+#   cmd_train (architect C-2 closure).
+# * NO ``_TRAINING_BASE_ALLOWLIST`` constant — ``Model.training is not
+#   None`` IS the signal for trainability.
+# * ``target_modules: tuple[TrainingTargetSpec, ...]`` matches real
+#   mflux ``lora_layers.targets[]`` JSON shape (verified by reading
+#   ``mflux/models/common/training/_example/train.json``). Each spec
+#   has its OWN rank (NOT a single top-level rank).
+# * ``default_epochs`` not ``default_steps_per_image`` — semantically
+#   correct per architect M-1 (total_steps = epochs × len(dataset) ×
+#   batch_size).
+# * ``_KLEIN_4B_TARGET_MODULES`` lifted to module-level constant for
+#   the klein-4b BUILTIN_MODELS row (commit 2) to reference by NAME —
+#   single source of truth, closes the B-1 anti-pattern that v0.9.3
+#   fixed for ``pipeline_class``.
+
+
+# Shared rank/quant/resolution sets — consumed by BOTH ``__post_init__``
+# AND argparse ``choices=`` (commit 4) so a future v0.10.x extension
+# (e.g. rank=128) lands in one place without drift. §R.1 python H-13
+# closure.
+_VALID_LORA_RANKS: frozenset[int] = frozenset({4, 8, 16, 32, 64})
+_VALID_QUANTIZE_TRAIN: frozenset[int] = frozenset({3, 4, 5, 6, 8})
+_VALID_TRAIN_RESOLUTIONS: frozenset[int] = frozenset(
+    {256, 384, 512, 768, 1024}
+)
+
+
+# Module-path regex: starts with letter/underscore, contains
+# alphanumeric/underscore/dot/optional ``{block}`` placeholder. The
+# placeholder appears at most once and is bracketed by dotted-path
+# segments. Excludes control bytes and shell metachars by construction
+# — anything outside ``[\w.{}]`` rejects.
+import re as _re  # noqa: E402 — local import to avoid widening the
+# module's top-level import surface (this is the only ``re`` consumer
+# in models.py and it stays scoped to the TrainingTargetSpec validator).
+_TRAINING_TARGET_MODULE_PATH_RE = _re.compile(
+    r"^[a-zA-Z_][\w.]*(?:\{block\}[\w.]*)?$"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class TrainingTargetSpec:
+    """v0.10 — one entry in ``TrainingConfig.target_modules``.
+
+    Matches mflux ``lora_layers.targets[]`` JSON shape verified at
+    ``mflux/models/common/training/_example/train.json``: each entry is
+    ``{module_path, blocks: {start, end}, rank}`` and renders to mflux
+    via the ``{block}``-templated module path substituted across the
+    block range.
+
+    Frozen + slots + hashable so the parent ``TrainingConfig`` can stay
+    frozen+hashable too. All fields are hashable types: ``str`` /
+    ``tuple[int, int] | None`` / ``int``.
+
+    Tied design memo: [[project-v100-design]] §C.
+    """
+
+    module_path: str               # e.g. "transformer_blocks.{block}.attn.to_q"
+    blocks: tuple[int, int] | None # (start, end) inclusive-exclusive, or None
+    rank: int                      # per-target LoRA rank; must be in _VALID_LORA_RANKS
+
+    def __post_init__(self) -> None:
+        # 1. Empty / control-byte / shape rejection on module_path.
+        if not self.module_path:
+            raise ValueError(
+                "TrainingTargetSpec.module_path is empty"
+            )
+        if not _TRAINING_TARGET_MODULE_PATH_RE.fullmatch(self.module_path):
+            raise ValueError(
+                f"TrainingTargetSpec.module_path={self.module_path!r} "
+                "must match ^[a-zA-Z_][\\w.]*(\\{block\\}[\\w.]*)?$ — "
+                "alphanumeric/underscore/dot path with optional single "
+                "``{block}`` placeholder; control bytes + shell "
+                "metachars excluded by construction."
+            )
+
+        # 2. Cross-rule: {block} placeholder iff blocks is not None.
+        #    The validator catches BOTH directions of inconsistency.
+        has_placeholder = "{block}" in self.module_path
+        if has_placeholder and self.blocks is None:
+            raise ValueError(
+                f"TrainingTargetSpec.module_path={self.module_path!r} "
+                "contains ``{block}`` placeholder but blocks=None — "
+                "spec is unrenderable. Provide blocks=(start, end)."
+            )
+        if not has_placeholder and self.blocks is not None:
+            raise ValueError(
+                f"TrainingTargetSpec.module_path={self.module_path!r} "
+                f"has no ``{{block}}`` placeholder but blocks={self.blocks!r} "
+                "— no placeholder to substitute into. Either add "
+                "``{block}`` to the path or set blocks=None."
+            )
+
+        # 3. Validate blocks range when present.
+        if self.blocks is not None:
+            start, end = self.blocks
+            if start < 0:
+                raise ValueError(
+                    f"TrainingTargetSpec.blocks={self.blocks!r} has negative "
+                    f"start; valid range is start >= 0"
+                )
+            if start > end:
+                raise ValueError(
+                    f"TrainingTargetSpec.blocks={self.blocks!r} has "
+                    f"start > end; valid range is start <= end"
+                )
+
+        # 4. Rank allowlist.
+        if self.rank not in _VALID_LORA_RANKS:
+            raise ValueError(
+                f"TrainingTargetSpec.rank={self.rank} not in "
+                f"_VALID_LORA_RANKS={sorted(_VALID_LORA_RANKS)!r}"
+            )
+
+
+# ── Klein-4b canonical target modules (module-level constant) ─────────
+#
+# Per [[project-colleague-lora-training-2026-05-27]] proven recipe +
+# FLUX.2 transformer architecture grep
+# (``mflux/models/flux2/weights/flux2_lora_mapping.py:336`` for the
+# ``transformer_blocks.{block}.attn.*`` path shape;
+# ``mflux/models/flux2/model/flux2_transformer/transformer.py:20`` for
+# the num_single_layers=20 constant).
+#
+# Klein-4b architecture:
+# * transformer_blocks #38 (double-stream) with attn q/k/v/to_out targets
+# * single_transformer_blocks #20 (single-stream) with attn.to_out target
+#
+# BUILTIN_MODELS klein-4b row (commit 2) will reference this by NAME so
+# the schema-and-content split lives in one place. Adding a 2nd
+# training base = new module-level constant + new BUILTIN_MODELS row.
+_KLEIN_4B_TARGET_MODULES: tuple[TrainingTargetSpec, ...] = (
+    TrainingTargetSpec(
+        module_path="transformer_blocks.{block}.attn.to_q",
+        blocks=(0, 38),
+        rank=16,
+    ),
+    TrainingTargetSpec(
+        module_path="transformer_blocks.{block}.attn.to_k",
+        blocks=(0, 38),
+        rank=16,
+    ),
+    TrainingTargetSpec(
+        module_path="transformer_blocks.{block}.attn.to_v",
+        blocks=(0, 38),
+        rank=16,
+    ),
+    TrainingTargetSpec(
+        module_path="transformer_blocks.{block}.attn.to_out.0",
+        blocks=(0, 38),
+        rank=16,
+    ),
+    TrainingTargetSpec(
+        module_path="single_transformer_blocks.{block}.attn.to_out",
+        blocks=(0, 20),
+        rank=16,
+    ),
+)
+
+
+@dataclass(frozen=True, slots=True)
+class TrainingConfig:
+    """v0.10 training-specific Model config. Absent (Model.training is
+    None) ⇒ Model cannot be a LoRA-training target. Present ⇒ Model is
+    a valid ``imgen train --base <name>`` target.
+
+    Tied design memo: [[project-v100-design]] §C.
+    """
+
+    # ── Per-Model training peak (preflight gate) ──
+    # Sentinel 0.0 fails loudly — preflight gate is load-bearing on
+    # this value. Calibrated from smoke runs; klein-4b on M5 Pro 48 GB
+    # at q4/rank-16/low_ram peaks ~26-30 GB resident (colleague). M2 Pro
+    # 32 GB smoke at pre-tag gate refines this.
+    training_peak_ram_gb: float
+
+    # ── Training defaults (mflux-train JSON config seed) ──
+    default_lora_rank: int = 16
+    default_max_resolution: int = 512
+    default_quantize: int = 4
+    default_epochs: int = 80        # total_steps = default_epochs × len(dataset) × batch_size
+    default_low_ram: bool = True
+
+    # ── Optimizer (AdamW lr=1e-4 colleague-validated default) ──
+    optimizer_name: str = "AdamW"
+    optimizer_lr: float = 1e-4
+
+    # ── Per-Model target modules (canonical klein-4b set lives in
+    #    _KLEIN_4B_TARGET_MODULES module constant) ──
+    target_modules: tuple[TrainingTargetSpec, ...] = ()
+
+    # ── Monitoring frequency ──
+    # Colleague's recipe used preview_frequency=10 which BLOATED wall
+    # from a theoretical ~5h to actual 10h. imgen default is 100
+    # (sparse) to keep the M2 Pro 32 GB overnight envelope reasonable.
+    default_preview_frequency: int = 100
+
+    def __post_init__(self) -> None:
+        if self.training_peak_ram_gb <= 0.0:
+            raise ValueError(
+                f"TrainingConfig.training_peak_ram_gb={self.training_peak_ram_gb} "
+                "must be > 0 — sentinel 0 means Model author forgot to declare; "
+                "preflight gate is load-bearing on this value."
+            )
+        if self.default_lora_rank not in _VALID_LORA_RANKS:
+            raise ValueError(
+                f"TrainingConfig.default_lora_rank={self.default_lora_rank} "
+                f"not in _VALID_LORA_RANKS={sorted(_VALID_LORA_RANKS)!r}"
+            )
+        if self.default_quantize not in _VALID_QUANTIZE_TRAIN:
+            raise ValueError(
+                f"TrainingConfig.default_quantize={self.default_quantize} "
+                "not in mflux-train's quantize choices "
+                f"_VALID_QUANTIZE_TRAIN={sorted(_VALID_QUANTIZE_TRAIN)!r} "
+                "(note 0 NOT in set — mflux-train doesn't accept bf16)"
+            )
+        if self.default_max_resolution not in _VALID_TRAIN_RESOLUTIONS:
+            raise ValueError(
+                f"TrainingConfig.default_max_resolution={self.default_max_resolution} "
+                f"not in _VALID_TRAIN_RESOLUTIONS={sorted(_VALID_TRAIN_RESOLUTIONS)!r}"
+            )
+        # §R.1 architect M-1 closure: default_epochs (renamed from
+        # default_steps_per_image). Floor 10 — under-trains below.
+        if self.default_epochs < 10:
+            raise ValueError(
+                f"TrainingConfig.default_epochs={self.default_epochs} "
+                "too low — under-trains; minimum 10 (colleague baseline 80)"
+            )
+        if self.optimizer_name not in {"AdamW", "Adafactor"}:
+            raise ValueError(
+                f"TrainingConfig.optimizer_name={self.optimizer_name!r} "
+                "not in {'AdamW', 'Adafactor'}"
+            )
+        # §R.1 python M-5 closure: tightened from 0..1 to 1e-6..1e-2.
+        if not (1e-6 <= self.optimizer_lr <= 1e-2):
+            raise ValueError(
+                f"TrainingConfig.optimizer_lr={self.optimizer_lr} "
+                "out of [1e-6, 1e-2] range — realistic LoRA-finetune envelope"
+            )
+        if not self.target_modules:
+            raise ValueError(
+                "TrainingConfig.target_modules is empty — mflux-train "
+                "requires at least one TrainingTargetSpec. Klein-4b's "
+                "validated set lives in module constant "
+                "_KLEIN_4B_TARGET_MODULES."
+            )
+        if self.default_preview_frequency < 1:
+            raise ValueError(
+                f"TrainingConfig.default_preview_frequency={self.default_preview_frequency} "
+                "must be >= 1"
+            )
+
+
 # ── v0.7 → v0.8 model name renames (canonical home, 4b moved from parser.py) ──
 #
 # Pure data; no imports of imgen modules — anyone can import this freely.
@@ -226,12 +494,27 @@ class Model:
     # above without import-order pain.
     video: VideoConfig | None = None
 
+    # — v0.10 commit 1: nested training config (None ⇒ not trainable) —
+    # Mirrors the v0.9 video pattern. ``Model.training is not None``
+    # IS the signal for "this Model is a LoRA-training target" (no
+    # separate _TRAINING_BASE_ALLOWLIST constant per §R.1 architect
+    # C-2 closure).
+    training: TrainingConfig | None = None
+
     @property
     def output_type(self) -> Literal["image", "video"]:
         """Derived: ``"video"`` if a VideoConfig is attached, else
         ``"image"``. Used by iteration_dryrun_display (§H), runner
         payload routing (§F), history command field (§J)."""
         return "video" if self.video is not None else "image"
+
+    @property
+    def training_supported(self) -> bool:
+        """Derived: ``True`` if this Model has a TrainingConfig
+        attached, else ``False``. Used by ``imgen train --base``
+        validator + ``imgen doctor`` listing (commits 4, 8).
+        [[project-v100-design]] §C."""
+        return self.training is not None
 
     def __post_init__(self) -> None:
         """Engine-conditional invariants. Fires at every Model
@@ -278,6 +561,20 @@ class Model:
                     "video Models must use VideoConfig.force_cpu_offload; "
                     "cpu_offload_threshold_mp is image-only "
                     "(leave at the default 2.0 for video Models)"
+                )
+
+        # v0.10 commit 1 — Model × TrainingConfig cross-rules per
+        # [[project-v100-design]] §C. v0.10.0 ships only mflux-based
+        # training; diffusers_mps Models (video etc.) stay
+        # inference-only. Adding training to a non-mflux engine
+        # requires re-running design review per the locked surface.
+        if self.training is not None:
+            if self.engine != "mflux":
+                raise ValueError(
+                    f"TrainingConfig only supported with engine='mflux' "
+                    f"(got engine={self.engine!r}). v0.10.0 does not "
+                    "train via diffusers_mps engine; video/diffusers "
+                    "Models stay inference-only."
                 )
 
 

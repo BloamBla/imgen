@@ -24,7 +24,12 @@ def _make_minimal_genparams(**overrides):
 
 class _MinimalCompliantEngine:
     """Test double with the exact Protocol surface — used to verify
-    `isinstance(eng, Engine)` works for structural typing."""
+    `isinstance(eng, Engine)` works for structural typing.
+
+    v0.10 commit 1: gains ``train(model, params)`` per
+    [[project-v100-design]] §R.1 round-1 closure (Engine.train replaces
+    the dropped MfluxTrainer class). Engines that don't support training
+    raise NotImplementedError per the docstring convention."""
     name = "test-engine"
 
     def build_cmd(self, model, params):
@@ -39,9 +44,20 @@ class _MinimalCompliantEngine:
     def ram_estimate_gb(self, model, params):
         return 4.0
 
+    def train(self, model, params):
+        """v0.10.0 — Engine.train Protocol method. Compliant test
+        double; production impls raise NotImplementedError where
+        training isn't supported (e.g. DiffusersMpsEngine)."""
+        raise NotImplementedError("test-engine does not implement train")
+
 
 class _IncompleteEngine:
-    """Missing `validate` method — should fail isinstance check."""
+    """Missing `validate` method — should fail isinstance check.
+
+    v0.10 commit 1: also missing ``train`` — both gaps make this an
+    incomplete Protocol implementation. The lock-in test asserts
+    isinstance returns False, proving structural conformance is
+    enforced at runtime."""
     name = "incomplete"
 
     def build_cmd(self, model, params):
@@ -181,6 +197,67 @@ class TestMfluxEngineBuildCmdMatchesV07_17:
             f"  legacy: {legacy_argv}\n"
             f"  new:    {new_argv}"
         )
+
+
+# ── v0.10 commit 1 — Engine.train Protocol method ─────────────────────
+
+
+class TestEngineTrainProtocolMethod:
+    """v0.10.0 commit 1: ``Engine.train(model, params)`` is the new
+    Protocol verb per [[project-v100-design]] §R.1 round-1 closure
+    (architect H-3 — re-decided from separate MfluxTrainer class to
+    Engine.train method to preserve the v0.9.5 M-2 Engine-registry
+    single-source-of-truth).
+
+    Convention per §R.1 round-2 N-1: engines that don't support training
+    raise ``NotImplementedError`` with the engine name in the message —
+    same posture as ``abc.abstractmethod`` conventions. v0.10.0 ships:
+
+    * ``MfluxEngine.train`` raises NotImplementedError until commit 5
+      wires the real impl (subprocess invocation of ``mflux-train``).
+    * ``DiffusersMpsEngine.train`` raises NotImplementedError
+      permanently (v0.10.0 doesn't train via diffusers_mps; video
+      Models stay inference-only).
+    """
+
+    def test_engine_protocol_includes_train_method(self):
+        """Protocol structural lock — Engine MUST declare ``train``."""
+        from imgen.engines.base import Engine
+        assert hasattr(Engine, "train"), (
+            "v0.10 commit 1 added Engine.train; missing here means "
+            "the Protocol declaration regressed."
+        )
+
+    def test_mflux_engine_train_raises_not_implemented_until_commit_5(self):
+        """Commit 5 will replace the NotImplementedError with the
+        actual mflux-train subprocess dispatch. Until then this is a
+        load-bearing placeholder so Protocol structural conformance
+        holds."""
+        from imgen.engines.mflux_engine import MfluxEngine
+        params = _make_minimal_genparams()
+        with pytest.raises(NotImplementedError, match="mflux"):
+            MfluxEngine().train(model=None, params=params)
+
+    def test_diffusers_mps_engine_train_raises_not_implemented_permanent(self):
+        """v0.10.0: diffusers_mps doesn't train. Permanent
+        NotImplementedError per [[project-v100-design]] §B.4."""
+        from imgen.engines.diffusers_mps_engine import DiffusersMpsEngine
+        params = _make_minimal_genparams()
+        with pytest.raises(NotImplementedError, match="diffusers_mps"):
+            DiffusersMpsEngine().train(model=None, params=params)
+
+    def test_mflux_engine_still_satisfies_protocol_after_train_added(self):
+        """v0.10 commit 1 adds Engine.train to the Protocol. MfluxEngine
+        must still pass isinstance(eng, Engine)."""
+        from imgen.engines.base import Engine
+        from imgen.engines.mflux_engine import MfluxEngine
+        assert isinstance(MfluxEngine(), Engine)
+
+    def test_diffusers_mps_engine_still_satisfies_protocol(self):
+        """Same as above for DiffusersMpsEngine."""
+        from imgen.engines.base import Engine
+        from imgen.engines.diffusers_mps_engine import DiffusersMpsEngine
+        assert isinstance(DiffusersMpsEngine(), Engine)
 
 
 # ── v0.9.5 M-2: Engine registry + get_engine helper ────────────────────

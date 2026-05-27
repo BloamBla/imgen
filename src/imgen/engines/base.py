@@ -136,3 +136,30 @@ class Engine(Protocol):
         cost). Replaces v0.7.14's uniform 5 GB/MP slope table.
         """
         ...
+
+    def train(self, model, params: GenParams) -> int:
+        """Execute LoRA training. Returns exit code (0 success,
+        non-zero failure).
+
+        v0.10.0 commit 1: Protocol verb added per
+        [[project-v100-design]] §R.1 round-1 architect H-3 closure —
+        re-decided from a separate ``MfluxTrainer`` class to a method
+        on the existing Engine Protocol to preserve the v0.9.5 M-2
+        Engine-registry as single source of truth for runtime
+        dispatch. ``Engine.validate`` and ``Engine.ram_estimate_gb``
+        already coexist as parallel verbs on the same Protocol; ``train``
+        continues the pattern.
+
+        **Convention** (§R.1 round-2 N-1 closure): engines that don't
+        support training MUST raise ``NotImplementedError`` with the
+        engine name in the message — same posture as
+        ``abc.abstractmethod`` conventions. v0.10.0 ships:
+
+        * ``MfluxEngine.train`` — raises ``NotImplementedError`` at
+          commit 1; commit 5 wires the real mflux-train subprocess
+          dispatch.
+        * ``DiffusersMpsEngine.train`` — raises ``NotImplementedError``
+          PERMANENTLY (v0.10.0 doesn't train via diffusers_mps; video
+          Models stay inference-only per §B.4).
+        """
+        ...

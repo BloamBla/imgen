@@ -231,3 +231,36 @@ class MfluxEngine:
         encoder_gb = model.encoder_ram_gb
         overhead_gb = 0.5
         return weights_gb + activations_gb + encoder_gb + overhead_gb
+
+    def train(self, model, params: GenParams) -> int:
+        """v0.10.0 commit 1 placeholder — raises ``NotImplementedError``
+        until commit 5 wires the real ``mflux-train --config FILE``
+        subprocess dispatch per [[project-v100-design]] §E.1.
+
+        Engine.train Protocol contract: this verb is THE training-side
+        dispatch method (parallel to ``run`` for inference). When fully
+        wired at commit 5, it will:
+
+        * Materialise scratch dataset dir (hardlinks where possible)
+        * Generate JSON config matching real mflux ``lora_layers.targets[]``
+          shape (§E.1)
+        * Invoke ``.venv/bin/mflux-train --config <generated>`` via
+          ``run_with_stderr_redaction`` + ``build_mflux_env`` (HF token
+          redaction + DYLD_*/LD_*/PYTHONPATH denylist)
+        * Glob-pick the highest-iteration ``{NNNNNNN}_adapter.safetensors``
+          from checkpoints dir, atomic-rename to
+          ``~/.imgen/loras/<name>.safetensors``
+        * Write the ``<name>.meta.json`` sidecar
+        * Return mflux-train exit code
+
+        Until commit 5: the lock-in test
+        ``tests/test_engines.py::TestEngineTrainProtocolMethod::
+        test_mflux_engine_train_raises_not_implemented_until_commit_5``
+        pins this placeholder.
+        """
+        raise NotImplementedError(
+            "MfluxEngine.train: not implemented until v0.10.0 commit 5 "
+            "(real mflux-train subprocess dispatch lands then). "
+            "Engine.train Protocol method declared at commit 1 to "
+            "preserve structural conformance."
+        )

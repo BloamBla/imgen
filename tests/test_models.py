@@ -69,7 +69,9 @@ class TestModelDataclassShape:
         """Schema lock — every named field is present. If a field gets
         dropped or renamed, this test fails and forces a deliberate
         update. v0.9 commit 1 widens with `video` (nested VideoConfig)
-        per [[project-v090-design]] §C."""
+        per [[project-v090-design]] §C. v0.10 commit 1 widens with
+        ``training`` (nested TrainingConfig) per [[project-v100-design]]
+        §C — None ⇒ Model cannot be a LoRA-training target."""
         from imgen.models import Model
         names = {f.name for f in fields(Model)}
         expected = {
@@ -84,6 +86,8 @@ class TestModelDataclassShape:
             "enhance_system_prompt", "enhance_invariants",
             # v0.9 commit 1 — nested video config (None ⇒ image Model)
             "video",
+            # v0.10 commit 1 — nested training config (None ⇒ not trainable)
+            "training",
         }
         assert expected == names, (
             f"Field surface drift: missing={expected - names}, "
@@ -268,6 +272,88 @@ class TestBuiltinModelsLiteral:
         assert be.needs_token is True
         assert be.lora_compat_group == "flux-1"
         assert be.hf_gated_repo == "black-forest-labs/FLUX.1-Kontext-dev"
+
+
+class TestModelTrainingField:
+    """v0.10.0 commit 1 — ``Model.training: TrainingConfig | None``
+    nested field per [[project-v100-design]] §R.1 ROUND-1 CLOSURES.
+
+    Mirrors the v0.9 ``Model.video`` pattern: None ⇒ image-or-video
+    Model that cannot be a LoRA-training target; present ⇒ Model is a
+    valid ``imgen train --base <name>`` target. Cross-rule in
+    __post_init__ requires engine='mflux' when training is set (v0.10.0
+    does not train via diffusers_mps)."""
+
+    def test_training_field_defaults_to_none(self):
+        m = _minimal_mflux_model()
+        assert m.training is None
+
+    def test_training_supported_property_false_when_training_none(self):
+        m = _minimal_mflux_model()
+        assert m.training_supported is False
+
+    def test_training_supported_property_true_when_training_set(self):
+        from imgen.models import (
+            TrainingConfig,
+            TrainingTargetSpec,
+        )
+        tc = TrainingConfig(
+            training_peak_ram_gb=28.0,
+            target_modules=(
+                TrainingTargetSpec(
+                    module_path="transformer_blocks.{block}.attn.to_q",
+                    blocks=(0, 38),
+                    rank=16,
+                ),
+            ),
+        )
+        m = _minimal_mflux_model(training=tc)
+        assert m.training_supported is True
+
+    def test_training_requires_mflux_engine(self):
+        """§R.1 closure: training on diffusers_mps Model raises in
+        __post_init__. v0.10.0 ships only mflux-based training; video
+        Models stay inference-only."""
+        from imgen.models import (
+            Model,
+            TrainingConfig,
+            TrainingTargetSpec,
+        )
+        tc = TrainingConfig(
+            training_peak_ram_gb=28.0,
+            target_modules=(
+                TrainingTargetSpec(
+                    module_path="x.{block}.y", blocks=(0, 10), rank=16,
+                ),
+            ),
+        )
+        with pytest.raises(ValueError, match=r"[Tt]raining.*mflux"):
+            Model(
+                engine="diffusers_mps",
+                repo="fake/fake",
+                ram_baseline_gb=10.0,
+                ram_slope_gb_per_mp=4.0,
+                training=tc,
+            )
+
+    def test_v09_builtins_still_valid_after_v10_field_addition(self):
+        """§R.1 backwards-compatibility lock: every v0.9 BUILTIN_MODELS
+        row instantiates cleanly without setting ``training=``.
+
+        flux-kontext / qwen-image-edit-v1 / flux-dev /
+        flux2-klein-edit-9b / ltx-video all default training=None and
+        the v0.10 cross-rule in __post_init__ is a no-op for them."""
+        from imgen.models import BUILTIN_MODELS
+        for name, m in BUILTIN_MODELS.items():
+            # All v0.9 rows default training=None until commit 2 adds
+            # the klein-4b row with training=TrainingConfig(...).
+            if name == "flux2-klein-4b":
+                # commit 2 will set training= on this row
+                continue
+            assert m.training is None, (
+                f"v0.9 builtin {name!r} unexpectedly has training set"
+            )
+            assert m.training_supported is False, name
 
 
 class TestGenParams:
