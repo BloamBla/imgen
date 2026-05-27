@@ -1,6 +1,6 @@
 # imgen
 
-Local image + video generation CLI for Apple Silicon Macs. Four modes today: **`imgen draw`** generates images from text prompts (FLUX.1-dev), **`imgen refine`** upsamples an existing image at 1.5×/2× via FLUX.2-klein-edit (Hires-Fix pattern), **`imgen generate` / `imgen batch`** restyle photos (FLUX.1-Kontext, Qwen-Image-Edit), and **`imgen video`** (v0.9.0+) generates short clips from text prompts (LTX-Video via diffusers). Wraps [mflux](https://github.com/filipstrand/mflux) for the image side; the video side uses HuggingFace `diffusers` in a separate isolated venv. On-device via MLX / MPS, no cloud, no API keys outside HuggingFace's gated-repo token.
+Local image + video generation CLI for Apple Silicon Macs. Modes today: **`imgen draw`** generates images from text prompts (FLUX.1-dev), **`imgen refine`** upsamples an existing image at 1.5×/2× via FLUX.2-klein-edit (Hires-Fix pattern), **`imgen generate` / `imgen batch`** restyle photos (FLUX.1-Kontext, Qwen-Image-Edit), and **`imgen video`** (v0.9.0+) generates short clips from text prompts (LTX-Video via diffusers) — or, with **v0.9.3+**, animates a still image via `--image PATH` (image-to-video on the same LTX-Video checkpoint). Wraps [mflux](https://github.com/filipstrand/mflux) for the image side; the video side uses HuggingFace `diffusers` in a separate isolated venv. On-device via MLX / MPS, no cloud, no API keys outside HuggingFace's gated-repo token.
 
 ```bash
 # Text-to-image (v0.7.0+)
@@ -23,6 +23,11 @@ imgen video "a samurai walking through bamboo forest"         # canonical: 768×
 imgen video "cyberpunk city at night" --duration 2            # 2 sec, ceils to next valid 8k+1 frames (49 @ 24fps)
 imgen video "abstract" --num-frames 33 --fps 24               # explicit frame count (alternative to --duration)
 imgen video "test" --dry-run                                  # show dispatch shape without running
+
+# Image-to-video (v0.9.3+, animate a still per a motion prompt)
+imgen video "wind blows, slow camera push-in" --image samurai.png    # i2v: animate the still
+imgen draw "samurai in fog" -o samurai.png                           # ... or chain: generate still + animate
+  && imgen video "wind blows" --image samurai.png --duration 2       #     (pipeline composition)
 
 # Photo restyle (v0.1+)
 imgen photo.jpg --style anime                            # preset mode
@@ -210,6 +215,11 @@ imgen video "..." --seed 42                    # reproducible
 imgen video "..." -o ~/clip.mp4                # .mp4 extension required
 imgen video "..." --dry-run                    # show dispatch payload without running
 
+# Video — image-to-video (v0.9.3+, conditioning still + motion prompt)
+imgen video "wind blows softly" --image still.png             # animate the still per the prompt
+imgen video "..." --image still.png --guidance 7              # stronger motion-prompt adherence (default 5 for i2v)
+imgen video "..." --image still.png --negative-prompt "blur"  # override the motion-anchor negative
+
 # Batch a folder — same flags as generate except no -o/--output (always run-folder layout)
 imgen batch <dir>                              # every photo × default style → one timestamped folder
 imgen batch <dir> --style anime,ghibli,pixar   # N × M into one folder, named <input>-<style>.png
@@ -270,13 +280,45 @@ Check your current envelope with `imgen doctor` — the RAM forecast table inclu
 - **Separate venv**: LTX runs in `.venv-diffusers/` (torch + diffusers + transformers + the three pinned video packages), kept isolated from the main `.venv/` to avoid the torch ↔ MLX dependency conflict.
 - **CPU offload mandatory** on 32 GB Macs: LTX's T5-XXL encoder transient peaks ~18 GB if loaded to MPS directly; `force_cpu_offload=True` keeps the encoder on CPU and streams to MPS — peak drops to ~3 GB encoder + 14 GB transformer/activations.
 - **8k+1 frame alignment**: LTX's temporal-VAE patch structure requires frame counts that satisfy `(n - 1) % 8 == 0` (1, 9, 17, 25, 33, 49, 65, ...). `--duration N` ceils UP to the nearest valid count so output is always ≥ requested duration.
-- **History replay**: video entries roundtrip via `imgen replay <id>` — the `command="video"` discriminator + new fields (`num_frames`, `fps`, `video_codec`) flow through the existing history schema (v=4, additive).
+- **History replay**: video entries roundtrip via `imgen replay <id>` — the `command="video"` discriminator + fields (`num_frames`, `fps`, `video_codec`, plus v0.9.3 `image_path` on i2v rows) flow through the existing history schema (v=4, additive — no migration). i2v rows replay back into i2v if the conditioning still still exists; if the file was moved/renamed the replay dies cleanly with the standard recovery hint.
+
+## Image-to-video (v0.9.3+)
+
+`imgen video --image PATH` animates an existing still per a motion-direction prompt. Same LTX-Video checkpoint as the v0.9.0 text-to-video default, different `diffusers` pipeline class (`LTXImageToVideoPipeline` instead of `LTXPipeline`) — no extra HuggingFace download.
+
+```bash
+# Conditioning still + motion-direction prompt → animated clip.
+imgen video "wind blows softly through the bamboo" --image samurai.png
+
+# Pipeline composition: generate the still with imgen draw, then animate.
+imgen draw "samurai standing in fog, mountains behind" -o ~/samurai.png
+imgen video "slow camera push-in, mist swirls" --image ~/samurai.png --duration 2
+```
+
+### Motion-prompt UX
+
+LTX i2v on default `guidance=3` produces conservative motion (often a static-shimmer-only output on ambient prompts). When `--image` is set, `imgen video` bumps the default `guidance` to **5** and injects a motion-aware negative prompt (`"static, still, frozen, no motion"`) — both are overridable via `--guidance N` and `--negative-prompt "..."`.
+
+Tips that work in practice:
+
+- **Subject mid-action stills animate better than landscape stills.** A figure walking, leaning, or holding an object has implicit motion candidates LTX can amplify. A wide mountain vista without a focal subject often just shimmers.
+- **Motion verbs in the prompt** ("walking", "drifting", "wind blows", "camera pans right") give LTX explicit direction. Style adjectives ("cinematic", "moody") don't carry motion intent.
+- **Longer is more dynamic.** `--duration 2` (49 frames @ 24fps) gives the model more space to develop motion than the default 1-second / 25-frame canonical envelope.
+- **Override `--guidance`** if the default 5 still feels frozen — try 6 or 7 for ambient prompts. Going above 8 starts to introduce artefacts.
+
+### Supported input formats
+
+`.png`, `.jpg`, `.jpeg` — verified through the LTX VAE encode path. `.webp` and `.heic` are refused (untested). Use `imgen draw` to produce a dim-matched still, or `sips -s format png in.heic --out out.png` to convert HEIC sources.
+
+### History + replay
+
+i2v rows store the conditioning path in an additive `image_path` field (no schema bump from v=4). `imgen replay <id>` reconstructs the run including the still; if the file has moved or been deleted, the replay dies cleanly with the standard "file not found" hint rather than silently mis-routing.
 
 ### Research-evaluated alternatives (not built-in)
 
 Tested in 2026-05 research session on M2 Pro 32 GB. Findings descriptive below.
 
-- **LTX-Video i2v** (same checkpoint as t2v, different `diffusers` pipeline class): proven on 512²×25f at ~3 min wall and 768²×25f at ~8 min wall. Conservative motion at default `cfg_scale=3` — agressive prompts + cfg 5-6 help. Memory comfortable (~16 GB process RSS at 768²). **Pipeline composition demo**: FLUX-generated still → LTX i2v animation worked end-to-end. Candidate for v0.9.x i2v subcommand promotion.
+- **LTX-Video i2v** — promoted to first-class via `imgen video --image PATH` at v0.9.3 (see section above). Original research findings: proven on 512²×25f at ~3 min wall and 768²×25f at ~8 min wall on M2 Pro 32 GB; memory comfortable (~16 GB process RSS at 768²); conservative motion at default cfg=3 — v0.9.3 bumps i2v default to cfg=5 to mitigate.
 - **Lance-3B-Video** (xocialize/lance-mlx, MLX-native t2v): painterly cinematic aesthetic by design (NOT photorealistic). Per-frame visual density at 384²+ is substantially higher than LTX 2B at comparable settings; per-call wall is ~2-4× longer. GPU utilization 80-97% (MLX-native = no MPS heap copies, no double-counting with system RAM). Strong candidate for v0.9.x second built-in t2v model; would need separate `.venv-lance/` + `MlxLanceEngine`.
 - **CogVideoX-5b** (THUDM, diffusers + sequential CPU offload): highest single-frame photoreal density of the three but **bandwidth-bound by sequential offload** (~0% GPU utilization, ~23% CPU; ~19 min wall for 480×320×17f). Native 720×480×49f OOMs at 56 GiB attention buffer on 32 GB. Workable only at reduced params with offload; LTX is 3-5× faster for comparable output length on our hardware.
 
