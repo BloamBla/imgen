@@ -41,7 +41,6 @@ from ..cmd_helpers import (
     open_results,
     megapixels_of,
     preflight_resources,
-    print_batch_summary,
     resolve_output_layout,
     run_one_iteration,
 )
