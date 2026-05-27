@@ -9,4 +9,4 @@ HuggingFace ``diffusers`` on MPS in a separate ``.venv-diffusers/``
 to avoid the torch ↔ MLX dependency conflict.
 """
 
-__version__ = "0.9.0"
+__version__ = "0.9.1"
