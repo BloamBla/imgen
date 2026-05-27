@@ -337,6 +337,59 @@ def test_diffusers_mps_accepts_canonical_venv_relative_peer_symlink(
     )
 
 
+def test_diffusers_mps_readlink_toctou_falls_through(
+    monkeypatch, tmp_path,
+):
+    """v0.9.1 B-14 closure of §R.3 round-2 python LOW-1: a TOCTOU race
+    that removes the symlink between is_symlink() and os.readlink()
+    must not propagate an unhandled OSError. The try/except wrapper
+    falls through to the existing is_file() check which surfaces the
+    user-friendly 'not installed' message when the symlink target is
+    gone, or proceeds to subprocess exec when the target still
+    resolves (as simulated here).
+    """
+    from imgen import paths
+    from imgen.engines import DiffusersMpsEngine
+
+    install_root = tmp_path / "install_root_race"
+    venv_bin = install_root / ".venv-diffusers" / "bin"
+    venv_bin.mkdir(parents=True)
+    (venv_bin / "python3.12").write_text("#!/usr/bin/env python3\n")
+    (venv_bin / "python3.12").chmod(0o755)
+    (venv_bin / "python").symlink_to("python3.12")
+
+    monkeypatch.setattr(paths, "IMGEN_INSTALL_ROOT", install_root)
+
+    # Simulate the race: readlink raises FileNotFoundError as if the
+    # symlink vanished between the is_symlink() probe and the
+    # readlink() call.
+    import os
+    def racing_readlink(path):
+        raise FileNotFoundError(f"simulated race: {path}")
+    monkeypatch.setattr(os, "readlink", racing_readlink)
+
+    captured = []
+    from imgen import subprocess_helpers
+    def fake_run(*args, **kwargs):
+        captured.append((args, kwargs))
+        return 0
+    monkeypatch.setattr(
+        subprocess_helpers, "run_with_stderr_redaction", fake_run,
+    )
+
+    engine = DiffusersMpsEngine()
+    rc = engine.run(_make_diffusers_model(), _make_genparams())
+    assert rc == 0, (
+        "TOCTOU race on readlink should fall through to is_file(); "
+        "the canonical symlink target still resolves so subprocess exec "
+        "should proceed."
+    )
+    assert captured, (
+        "execution should reach subprocess_helpers.run_with_stderr_redaction "
+        "after the readlink race falls through to is_file"
+    )
+
+
 # ── Static runner payload validation (architect C2 + security CRITICAL+HIGH+M3) ─
 
 

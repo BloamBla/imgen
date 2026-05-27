@@ -135,18 +135,27 @@ class DiffusersMpsEngine:
         # peer check defends against the realistic threat of a
         # planted-symlink-into-venv attack without rejecting normal
         # venv layouts.
+        # v0.9.1 B-14: wrap readlink() in try/except so a TOCTOU race
+        # (symlink vanishing between is_symlink() and readlink()) falls
+        # through to the is_file() check below rather than propagating
+        # an unhandled OSError to the user.
+        guard_triggers = False
         if venv_python.is_symlink():
-            target = os.readlink(venv_python)
-            if "/" in target:
-                die(
-                    f".venv-diffusers/bin/python is a symlink with "
-                    "non-peer target — refusing to exec. Canonical "
-                    "Python venv layout uses relative same-dir symlinks "
-                    "(e.g. python -> python3.12); an absolute target "
-                    "or path traversal is a plant-attack signal. "
-                    "Remove .venv-diffusers/ and re-run bootstrap.sh.",
-                    code=3,
-                )
+            try:
+                target = os.readlink(venv_python)
+                guard_triggers = "/" in target
+            except OSError:
+                pass
+        if guard_triggers:
+            die(
+                f".venv-diffusers/bin/python is a symlink with "
+                "non-peer target — refusing to exec. Canonical "
+                "Python venv layout uses relative same-dir symlinks "
+                "(e.g. python -> python3.12); an absolute target "
+                "or path traversal is a plant-attack signal. "
+                "Remove .venv-diffusers/ and re-run bootstrap.sh.",
+                code=3,
+            )
         if not venv_python.is_file():
             die(
                 "diffusers_mps engine selected but the diffusers venv "

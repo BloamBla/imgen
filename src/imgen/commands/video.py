@@ -144,19 +144,28 @@ def ensure_video_deps_or_die() -> None:
     # allowed, while absolute / traversal / non-peer targets reject.
     # See DiffusersMpsEngine.run for the full rationale; this mirror
     # check applies to the pip install path.
+    # v0.9.1 B-14: wrap readlink() in try/except so a TOCTOU race
+    # (symlink vanishing between is_symlink() and readlink()) falls
+    # through to the is_file() check below rather than propagating
+    # an unhandled OSError to the user.
     for path, name in [(pip_path, "pip"), (python_path, "python")]:
+        guard_triggers = False
         if path.is_symlink():
-            target = os.readlink(path)
-            if "/" in target:
-                die(
-                    f".venv-diffusers/bin/{name} is a symlink with "
-                    "non-peer target — refusing to exec. Canonical "
-                    "Python venv uses relative same-dir symlinks "
-                    "(e.g. python -> python3.12); an absolute target "
-                    "or path traversal is a plant-attack signal. "
-                    "Remove .venv-diffusers/ and re-run bootstrap.sh.",
-                    code=2,
-                )
+            try:
+                target = os.readlink(path)
+                guard_triggers = "/" in target
+            except OSError:
+                pass
+        if guard_triggers:
+            die(
+                f".venv-diffusers/bin/{name} is a symlink with "
+                "non-peer target — refusing to exec. Canonical "
+                "Python venv uses relative same-dir symlinks "
+                "(e.g. python -> python3.12); an absolute target "
+                "or path traversal is a plant-attack signal. "
+                "Remove .venv-diffusers/ and re-run bootstrap.sh.",
+                code=2,
+            )
         if not path.is_file():
             die(
                 f".venv-diffusers/bin/{name} not found.\n"

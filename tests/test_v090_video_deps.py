@@ -137,6 +137,39 @@ class TestSymlinkGuard:
         stderr = capsys.readouterr().err
         assert "symlink" in stderr.lower()
 
+    def test_readlink_toctou_falls_through_to_is_file(
+        self, tmp_path, monkeypatch,
+    ):
+        """v0.9.1 B-14 closure of §R.3 round-2 python LOW-1: a TOCTOU
+        race that removes the symlink between is_symlink() and
+        os.readlink() must not propagate an unhandled OSError. The
+        try/except wrapper falls through to the existing is_file()
+        check, which here resolves to True (target still on disk) so
+        the function proceeds into the deps probe rather than dying
+        on the symlink guard with a confusing FileNotFoundError.
+        """
+        from imgen.commands.video import ensure_video_deps_or_die
+        pip_path, _, _ = _setup_fake_venv(tmp_path, monkeypatch)
+        # Convert pip into a canonical-style relative symlink.
+        pip_real = pip_path.parent / "pip3.12"
+        pip_real.write_text("#!/usr/bin/env bash\n")
+        pip_real.chmod(0o755)
+        pip_path.unlink()
+        pip_path.symlink_to("pip3.12")
+
+        # Deps probe returns 0 → early-return happy path; never reaches
+        # install. We just need the symlink guard to fall through.
+        _stub_subprocess_run(monkeypatch, deps_present_rc=0)
+
+        def racing_readlink(path):
+            raise FileNotFoundError(f"simulated race: {path}")
+        monkeypatch.setattr(os, "readlink", racing_readlink)
+
+        # Must NOT raise OSError; falls through to is_file() (True
+        # for the canonical symlink target), then deps probe returns
+        # 0, function returns normally.
+        ensure_video_deps_or_die()
+
     def test_python_is_symlink_dies(self, tmp_path, monkeypatch, capsys):
         from imgen.commands.video import ensure_video_deps_or_die
         _, python_path, _ = _setup_fake_venv(tmp_path, monkeypatch)
