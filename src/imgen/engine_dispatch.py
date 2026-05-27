@@ -252,47 +252,41 @@ def _engine_for_model(model):
     )
 
 
-def validate_engine_params_or_die(
-    model,
-    *,
-    quantize: int,
-    guidance: float,
-    num_frames: int = 1,
-    fps: int = 24,
-) -> None:
-    """v0.8.0 commit 7 (§M): call ``Engine.validate(model, params)``
-    on the resolved per-iteration params; die with the error list on
-    any rejection. Centralised so the 4 cmd_* (generate / batch /
-    draw / refine) all hit the same gate.
+def validate_engine_params_or_die(model, *, params: GenParams) -> None:
+    """Call ``Engine.validate(model, params)`` on the resolved per-
+    iteration GenParams; die with the joined error list on rejection.
 
-    Replaces the pre-commit-7 hardcoded special-cases scattered
-    across cmd_* (e.g. ``refine.py:238`` flux2-klein-edit-9b
+    Centralised gate hit by every cmd_* (generate / batch / draw /
+    refine / video). Replaces the pre-v0.8.0 hardcoded special-cases
+    scattered across cmd_* (e.g. ``refine.py:238`` flux2-klein-edit-9b
     guidance pin) with a per-Model contract that scales without
     per-binary cmd_* edits.
 
-    No-op when ``model`` is None — user TOML lookups go through
-    Backend, which doesn't carry v0.8 validation surface. Commit 6+
-    user-TOML schema extension widens this to all Models.
+    v0.9.3 C3 (B-3 closure): signature is now ``(model, *, params:
+    GenParams)`` instead of the v0.8.0-v0.9.2 kwargs shape ``(model,
+    *, quantize, guidance, num_frames=1, fps=24)``. The kwargs version
+    built a placeholder GenParams internally — fine for two fields
+    but didn't scale (every new validate-time field needed a new
+    kwarg AND a new placeholder slot). v0.9.3 i2v adds ``input_path``
+    as a validate-visible field; rather than add a 5th kwarg, the
+    helper now takes the actual GenParams the caller is about to
+    hand to ``Engine.run``, so validate sees the exact per-iteration
+    shape including ``input_path``, ``num_frames``, ``fps``, etc.
+
+    Callers must build the GenParams BEFORE the validate gate. In
+    practice that means resolving IterationParams + loras + prompt
+    first, then assembling GenParams via
+    :func:`_genparams_from_iteration_inputs`, then validating. The
+    pre-v0.9.3 ordering ran validate immediately after IterationParams
+    resolution; the v0.9.3 reorder is observable only by surfacing
+    order (validate errors land after LoRA-incompat warnings,
+    instead of before them) — neither path is a hot loop.
+
+    Still a no-op when ``model`` is None — user TOML lookups go
+    through Backend, which doesn't carry v0.8 validation surface.
     """
     if model is None:
         return
-    from .engines.base import GenParams
-    # Minimal GenParams — placeholder values for fields validate()
-    # doesn't read. v0.9 commit 7: video Models read num_frames + fps
-    # at validate-time (alignment + fps allowlist), so the placeholder
-    # GenParams must reflect the actual values. Callers from video
-    # paths pass num_frames + fps via kwargs; image callers default to
-    # the GenParams image shape (num_frames=1, fps=24) — image
-    # validate() ignores both fields so the defaults are inert.
-    params = GenParams(
-        prompt="", negative="", width=64, height=64,
-        steps=1, guidance=guidance, seed=0, quantize=quantize,
-        strength=0.0, input_path=None,
-        output_path=Path("/tmp/_validate_placeholder.png"),
-        loras=(),
-        num_frames=num_frames,
-        fps=fps,
-    )
     engine = _engine_for_model(model)
     errors = engine.validate(model, params)
     if errors:

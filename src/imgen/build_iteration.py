@@ -648,18 +648,6 @@ def _assemble_iteration_no_style(
         args=args, preset=preset, merged_defaults=merged_defaults,
         model=model,
     )
-    # v0.8.0 commit 7 (§M): die on per-Model param violations
-    # (quantize ∉ supported_quants, guidance out of [min, max]).
-    # Replaces pre-commit-7 hardcoded special-cases in cmd_refine
-    # (refine.py:238 flux2-klein-edit-9b guidance pin) and any
-    # future per-binary cmd_* edits.
-    validate_engine_params_or_die(
-        model,
-        quantize=params.final_quantize,
-        guidance=params.final_guidance,
-        num_frames=num_frames,
-        fps=fps,
-    )
     # v0.7.11 (gap 1): draw now exposes --negative-prompt via CLI, so
     # the caller (`build_draw_iterations`) passes through args.negative_prompt
     # via the `negative` parameter. Refine intentionally passes "" (empty)
@@ -701,6 +689,11 @@ def _assemble_iteration_no_style(
         num_frames=num_frames,
         fps=fps,
     )
+    # v0.9.3 C3 (B-3 closure): validate the resolved GenParams. Moved
+    # AFTER GenParams construction so the helper sees the actual per-
+    # iteration shape (input_path, num_frames, fps, etc.) instead of a
+    # placeholder built from per-field kwargs.
+    validate_engine_params_or_die(model, params=gen_params)
     return Iteration(
         style_name=style_name,
         prompt=lora_resolution.prompt_with_triggers,
@@ -874,6 +867,7 @@ def build_video_iteration(
     run_dir: Path | None,
     base_seed: int,
     num_iterations: int = 1,
+    image_path: Path | None = None,
 ) -> list[Iteration]:
     """v0.9 commit 7: build the single Iteration for a ``imgen video``
     call.
@@ -891,6 +885,17 @@ def build_video_iteration(
     ``build_iterations_fn=build_draw_iterations`` interchangeably.
     Extra ``num_iterations`` arg accepted for symmetry; values >1 are
     rejected at the parser level so this helper always sees 1.
+
+    v0.9.3 C3: ``image_path`` parameter accepts a validated
+    conditioning-image path for i2v mode. None (default) → t2v
+    behaviour preserved. When set, the path threads to
+    ``Iteration.params.input_path``; the engine reads
+    ``params.input_path is not None`` to flip from
+    ``LTXPipeline`` to ``LTXImageToVideoPipeline`` at dispatch (C4).
+    The path itself is pre-validated at the CLI boundary (C5 via
+    :func:`imgen._i2v_resolve.validate_image_path_or_die`) so this
+    helper assumes the path exists, is a file, and is an LTX-VAE-safe
+    extension.
 
     Output naming:
       * ``<run_dir>/<prompt_slug>.mp4`` with collision suffix if needed.
@@ -936,7 +941,7 @@ def build_video_iteration(
         prompt=prompt,
         merged_defaults=merged_defaults,
         be=be,
-        input_path=None,  # t2v — no source media in v0.9.0
+        input_path=image_path,  # v0.9.3: None → t2v, set → i2v
         output_path=output_path,
         width=width,
         height=height,
@@ -1163,12 +1168,11 @@ def build_iterations(
             args=args, preset=preset, merged_defaults=merged_defaults,
             model=model,
         )
-        # v0.8.0 commit 7 (§M): die on per-Model param violations.
-        validate_engine_params_or_die(
-            model,
-            quantize=params.final_quantize,
-            guidance=params.final_guidance,
-        )
+        # v0.9.3 C3 (B-3 closure): validate_engine_params_or_die now
+        # takes the resolved GenParams; the call moves to after
+        # ``gen_params = _genparams_from_iteration_inputs(...)`` below.
+        # See the engine_dispatch helper docstring for the reorder
+        # rationale (validate vs LoRA-incompat warn surfacing order).
 
         # Per-style prompt resolution. v0.3.5: --custom-prompt
         # augments preset.prompt (when style was explicit). Scope
@@ -1234,6 +1238,8 @@ def build_iterations(
             loras=lora_resolution.effective_loras,
             merged_defaults=merged_defaults,
         )
+        # v0.9.3 C3 (B-3 closure): validate the resolved GenParams.
+        validate_engine_params_or_die(model, params=gen_params)
         iterations.append(Iteration(
             style_name=style_name,
             prompt=prompt,

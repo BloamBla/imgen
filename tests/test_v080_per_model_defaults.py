@@ -257,13 +257,41 @@ def test_omit_quantize_default_false_keeps_quantize_argv():
 # ── Wire-up lock-in: validate_engine_params_or_die centralises the gate ─
 
 
+def _validate_params(model, **gen_overrides):
+    """Build a GenParams for the validate gate from a Model row.
+    Defaults pull from the Model so validate passes out-of-the-box;
+    tests override only the axis they want to exercise.
+
+    v0.9.3 C3: validate_engine_params_or_die signature changed to
+    ``(model, *, params: GenParams)``. This helper centralises the
+    GenParams construction the tests below need.
+    """
+    from imgen.engines.base import GenParams
+    defaults = dict(
+        prompt="x", negative="", width=64, height=64,
+        steps=model.default_steps,
+        guidance=model.default_guidance,
+        seed=0,
+        quantize=model.supported_quants[0] if model.supported_quants else 0,
+        strength=0.0,
+        input_path=None,
+        output_path=Path("/tmp/_validate_placeholder.png"),
+        loras=(),
+        mlx_cache_gb=12, battery_stop=20,
+        num_frames=1, fps=24,
+    )
+    defaults.update(gen_overrides)
+    return GenParams(**defaults)
+
+
 def test_validate_engine_params_or_die_passes_when_in_range():
     """No errors → returns None (no die)."""
     from imgen.cmd_helpers import validate_engine_params_or_die
     from imgen.models import BUILTIN_MODELS
 
     model = BUILTIN_MODELS["flux-kontext"]
-    validate_engine_params_or_die(model, quantize=8, guidance=3.5)
+    params = _validate_params(model, quantize=8, guidance=3.5)
+    validate_engine_params_or_die(model, params=params)
     # Reached here → no SystemExit
 
 
@@ -274,8 +302,9 @@ def test_validate_engine_params_or_die_dies_on_guidance_violation(capsys):
     from imgen.models import BUILTIN_MODELS
 
     model = BUILTIN_MODELS["flux2-klein-edit-9b"]
+    params = _validate_params(model, quantize=4, guidance=3.5)
     with pytest.raises(SystemExit) as exc_info:
-        validate_engine_params_or_die(model, quantize=4, guidance=3.5)
+        validate_engine_params_or_die(model, params=params)
     assert exc_info.value.code == 2
     combined = capsys.readouterr().err
     assert "guidance" in combined
@@ -289,5 +318,11 @@ def test_validate_engine_params_or_die_noop_for_user_toml():
     doesn't apply to v0.7-shape Backend objects.
     """
     from imgen.cmd_helpers import validate_engine_params_or_die
-    # Any quantize/guidance values; should not raise.
-    validate_engine_params_or_die(None, quantize=99, guidance=999.0)
+    from imgen.engines.base import GenParams
+    # Any GenParams shape; should not raise because model is None.
+    placeholder = GenParams(
+        prompt="", negative="", width=64, height=64,
+        steps=1, guidance=999.0, seed=0, quantize=99, strength=0.0,
+        input_path=None, output_path=Path("/tmp/_x.png"), loras=(),
+    )
+    validate_engine_params_or_die(None, params=placeholder)
