@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import Callable
 
 from .._safe import has_control_bytes, safe_display, safe_path_display
 from ..colors import C, dim, die, info
@@ -374,6 +375,23 @@ def _replay_video_entry(entry: dict) -> int:
     return cmd_video(args)
 
 
+# v0.9.5 M-4 (architect M-4 from v0.9.4 image-arc audit): replay-by-
+# command dispatch table. Replaces the prior if/elif chain on
+# ``entry.get("command")`` at the bottom of ``replay_entry``. Adding
+# a new subcommand-with-history (hypothetical future ``imgen edit``,
+# ``imgen animate``) becomes one-line in this table; the dispatcher
+# code stays untouched.
+#
+# Default (no entry in table) falls through to the bottom of
+# ``replay_entry`` — the i2i generate path that pre-v0.7 entries land
+# on (no ``command`` field present → ``"generate"`` default).
+_REPLAY_DISPATCH: dict[str, Callable[[dict], int]] = {
+    "draw": _replay_draw_entry,
+    "refine": _replay_refine_entry,
+    "video": _replay_video_entry,
+}
+
+
 def replay_entry(entry: dict) -> int:
     entry_v = entry.get("v", 0)
     if entry_v > HISTORY_SCHEMA_VERSION:
@@ -397,16 +415,16 @@ def replay_entry(entry: dict) -> int:
     # entry["model"] — a hand-edited history.jsonl with C0/DEL/C1
     # bytes in command must NOT reach argparse / argv. Refuse with
     # die() rather than silently routing through a fallback.
+    # v0.9.5 M-4: dispatch through ``_REPLAY_DISPATCH`` table (defined
+    # above) instead of an if/elif chain. Falls through to the i2i
+    # generate path when ``command`` is not in the table.
     command = entry.get("command", "generate")
     if not isinstance(command, str) or has_control_bytes(command):
         die(f"History entry #{entry.get('id', '?')}: command contains "
             f"control bytes — refusing replay.", code=2)
-    if command == "draw":
-        return _replay_draw_entry(entry)
-    if command == "refine":
-        return _replay_refine_entry(entry)
-    if command == "video":
-        return _replay_video_entry(entry)
+    handler = _REPLAY_DISPATCH.get(command)
+    if handler is not None:
+        return handler(entry)
 
     image = entry.get("input")
     if not image:
