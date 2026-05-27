@@ -195,9 +195,11 @@ def ensure_video_deps_or_die() -> None:
 
     # 5. Touch sentinel BEFORE install so a Ctrl-C / kill during pip
     # leaves the marker behind for the next invocation to surface
-    # (§E.5.5 partial-fail recovery).
+    # (§E.5.5 partial-fail recovery). Explicit mode=0o600 so a
+    # misconfigured `umask 000` user cannot end up with a world-
+    # readable sentinel (v0.9.1 B-7 / §R.2 security MEDIUM-3).
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    sentinel.touch()
+    sentinel.touch(mode=0o600)
 
     # 6. Run pip install with pinned versions. Plain subprocess.run
     # — NOT run_with_stderr_redaction (§E.5.6: pip's RAM profile is

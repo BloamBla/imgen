@@ -413,6 +413,49 @@ class TestPipInstallFailure:
             "sentinel must remain after pip install failure"
         )
 
+    def test_sentinel_mode_is_0o600_under_permissive_umask(
+        self, tmp_path, monkeypatch,
+    ):
+        """v0.9.1 B-7 closure of §R.2 architect security MEDIUM-3:
+        sentinel.touch() must request explicit mode=0o600 so a
+        misconfigured ``umask 000`` user cannot end up with a
+        world-readable sentinel. STATE_DIR is already 0o700 so the
+        practical blast radius is bounded, but defense-in-depth
+        wants an explicit mode."""
+        from imgen.commands.video import ensure_video_deps_or_die
+        _, _, state_dir = _setup_fake_venv(tmp_path, monkeypatch)
+
+        import imgen.commands.video as video_mod
+
+        def fake_run(argv, **kwargs):
+            if "-c" in argv:
+                return subprocess.CompletedProcess(argv, 1)
+            if "install" in argv:
+                return subprocess.CompletedProcess(argv, 1)
+            return subprocess.CompletedProcess(argv, 0)
+
+        monkeypatch.setattr(video_mod, "subprocess", MagicMock(
+            run=fake_run,
+            CompletedProcess=subprocess.CompletedProcess,
+            DEVNULL=subprocess.DEVNULL,
+        ))
+        monkeypatch.setenv("IMGEN_INSTALL_VIDEO_DEPS", "1")
+
+        old_umask = os.umask(0o000)
+        try:
+            with pytest.raises(SystemExit):
+                ensure_video_deps_or_die()
+        finally:
+            os.umask(old_umask)
+
+        sentinel = state_dir / ".video_deps_installing"
+        assert sentinel.exists(), "sentinel must exist after install failure"
+        mode = sentinel.stat().st_mode & 0o777
+        assert mode == 0o600, (
+            f"sentinel must be created with explicit mode 0o600 even under "
+            f"permissive umask; got {oct(mode)} (umask was forced to 0o000)"
+        )
+
 
 # ── Bypass v0.8.2 RAM safety net for pip install (§E.5.6) ──────────────
 
