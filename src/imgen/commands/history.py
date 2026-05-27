@@ -123,6 +123,29 @@ def _rehydrate_loras_from_entry(
     return loras or None, True
 
 
+def _safe_listing_field(s: str, default: str = "?") -> str:
+    """Conditional :func:`safe_display` wrap for tabular listing fields.
+
+    Clean strings render unmodified (preserves the listing's bare
+    ``cinematic   flux-kontext   photo.jpg`` UX). Dirty strings
+    (C0/DEL/C1 control bytes) flow through ``safe_display`` so they
+    render as repr-escaped literals instead of injecting ANSI escapes.
+
+    v0.9.4 pre-tag python MED-1 fixup: Bundle A's unconditional
+    ``safe_display`` wrap quoted EVERY value at the listing site
+    (``'anime'`` vs ``anime``), regressing the listing UX on every
+    ``imgen history`` run. The repr-quoted form remains correct for
+    the single-line replay ``info()`` messages (user explicitly
+    triggered replay; quoted form matches ``bdfc467``'s confirm-gate
+    discipline) but not for the tabular column display.
+    """
+    if not isinstance(s, str):
+        return default
+    if has_control_bytes(s):
+        return safe_display(s)
+    return s
+
+
 def cmd_history(args) -> int:
     entries = load_history()
     if not entries:
@@ -131,17 +154,22 @@ def cmd_history(args) -> int:
     n = max(1, args.last or 20)
     for entry in entries[-n:]:
         status_icon = "✅" if entry.get("status") == "success" else "❌"
-        ts = entry.get("ts", "?")[:16].replace("T", " ")
-        eid = str(entry.get("id", "?"))
-        # v0.9.4 Bundle A: hand-edited history.jsonl with C0/DEL/C1 bytes
-        # in ``style`` / ``input`` / ``output`` must NOT inject ANSI
-        # escapes at the listing site. Same defense as bdfc467's
-        # _confirm_video closure (parent-dir control bytes). ``model``
-        # is already filtered upstream via ``entry_model_name``.
-        style = safe_display(entry.get("style") or "custom")
+        # v0.9.4 Bundle A + pre-tag fixup: hand-edited history.jsonl with
+        # C0/DEL/C1 bytes in any field must NOT inject ANSI escapes at
+        # the listing site. Conditional wrap (clean = bare, dirty =
+        # safe_display) keeps the table readable for the common case
+        # while neutralising the injection vector. ``model`` is already
+        # filtered upstream via ``entry_model_name`` (returns None for
+        # dirty values, renders as "—"). ``ts`` and ``id`` added per
+        # security LOW finding — both unlikely in practice (json
+        # ``\\uXXXX`` encoding required for raw ESC, id always int from
+        # append_history), but architectural consistency wins.
+        ts = _safe_listing_field(entry.get("ts", "?")[:16].replace("T", " "))
+        eid = _safe_listing_field(str(entry.get("id", "?")))
+        style = _safe_listing_field(entry.get("style") or "custom")
         model = entry_model_name(entry) or "—"
-        input_name = safe_path_display(Path(entry.get('input', '?')).name)
-        output_name = safe_path_display(Path(entry.get('output', '?')).name)
+        input_name = _safe_listing_field(Path(entry.get('input', '?')).name)
+        output_name = _safe_listing_field(Path(entry.get('output', '?')).name)
         print(f"{C.DIM}#{eid:<4}{C.END} {status_icon} "
               f"{C.BOLD}{ts}{C.END}  "
               f"{C.INFO}{style:12}{C.END}  "

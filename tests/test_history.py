@@ -1080,3 +1080,92 @@ class TestSafeDisplayCoverage:
         out = capsys.readouterr().out
         assert "\x1b[2J" not in out
         assert "\\x1b" in out
+
+    # ── v0.9.4 pre-tag fixup: conditional wrap UX + ts/id coverage ──
+
+    def test_cmd_history_listing_clean_style_renders_unquoted(self, capsys):
+        """v0.9.4 pre-tag python MED-1 fixup: clean ``style`` values must
+        render bare (``anime``) rather than repr-quoted (``'anime'``) in
+        the tabular listing. Bundle A's unconditional safe_display wrap
+        regressed every clean row's UX — fixup uses ``_safe_listing_field``
+        which only wraps when control bytes are present.
+        """
+        import argparse
+        from imgen.commands.history import cmd_history
+        self._write_history([{
+            "id": 100, "v": HISTORY_SCHEMA_VERSION,
+            "ts": "2026-05-27T10:00:00", "status": "success",
+            "style": "anime", "input": "/photo.jpg",
+            "output": "/out.png", "model": "flux-dev",
+        }])
+        cmd_history(argparse.Namespace(last=10))
+        out = capsys.readouterr().out
+        assert "anime" in out
+        # repr() of a clean string adds quotes — the listing must NOT.
+        assert "'anime'" not in out
+
+    def test_cmd_history_listing_clean_input_renders_unquoted(self, capsys):
+        import argparse
+        from imgen.commands.history import cmd_history
+        self._write_history([{
+            "id": 101, "v": HISTORY_SCHEMA_VERSION,
+            "ts": "2026-05-27T10:00:00", "status": "success",
+            "style": "custom", "input": "/photo.jpg",
+            "output": "/out.png", "model": "flux-dev",
+        }])
+        cmd_history(argparse.Namespace(last=10))
+        out = capsys.readouterr().out
+        assert "photo.jpg" in out
+        assert "'photo.jpg'" not in out
+
+    def test_cmd_history_listing_clean_output_renders_unquoted(self, capsys):
+        import argparse
+        from imgen.commands.history import cmd_history
+        self._write_history([{
+            "id": 102, "v": HISTORY_SCHEMA_VERSION,
+            "ts": "2026-05-27T10:00:00", "status": "success",
+            "style": "custom", "input": "/photo.jpg",
+            "output": "/out.png", "model": "flux-dev",
+        }])
+        cmd_history(argparse.Namespace(last=10))
+        out = capsys.readouterr().out
+        assert "out.png" in out
+        assert "'out.png'" not in out
+
+    def test_cmd_history_safe_displays_ts_field(self, capsys):
+        """v0.9.4 pre-tag security LOW: ``ts`` field could carry control
+        bytes via hand-edited JSON with ``\\uXXXX`` encoding. Extends
+        Bundle A coverage to keep the "no field reaches terminal
+        unfiltered" contract complete.
+        """
+        import argparse
+        from imgen.commands.history import cmd_history
+        self._write_history([{
+            "id": 200, "v": HISTORY_SCHEMA_VERSION,
+            "ts": "evil\x1b[2J", "status": "success",
+            "style": "custom", "input": "/a.jpg",
+            "output": "/a.png", "model": "flux-dev",
+        }])
+        cmd_history(argparse.Namespace(last=10))
+        out = capsys.readouterr().out
+        assert "\x1b[2J" not in out
+        assert "\\x1b" in out
+
+    def test_cmd_history_safe_displays_id_field(self, capsys):
+        """v0.9.4 pre-tag security LOW: ``id`` field is normally an int
+        from append_history but a hand-edited JSON row could carry a
+        string value with embedded control bytes.
+        """
+        import argparse
+        from imgen.commands.history import cmd_history
+        self._write_history([{
+            "id": "evil\x1b[2J",  # str instead of int — hand-edit
+            "v": HISTORY_SCHEMA_VERSION,
+            "ts": "2026-05-27T10:00:00", "status": "success",
+            "style": "custom", "input": "/a.jpg",
+            "output": "/a.png", "model": "flux-dev",
+        }])
+        cmd_history(argparse.Namespace(last=10))
+        out = capsys.readouterr().out
+        assert "\x1b[2J" not in out
+        assert "\\x1b" in out

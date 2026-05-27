@@ -297,6 +297,15 @@ def prompt_yes_no(question: str = "Continue? [y/N] ") -> bool:
     Single source of truth for the [y/N] semantics: any future
     contract change (e.g. accept ``yeah``, treat ``yn`` as ambiguous)
     lands here.
+
+    .. note::
+        ``question`` flows verbatim to :func:`input` and reaches the
+        terminal before blocking. Callers MUST pass either a literal
+        constant or a string already wrapped via
+        :func:`imgen._safe.safe_display` / :func:`safe_path_display`
+        when any portion of it comes from untrusted input (history
+        entries, hand-edited TOML values, file paths). v0.9.4 pre-tag
+        security LOW contract note.
     """
     try:
         ans = input(question).strip().lower()
