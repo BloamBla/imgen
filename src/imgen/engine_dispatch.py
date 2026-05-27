@@ -55,7 +55,7 @@ from .colors import C, die, err, info, ok, step, warn
 from .engines.base import GenParams
 from .enhance import EnhanceResult
 from .history import append_history
-from .runs import BatchContext, BatchLogger, Iteration, PerInputBatch
+from .runs import BatchContext, BatchLogger, Iteration, PerInputBatch, get_args_scope
 from .subprocess_helpers import InsufficientRAMError, format_cmd
 
 __all__ = [
@@ -559,7 +559,7 @@ def run_one_iteration(
         # `preview` stays a direct attribute access — it's declared on
         # both i2i and t2i parsers (image-input dimension shorthand /
         # initial size), so no getattr needed.
-        "scope": getattr(ctx.args, "scope", None),
+        "scope": get_args_scope(ctx.args),
         "preview": ctx.args.preview,
         "prompt": it.prompt,
         "negative": it.negative,

@@ -54,7 +54,7 @@ from .engine_dispatch import (
     validate_engine_params_or_die,
 )
 from .images import apply_scope
-from .runs import Iteration, next_available_path
+from .runs import Iteration, get_args_scope, next_available_path
 from .styles import LoraRef, Style
 
 __all__ = [
@@ -460,7 +460,7 @@ def _resolve_iteration_prompt(
     helper drops cleanly into the t2i path without a ``--scope=None``
     workaround on the draw parser.
     """
-    scope = getattr(args, "scope", None)
+    scope = get_args_scope(args)
     scene_suffix = preset.scene_suffix
     preset_prompt = preset.prompt
     if effective_custom_prompt and preset_prompt and style_was_explicit:

@@ -59,6 +59,7 @@ from ..runs import (
     BatchLogger,
     Iteration,
     PerInputBatch,
+    get_args_scope,
 )
 from ..cmd_helpers import (
     apply_enhance_results_to_groups,
@@ -426,7 +427,8 @@ def cmd_batch(args) -> int:
                 # itself still binds args.scope unconditionally because
                 # batch is i2i-only by definition; this is the call into
                 # the shared logger surface that's also visited by draw.
-                scope=getattr(args, "scope", None),
+                # v0.9.5 M-6: consolidated via ``runs.get_args_scope``.
+                scope=get_args_scope(args),
                 seed=seed,
             )
 

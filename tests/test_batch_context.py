@@ -143,6 +143,47 @@ def test_batch_context_is_explicitly_unhashable():
     # test_batch_context_equality_by_fields.
 
 
+class TestGetArgsScope:
+    """v0.9.5 M-6 (architect M-6 from v0.9.4 audit): consolidates
+    ``getattr(args, "scope", None)`` defensive pattern previously
+    duplicated at 4 sites. Single source of truth lives in
+    ``runs.get_args_scope``.
+
+    Lives in runs.py (not cmd_helpers) because both engine_dispatch
+    and build_iteration import from runs with no cycle — placing it
+    in cmd_helpers would create build_iteration → engine_dispatch
+    → cmd_helpers → build_iteration at import time.
+    """
+
+    def test_returns_scope_when_present(self):
+        from imgen.runs import get_args_scope
+        args = SimpleNamespace(scope="person")
+        assert get_args_scope(args) == "person"
+
+    def test_returns_none_when_scope_is_none(self):
+        from imgen.runs import get_args_scope
+        args = SimpleNamespace(scope=None)
+        assert get_args_scope(args) is None
+
+    def test_returns_none_when_scope_attr_missing(self):
+        """The defensive case: ``imgen draw`` / ``imgen video``
+        Namespaces don't carry a ``scope`` attribute at all (their
+        parsers omit ``--scope``). The bare getattr must return None
+        without AttributeError."""
+        from imgen.runs import get_args_scope
+        args = SimpleNamespace()  # NO scope attr
+        assert not hasattr(args, "scope")
+        assert get_args_scope(args) is None
+
+    def test_returns_scope_when_explicit_empty_string(self):
+        """Empty string is a legitimate ``--scope`` value (not common,
+        but the helper shouldn't conflate it with None — fallback to
+        DEFAULTS happens downstream)."""
+        from imgen.runs import get_args_scope
+        args = SimpleNamespace(scope="")
+        assert get_args_scope(args) == ""
+
+
 def test_batch_context_construction_is_keyword_only():
     """v0.9.5 M-5 (architect M-5 from v0.9.4 audit): BatchContext must
     reject positional construction so a future call site that drifts

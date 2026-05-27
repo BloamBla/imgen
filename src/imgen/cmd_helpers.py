@@ -111,8 +111,7 @@ from .config import effective_enhance, effective_output_dir
 from .enhance import (
     EnhanceResult,
     enhance_iteration_prompts,
-)
-# v0.8.3 M-NEW-B: engine-dispatch path (run_one_iteration, _engine_for_model,
+)# v0.8.3 M-NEW-B: engine-dispatch path (run_one_iteration, _engine_for_model,
 # validate_engine_params_or_die, _genparams_from_iteration_inputs,
 # apply_enhance_results_to_*, safe_append_history, emit_gated_repo_hint_if_failed)
 # extracted to engine_dispatch. Re-exported below for back-compat with

@@ -49,11 +49,40 @@ __all__ = [
     "PerInputBatch",
     "auto_run_dirname",
     "ensure_logs_dir",
+    "get_args_scope",
     "next_available_path",
     "next_available_run_dir",
     "open_log_file_append",
     "prune_old_batch_logs",
 ]
+
+
+# v0.9.5 M-6 (architect M-6 from v0.9.4 audit): consolidates the
+# ``getattr(args, "scope", None)`` defensive pattern duplicated at 4
+# sites (build_iteration._resolve_iteration_prompt, engine_dispatch.
+# run_one_iteration history entry, commands/{generate,batch}.py
+# BatchLogger.write_header).
+#
+# Lives in runs.py rather than cmd_helpers.py because both
+# build_iteration and engine_dispatch (its consumers) already import
+# from runs.py with no cycle. Putting it in cmd_helpers would create
+# build_iteration → engine_dispatch → cmd_helpers → build_iteration
+# at import time.
+def get_args_scope(args) -> str | None:
+    """Return ``args.scope`` if present, else None.
+
+    ``--scope`` is photo-input-specific (i2i-only) and the
+    ``imgen draw`` / ``imgen video`` subparsers deliberately omit it.
+    Pre-emptive defence so shared helpers (BatchLogger.write_header,
+    history-entry serialiser, ``_resolve_iteration_prompt``) drop
+    cleanly into the t2i / t2v path without requiring an
+    ``args.scope=None`` workaround on those parsers.
+
+    A future parser-shape change (e.g. cmd_video adopting --scope,
+    or cmd_generate dropping it) verifies through this one helper —
+    no more silent attr-error landmines in shared surfaces.
+    """
+    return getattr(args, "scope", None)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

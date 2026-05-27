@@ -55,7 +55,7 @@ from ..history import load_history
 from ..images import detect_resolution
 from ..inputs import resolve_single_input_path, resolve_to_mflux_input
 from ..prompt_input import PromptInputError, resolve_prompt
-from ..runs import BatchContext, BatchLogger, Iteration
+from ..runs import BatchContext, BatchLogger, Iteration, get_args_scope
 from ..subprocess_helpers import build_mflux_env
 
 __all__ = ["cmd_generate"]
@@ -367,10 +367,9 @@ def cmd_generate(args) -> int:
                     quant=heaviest_quant,
                     preview=args.preview,
                     # v0.6.5 architect IMP-A: see batch.py write_header
-                    # call for rationale. Pre-emptive getattr so the
-                    # future imgen draw subparser's args (no --scope)
-                    # passes through.
-                    scope=getattr(args, "scope", None),
+                    # call for rationale. v0.9.5 M-6: defensive scope
+                    # getattr extracted to ``runs.get_args_scope``.
+                    scope=get_args_scope(args),
                     seed=seed,
                 )
 
