@@ -967,6 +967,43 @@ def test_build_iterations_args_without_scope_attr_falls_through(
     assert its[0].prompt == "Restyle this person as anime"
 
 
+def test_build_iterations_resolves_model_once_across_styles(
+    fake_styles, tmp_path, monkeypatch,
+):
+    """v0.9.4 D2 (python HIGH-2): ``_model_for_validate`` reads only
+    ``args.model`` which is constant across the per-style loop, so it
+    must be called once per ``build_iterations`` invocation regardless
+    of style count. Pre-fix the call was inside the loop, doing N
+    redundant ``BUILTIN_MODELS`` lookups + (on user-TOML miss) N
+    ``get_backend`` + ``model_from_backend`` round-trips. Locks the
+    hoist against future regression.
+    """
+    fake_styles["anime"] = Style(prompt="anime style")
+    fake_styles["ghibli"] = Style(prompt="ghibli style")
+    fake_styles["pixar"] = Style(prompt="pixar style")
+
+    import imgen.build_iteration as build_iter
+    calls: list = []
+    original = build_iter._model_for_validate
+
+    def spy(args):
+        calls.append(getattr(args, "model", None))
+        return original(args)
+
+    monkeypatch.setattr(build_iter, "_model_for_validate", spy)
+
+    its = _build(
+        fake_styles=fake_styles, tmp_path=tmp_path,
+        styles_list=["anime", "ghibli", "pixar"],
+    )
+
+    assert len(its) == 3, "build_iterations should produce one Iteration per style"
+    assert len(calls) == 1, (
+        f"_model_for_validate called {len(calls)} times across 3 styles; "
+        f"expected exactly 1 (hoisted out of the per-style loop)"
+    )
+
+
 # ── v0.3.5: --custom-prompt augmentation ───────────────────────────────
 
 

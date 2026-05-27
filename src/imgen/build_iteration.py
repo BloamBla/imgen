@@ -1186,11 +1186,15 @@ def build_iterations(
     # combines preset prompt + user text; bare ``--custom-prompt``
     # without an explicit style replaces the default style's prompt.
     style_was_explicit = bool(getattr(args, "style", None))
+    # v0.9.4 D2 (python HIGH-2): ``_model_for_validate`` reads only
+    # ``args.model`` — constant across the per-style loop. Hoisted out
+    # to avoid N redundant BUILTIN_MODELS lookups + (on user-TOML miss)
+    # N get_backend+model_from_backend round-trips.
+    model = _model_for_validate(args)
     for style_name in styles_list:
         preset = _styles.get_style(style_name)
         # Per-style param resolution (CLI > preview > preset >
         # model.default_* > merged_defaults).
-        model = _model_for_validate(args)
         params = _resolve_iteration_params(
             args=args, preset=preset, merged_defaults=merged_defaults,
             model=model,
