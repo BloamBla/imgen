@@ -389,6 +389,14 @@ _REPLAY_DISPATCH: dict[str, Callable[[dict], int]] = {
     "draw": _replay_draw_entry,
     "refine": _replay_refine_entry,
     "video": _replay_video_entry,
+    # "generate" + "batch" intentionally absent: BatchContext.command's
+    # Literal also lists "generate" and "batch" (runs.py), but those
+    # entries fall through to the i2i ``cmd_generate`` path at the
+    # bottom of ``replay_entry`` for historical reasons (batch replay
+    # was never wired up — running batch reruns the same set as a
+    # generate replay loses per-input semantics anyway). v0.10.x B-19
+    # adds a registration-completeness test against this Literal set
+    # so a future Literal extension can't silently mis-route.
 }
 
 
