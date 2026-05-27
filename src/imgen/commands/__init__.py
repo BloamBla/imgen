@@ -18,6 +18,7 @@ from .history import cmd_history, cmd_last, cmd_replay
 from .migrate_toml import cmd_migrate_toml
 from .refine import cmd_refine
 from .setup import cmd_setup
+from .train import cmd_train
 from .upgrade import cmd_upgrade
 from .video import cmd_video
 
@@ -33,6 +34,7 @@ __all__ = [
     "cmd_refine",
     "cmd_replay",
     "cmd_setup",
+    "cmd_train",
     "cmd_upgrade",
     "cmd_video",
 ]
