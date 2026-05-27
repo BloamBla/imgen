@@ -141,3 +141,25 @@ def test_batch_context_is_explicitly_unhashable():
         hash(ctx)
     # Equality still works — locked separately by
     # test_batch_context_equality_by_fields.
+
+
+def test_batch_context_construction_is_keyword_only():
+    """v0.9.5 M-5 (architect M-5 from v0.9.4 audit): BatchContext must
+    reject positional construction so a future call site that drifts
+    to positional args (e.g. swapping input_path and
+    effective_custom_prompt — both Path|None / str|None) fails loudly
+    with TypeError at construction instead of silently misaligning
+    fields.
+
+    Pre-M-5 BatchContext was positional+keyword (dataclass default);
+    every production + test site already used kwargs by convention,
+    so adding ``kw_only=True`` enforces the convention without
+    breaking any current caller. Adding a 6th call site that
+    accidentally drifts to positional → caught immediately.
+    """
+    with pytest.raises(TypeError, match="positional"):
+        BatchContext(
+            "flux", 42, 1024, 1024,  # would silently assign 4 fields
+            Path("/tmp/in.jpg"), None, SimpleNamespace(),
+            None, {"PATH": "/usr/bin"},
+        )

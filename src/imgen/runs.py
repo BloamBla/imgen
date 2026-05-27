@@ -56,7 +56,7 @@ __all__ = [
 ]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class BatchContext:
     """Batch-wide constants threaded into every iteration.
 
