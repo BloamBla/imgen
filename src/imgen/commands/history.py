@@ -8,7 +8,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from .._safe import has_control_bytes
+from .._safe import has_control_bytes, safe_display, safe_path_display
 from ..colors import C, dim, die, info
 from ..defaults import DEFAULTS, HISTORY_SCHEMA_VERSION
 from ..history import entry_model_name, load_history
@@ -133,22 +133,21 @@ def cmd_history(args) -> int:
         status_icon = "✅" if entry.get("status") == "success" else "❌"
         ts = entry.get("ts", "?")[:16].replace("T", " ")
         eid = str(entry.get("id", "?"))
-        style = entry.get("style") or "custom"
-        # v0.8.0 commit 9 (§K + §Q architect IMPORTANT lock-in): unified
-        # model column across v=3 + v=4 entries. v=3 rows with
-        # ``"backend": "flux"`` render as ``"flux-kontext"`` (the v0.8
-        # canonical name) — same identifier the user sees in
-        # ``--list-models``, in the parser's --model flag, and in the
-        # ``[defaults] model`` config key. ``entry_model_name`` returns
-        # None for entries with neither key (very old / hand-edited);
-        # rendered as ``"—"`` (em dash) for visual symmetry.
+        # v0.9.4 Bundle A: hand-edited history.jsonl with C0/DEL/C1 bytes
+        # in ``style`` / ``input`` / ``output`` must NOT inject ANSI
+        # escapes at the listing site. Same defense as bdfc467's
+        # _confirm_video closure (parent-dir control bytes). ``model``
+        # is already filtered upstream via ``entry_model_name``.
+        style = safe_display(entry.get("style") or "custom")
         model = entry_model_name(entry) or "—"
+        input_name = safe_path_display(Path(entry.get('input', '?')).name)
+        output_name = safe_path_display(Path(entry.get('output', '?')).name)
         print(f"{C.DIM}#{eid:<4}{C.END} {status_icon} "
               f"{C.BOLD}{ts}{C.END}  "
-              f"{C.INFO}{style:10}{C.END}  "
+              f"{C.INFO}{style:12}{C.END}  "
               f"{C.DIM}{model:14}{C.END}  "
-              f"{Path(entry.get('input', '?')).name:30}  "
-              f"→ {Path(entry.get('output', '?')).name}")
+              f"{input_name:32}  "
+              f"→ {output_name}")
     return 0
 
 
@@ -183,8 +182,9 @@ def _replay_draw_entry(entry: dict) -> int:
     if not prompt:
         die(f"History entry #{entry.get('id', '?')} has no prompt — "
             f"cannot replay.", code=1)
-    info(f"Replaying #{entry.get('id')}: draw \"{prompt[:60]}"
-         f"{'...' if len(prompt) > 60 else ''}\"")
+    info(f"Replaying #{entry.get('id')}: draw "
+         f"{safe_display(prompt[:60])}"
+         f"{'...' if len(prompt) > 60 else ''}")
     cli_lora, no_lora = _rehydrate_loras_from_entry(entry)
     # v0.7.0 t2i Namespace — mirror of cmd_draw's parser shape. NO
     # --scope, --strength, --style, --image; --width/--height carry
@@ -242,7 +242,8 @@ def _replay_refine_entry(entry: dict) -> int:
         die(f"History entry #{entry.get('id', '?')} (command=refine) has "
             f"no input path — cannot replay.", code=1)
     prompt = entry.get("custom_prompt")
-    info(f"Replaying #{entry.get('id')}: refine on {Path(image).name}")
+    info(f"Replaying #{entry.get('id')}: refine on "
+         f"{safe_path_display(Path(image).name)}")
     cli_lora, no_lora = _rehydrate_loras_from_entry(entry)
     # Mirror of cmd_refine's parser shape (_add_refine_args). NO
     # --scope, --style, --custom-prompt, --enhance-* — refine
@@ -299,8 +300,9 @@ def _replay_video_entry(entry: dict) -> int:
     if not prompt:
         die(f"History entry #{entry.get('id', '?')} (command=video) has "
             f"no prompt — cannot replay.", code=1)
-    info(f"Replaying #{entry.get('id')}: video \"{prompt[:60]}"
-         f"{'...' if len(prompt) > 60 else ''}\"")
+    info(f"Replaying #{entry.get('id')}: video "
+         f"{safe_display(prompt[:60])}"
+         f"{'...' if len(prompt) > 60 else ''}")
     # v0.9.3 C6 — i2v replay: reconstruct args.image from the entry's
     # ``image_path`` field. Absent (v0.9.0-v0.9.2 t2v rows) → None →
     # cmd_video skips the i2v boundary work and replays t2v cleanly.
@@ -382,8 +384,9 @@ def replay_entry(entry: dict) -> int:
     if not image:
         die(f"History entry #{entry.get('id', '?')} has no input path — "
             f"cannot replay.", code=1)
-    info(f"Replaying #{entry.get('id')}: {entry.get('style')} on "
-         f"{Path(image).name}")
+    info(f"Replaying #{entry.get('id')}: "
+         f"{safe_display(entry.get('style') or '')} on "
+         f"{safe_path_display(Path(image).name)}")
     # cmd_generate's args.style is list[str] | None as of v0.2.3 —
     # history entries store a single string per generation (one entry
     # per style in a multi-style invocation), so wrap into a 1-element

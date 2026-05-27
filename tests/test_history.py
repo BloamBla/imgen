@@ -925,3 +925,158 @@ def test_history_n_iterations_records_per_row_seed_ladder(
         f"Likely regression of the v0.7.3 pre-tag CRITICAL fix where "
         f"run_one_iteration wrote ctx.seed (= base_seed) to all N rows."
     )
+
+
+# ── v0.9.4 Bundle A: safe_display coverage for cmd_history + replay info ──
+#
+# Mirrors v0.9.3 bdfc467 confirm-gate closure. Hand-crafted history.jsonl
+# rows with C0/DEL/C1 bytes in display-touched fields must NOT inject ANSI
+# escapes into the user's terminal. ``has_control_bytes`` already filters
+# the ``model`` field via ``entry_model_name`` and the ``command`` field
+# via ``replay_entry``; this bundle extends the same defense to ``style``,
+# ``input``, ``output``, and ``prompt``.
+
+
+class TestSafeDisplayCoverage:
+    """Each test injects ``\\x1b[2J`` (ANSI clear-screen) into one
+    history-entry field and asserts:
+      * raw ``\\x1b`` does NOT appear in the captured stdout, AND
+      * the repr-escaped ``\\\\x1b`` literal DOES appear.
+
+    The first assertion is the security property; the second pins that
+    the field is in fact being displayed (not silently dropped, which
+    would also satisfy the first assertion vacuously).
+    """
+
+    def _write_history(self, entries: list[dict]) -> None:
+        """Write entries directly to HISTORY_FILE bypassing append_history
+        — the threat model is hand-edited history.jsonl, so write the
+        raw lines without normalisation."""
+        from imgen.paths import HISTORY_FILE
+        HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with HISTORY_FILE.open("w") as f:
+            for entry in entries:
+                f.write(json.dumps(entry) + "\n")
+
+    def test_cmd_history_safe_displays_style_field(self, capsys):
+        import argparse
+        from imgen.commands.history import cmd_history
+        self._write_history([{
+            "id": 1, "v": HISTORY_SCHEMA_VERSION, "ts": "2026-05-27T10:00:00",
+            "status": "success",
+            "style": "evil\x1b[2J", "input": "/a.jpg", "output": "/a.png",
+            "model": "flux-dev",
+        }])
+        cmd_history(argparse.Namespace(last=10))
+        out = capsys.readouterr().out
+        assert "\x1b[2J" not in out
+        assert "\\x1b" in out
+
+    def test_cmd_history_safe_displays_input_path(self, capsys):
+        import argparse
+        from imgen.commands.history import cmd_history
+        self._write_history([{
+            "id": 2, "v": HISTORY_SCHEMA_VERSION, "ts": "2026-05-27T10:00:00",
+            "status": "success",
+            "style": "custom", "input": "/tmp/cat\x1b[2J.jpg",
+            "output": "/a.png", "model": "flux-dev",
+        }])
+        cmd_history(argparse.Namespace(last=10))
+        out = capsys.readouterr().out
+        assert "\x1b[2J" not in out
+        assert "\\x1b" in out
+
+    def test_cmd_history_safe_displays_output_path(self, capsys):
+        import argparse
+        from imgen.commands.history import cmd_history
+        self._write_history([{
+            "id": 3, "v": HISTORY_SCHEMA_VERSION, "ts": "2026-05-27T10:00:00",
+            "status": "success",
+            "style": "custom", "input": "/a.jpg",
+            "output": "/tmp/out\x1b[2J.png", "model": "flux-dev",
+        }])
+        cmd_history(argparse.Namespace(last=10))
+        out = capsys.readouterr().out
+        assert "\x1b[2J" not in out
+        assert "\\x1b" in out
+
+    def test_replay_draw_entry_safe_displays_prompt(
+        self, capsys, monkeypatch,
+    ):
+        import imgen.commands.history as history_cmd
+        monkeypatch.setattr(history_cmd, "cmd_draw", lambda _args: 0)
+        entry = {
+            "id": 10, "v": HISTORY_SCHEMA_VERSION, "command": "draw",
+            "input": None, "prompt": "evil\x1b[2J prompt",
+            "model": "flux-dev",
+        }
+        history_cmd.replay_entry(entry)
+        out = capsys.readouterr().out
+        assert "\x1b[2J" not in out
+        assert "\\x1b" in out
+
+    def test_replay_refine_entry_safe_displays_image_path(
+        self, capsys, monkeypatch,
+    ):
+        import imgen.commands.history as history_cmd
+        monkeypatch.setattr(history_cmd, "cmd_refine", lambda _args: 0)
+        entry = {
+            "id": 11, "v": HISTORY_SCHEMA_VERSION, "command": "refine",
+            "input": "/tmp/cat\x1b[2J.jpg", "model": "flux2-klein-edit-9b",
+        }
+        history_cmd.replay_entry(entry)
+        out = capsys.readouterr().out
+        assert "\x1b[2J" not in out
+        assert "\\x1b" in out
+
+    def test_replay_video_entry_safe_displays_prompt(
+        self, capsys, monkeypatch,
+    ):
+        # cmd_video is lazy-imported inside _replay_video_entry.
+        # Patch via sys.modules so the lazy import returns a stub.
+        import sys
+        import types
+        fake_video = types.ModuleType("imgen.commands.video")
+        fake_video.cmd_video = lambda _args: 0
+        monkeypatch.setitem(sys.modules, "imgen.commands.video", fake_video)
+        import imgen.commands.history as history_cmd
+        entry = {
+            "id": 12, "v": HISTORY_SCHEMA_VERSION, "command": "video",
+            "input": None, "prompt": "evil\x1b[2J prompt",
+            "model": "ltx-video", "num_frames": 25, "fps": 24,
+        }
+        history_cmd.replay_entry(entry)
+        out = capsys.readouterr().out
+        assert "\x1b[2J" not in out
+        assert "\\x1b" in out
+
+    def test_replay_generate_fallback_safe_displays_style(
+        self, capsys, monkeypatch,
+    ):
+        import imgen.commands.history as history_cmd
+        monkeypatch.setattr(history_cmd, "cmd_generate", lambda _args: 0)
+        entry = {
+            "id": 13, "v": HISTORY_SCHEMA_VERSION,
+            # No "command" key → falls through to the generate path.
+            "input": "/a.jpg", "style": "evil\x1b[2J",
+            "model": "flux-dev",
+        }
+        history_cmd.replay_entry(entry)
+        out = capsys.readouterr().out
+        assert "\x1b[2J" not in out
+        assert "\\x1b" in out
+
+    def test_replay_generate_fallback_safe_displays_image_path(
+        self, capsys, monkeypatch,
+    ):
+        import imgen.commands.history as history_cmd
+        monkeypatch.setattr(history_cmd, "cmd_generate", lambda _args: 0)
+        entry = {
+            "id": 14, "v": HISTORY_SCHEMA_VERSION,
+            "input": "/tmp/cat\x1b[2J.jpg", "style": "anime",
+            "model": "flux-dev",
+        }
+        history_cmd.replay_entry(entry)
+        out = capsys.readouterr().out
+        assert "\x1b[2J" not in out
+        assert "\\x1b" in out
