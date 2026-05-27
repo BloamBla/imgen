@@ -587,15 +587,24 @@ def preflight_resources(
         required_with_buffer = res["ram_required_gb"] + video_buffer_gb
         if (res["ram_total_gb"] != 0 and
                 res["ram_available_gb"] < required_with_buffer):
+            # v0.9.2 B-8: mirror the image-preflight 'How to fix' bullet
+            # shape with video-appropriate knobs (LTX has no --preview
+            # and no --quantize so those don't apply; lower resolution
+            # and shorter clip are the equivalent dials).
             die(
                 f"Insufficient RAM for video generation: need "
                 f"~{res['ram_required_gb']:.1f} GB + {video_buffer_gb:.1f} GB "
                 f"safety buffer, have {res['ram_available_gb']:.1f} GB "
                 f"available (of {res['ram_total_gb']:.0f} GB total).",
                 code=4,
-                hint=("Close other apps to free RAM (video peaks higher "
-                      "than image due to T5 encoder transient), or "
-                      "--force at your own risk (may swap-thrash)."),
+                hint=("How to fix:\n"
+                      "     • Close other apps (Chrome often eats 5+ GB)\n"
+                      "     • Lower resolution: --width 512 --height 384 "
+                      "(or smaller)\n"
+                      "     • Shorter clip: --num-frames 17 "
+                      "(or --duration 0.7)\n"
+                      "     • Or --force at your own risk "
+                      "(video swap-thrashes hard)"),
             )
 
     if not res["disk_ok"]:

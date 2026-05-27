@@ -154,6 +154,38 @@ class TestPreflightVideoBuffer:
         stderr = capsys.readouterr().err
         assert "RAM" in stderr or "ram" in stderr
 
+    def test_video_die_hint_includes_video_specific_knobs(
+        self, monkeypatch, capsys,
+    ):
+        """v0.9.2 B-8 closure of §R.2 UX consistency: the video
+        preflight die hint must mirror the image 'How to fix' bullet
+        shape with video-appropriate knobs (--width/--height,
+        --num-frames/--duration, --force). LTX has no --preview or
+        --quantize so those don't appear; lower-resolution and
+        shorter-clip are the equivalent dials.
+        """
+        from imgen.cmd_helpers import preflight_resources
+        self._stub_check_resources(monkeypatch, required=17.0, available=19.0)
+        with pytest.raises(SystemExit):
+            preflight_resources(
+                model="ltx-video", heaviest_quant=0, force=False,
+                max_megapixels=0.393, max_num_frames=25,
+            )
+        stderr = capsys.readouterr().err
+        assert "How to fix" in stderr, (
+            f"video hint must use the image-shape 'How to fix' header; "
+            f"got: {stderr!r}"
+        )
+        assert "--width" in stderr and "--height" in stderr, (
+            f"video hint must surface resolution knobs; got: {stderr!r}"
+        )
+        assert "--num-frames" in stderr and "--duration" in stderr, (
+            f"video hint must surface clip-length knobs; got: {stderr!r}"
+        )
+        assert "--force" in stderr, (
+            f"video hint must mention --force escape hatch; got: {stderr!r}"
+        )
+
     def test_video_force_bypasses_buffer_check(self, monkeypatch):
         """--force skips all preflight checks INCLUDING the new video
         buffer. v0.8.2 RAM safety net (< 4 GB hard floor) is checked
