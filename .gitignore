@@ -1,6 +1,7 @@
 # venv (recreated by bootstrap)
 .venv/
 .venv-diffusers/
+.venv-lance/
 venv/
 env/
 
@@ -36,3 +37,4 @@ outputs/
 .hf_token
 *.token
 .env
+research/

@@ -74,7 +74,7 @@ Photos without people work fine too — the identity-preserving language doesn't
 
 - **macOS on Apple Silicon** (M1/M2/M3/M4) — MLX does not support Intel
 - **Python 3.12** (install: `brew install python@3.12`)
-- **32 GB unified memory recommended** for full feature set; 16 GB works for `imgen generate` / `imgen draw` with `--quantize 4`. **`imgen refine` requires 32 GB** (real measurement Q4/1536² peaks at ~23 GB resident + compression — 16 GB Macs would OOM mid-inference). **`imgen video` (LTX-Video) needs ~17 GB available** for the canonical 768×512 × 25-frame envelope per [§L of the design memo](memory/project_v090_design.md) — close Chrome/IDE before running on 32 GB Macs.
+- **32 GB unified memory recommended** for full feature set; 16 GB works for `imgen generate` / `imgen draw` with `--quantize 4`. **`imgen refine` requires 32 GB** (real measurement Q4/1536² peaks at ~23 GB resident + compression — 16 GB Macs would OOM mid-inference). **`imgen video` (LTX-Video) needs ~17 GB available** for the canonical 768×512 × 25-frame envelope — close Chrome/IDE before running on 32 GB Macs.
 - **~60 GB free disk** for image (FLUX + Qwen models combined ~80 GB cached); **add ~26 GB more for video** (LTX-Video weights).
 - **HuggingFace account** (for FLUX Kontext — gated model, needs license acceptance). LTX-Video is **open** (no token, no license click-through).
 
@@ -251,13 +251,13 @@ imgen video "a samurai walking through bamboo forest"   # canonical envelope
 
 ### Realistic envelope on M2 Pro 32 GB
 
-LTX-Video's RAM math (per [§L of the design memo](memory/project_v090_design.md)) — peak RSS depends on resolution + frame count:
+LTX-Video's RAM math — peak RSS depends on resolution + frame count:
 
 | Mode | Resolution × frames | RAM peak | Verdict on M2 Pro 32 GB |
 |---|---|---|---|
 | **Canonical** | 768×512 × 25 frames (~1 sec @ 24 fps) | ~17 GB | ✅ realistic with `available_gb >= 20` (close Chrome/IDE first) |
 | **Heavy** | 1024×576 × 33 frames (~1.4 sec) | ~19 GB | ⚠️ tight; pass `--force` if preflight fails on 22 GB available |
-| **Out of envelope** | 1280×720 × 121 frames (~5 sec) | ~29 GB | ❌ infeasible on 32 GB — needs M3 Ultra refurb |
+| **Out of envelope** | 1280×720 × 121 frames (~5 sec) | ~29 GB | ❌ infeasible on 32 GB |
 
 Check your current envelope with `imgen doctor` — the RAM forecast table includes a video section showing fits/tight/no per row.
 
@@ -271,6 +271,16 @@ Check your current envelope with `imgen doctor` — the RAM forecast table inclu
 - **CPU offload mandatory** on 32 GB Macs: LTX's T5-XXL encoder transient peaks ~18 GB if loaded to MPS directly; `force_cpu_offload=True` keeps the encoder on CPU and streams to MPS — peak drops to ~3 GB encoder + 14 GB transformer/activations.
 - **8k+1 frame alignment**: LTX's temporal-VAE patch structure requires frame counts that satisfy `(n - 1) % 8 == 0` (1, 9, 17, 25, 33, 49, 65, ...). `--duration N` ceils UP to the nearest valid count so output is always ≥ requested duration.
 - **History replay**: video entries roundtrip via `imgen replay <id>` — the `command="video"` discriminator + new fields (`num_frames`, `fps`, `video_codec`) flow through the existing history schema (v=4, additive).
+
+### Research-evaluated alternatives (not built-in)
+
+Tested in 2026-05 research session on M2 Pro 32 GB. Findings descriptive below.
+
+- **LTX-Video i2v** (same checkpoint as t2v, different `diffusers` pipeline class): proven on 512²×25f at ~3 min wall and 768²×25f at ~8 min wall. Conservative motion at default `cfg_scale=3` — agressive prompts + cfg 5-6 help. Memory comfortable (~16 GB process RSS at 768²). **Pipeline composition demo**: FLUX-generated still → LTX i2v animation worked end-to-end. Candidate for v0.9.x i2v subcommand promotion.
+- **Lance-3B-Video** (xocialize/lance-mlx, MLX-native t2v): painterly cinematic aesthetic by design (NOT photorealistic). Per-frame visual density at 384²+ is substantially higher than LTX 2B at comparable settings; per-call wall is ~2-4× longer. GPU utilization 80-97% (MLX-native = no MPS heap copies, no double-counting with system RAM). Strong candidate for v0.9.x second built-in t2v model; would need separate `.venv-lance/` + `MlxLanceEngine`.
+- **CogVideoX-5b** (THUDM, diffusers + sequential CPU offload): highest single-frame photoreal density of the three but **bandwidth-bound by sequential offload** (~0% GPU utilization, ~23% CPU; ~19 min wall for 480×320×17f). Native 720×480×49f OOMs at 56 GiB attention buffer on 32 GB. Workable only at reduced params with offload; LTX is 3-5× faster for comparable output length on our hardware.
+
+**TL;DR**: LTX-Video 2B remains the right default for v0.9.0 on M2 Pro 32 GB. Lance and CogVideoX are queued for v0.9.x as alternative built-ins. LTX 13B FP8 variant does NOT fit M2 Pro 32 GB (Apple Silicon has no native FP8 per public Metal docs → bf16 dequant pushes transformer alone to ~31 GB).
 
 ## Keeping prompts out of `ps`
 
