@@ -281,10 +281,18 @@ def _confirm_video(
 
     v0.9.3 C5: when the iteration's ``params.input_path`` is non-None
     (i2v mode), append a "conditioned on: PATH" line so the user sees
-    explicitly which still LTX will animate.
+    explicitly which still LTX will animate. The path is wrapped via
+    :func:`imgen._safe.safe_path_display` to escape any C0/DEL/C1
+    control bytes lurking in PARENT directory components (the leaf
+    name is filtered upstream by
+    :func:`imgen._i2v_resolve.validate_image_path_or_die`, but a parent
+    dir like ``~/Pic\\x1b[2Jtures/`` would otherwise inject ANSI
+    escapes into the confirm prompt — security pre-vet v0.9.3 §R.3
+    review M-1 closure).
     """
     from ..colors import C, info
     from ..cmd_helpers import format_duration
+    from .._safe import safe_path_display
 
     it = iterations[0]
     p = it.params
@@ -294,7 +302,10 @@ def _confirm_video(
     info("About to generate 1 video:")
     print(f"   {C.DIM}prompt:{C.END} {preview}")
     if p.input_path is not None:
-        print(f"   {C.DIM}conditioned on:{C.END} {p.input_path}")
+        print(
+            f"   {C.DIM}conditioned on:{C.END} "
+            f"{safe_path_display(p.input_path)}"
+        )
     print(f"   {C.DIM}output:{C.END} {it.output_path}")
     print(
         f"   {C.DIM}params:{C.END} {p.width}×{p.height} · "

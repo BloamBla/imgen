@@ -286,6 +286,64 @@ class TestCmdVideoValidatesAndResolves:
         cmd_video(args)
         assert captured["guidance"] == 7.0
 
+    def test_confirm_video_wraps_input_path_via_safe_display(
+        self, tmp_path, capsys,
+    ):
+        """v0.9.3 pre-tag security M-1 closure: ``_confirm_video``
+        must render ``params.input_path`` via
+        :func:`imgen._safe.safe_path_display` so a parent-directory
+        component with C0/DEL/C1 control bytes can't inject ANSI
+        escapes (terminal clear-screen, fake confirm prompt) at the
+        user's terminal. ``validate_image_path_or_die`` only filters
+        the leaf filename — parents pass through, so the display
+        site is the last line of defense.
+        """
+        from pathlib import Path
+        from unittest.mock import MagicMock
+        from imgen.commands.video import _confirm_video
+        from imgen.runs import Iteration
+        from imgen.engines.base import GenParams
+
+        # Parent dir contains ESC. The path itself never resolves on
+        # disk (we don't create the dir) — _confirm_video only reads
+        # `params.input_path` for display, not for I/O.
+        evil = Path("/tmp/Pic\x1b[2Jtures/cat.png")
+        params = GenParams(
+            prompt="x", negative="", width=512, height=512,
+            steps=50, guidance=5.0, seed=42, quantize=0, strength=0.0,
+            input_path=evil,
+            output_path=tmp_path / "out.mp4",
+            loras=(), mlx_cache_gb=12, battery_stop=20,
+            num_frames=25, fps=24,
+        )
+        it = Iteration(
+            style_name="video", prompt="x", negative="",
+            final_steps=50, final_quantize=0, final_guidance=5.0,
+            final_strength=0.0,
+            output_path=tmp_path / "out.mp4",
+            loras=(), seed=42, model=None, params=params,
+        )
+
+        # Inject a stub for input() so the confirm gate doesn't hang.
+        import builtins
+        original_input = builtins.input
+        builtins.input = lambda _prompt="": "n"
+        try:
+            _confirm_video(
+                prompt="x", iterations=[it], run_dir=tmp_path,
+                slug="x", eta_seconds=None,
+            )
+        finally:
+            builtins.input = original_input
+
+        out = capsys.readouterr().out
+        # Raw ESC must NOT appear; the path must be repr-escaped.
+        assert "\x1b" not in out
+        assert "\\x1b" in out, (
+            "input_path display did not safe_display-wrap; raw ESC "
+            "leaked into stdout"
+        )
+
     def test_cmd_video_t2v_path_unchanged_when_no_image(
         self, tmp_path, monkeypatch,
     ):

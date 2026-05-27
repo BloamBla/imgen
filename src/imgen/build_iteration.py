@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from . import styles as _styles
@@ -967,9 +967,11 @@ def build_video_iteration(
     # new Model with the same identity-bearing fields; BUILTIN_MODELS
     # stays pristine. The Engine reads ``model.video.pipeline_class``
     # per C2 (B-1 closure), so no engine-side change is needed.
-    if effective_image_path is not None and iteration.model is not None \
-            and iteration.model.video is not None:
-        from dataclasses import replace
+    if (
+        effective_image_path is not None
+        and iteration.model is not None
+        and iteration.model.video is not None
+    ):
         i2v_video_cfg = replace(
             iteration.model.video,
             pipeline_class="LTXImageToVideoPipeline",
