@@ -23,6 +23,7 @@ ported.
 from __future__ import annotations
 
 import json
+import os
 from typing import Mapping
 
 from .base import GenParams
@@ -134,9 +135,8 @@ class DiffusersMpsEngine:
         # peer check defends against the realistic threat of a
         # planted-symlink-into-venv attack without rejecting normal
         # venv layouts.
-        import os as _os
         if venv_python.is_symlink():
-            target = _os.readlink(venv_python)
+            target = os.readlink(venv_python)
             if "/" in target:
                 die(
                     f".venv-diffusers/bin/python is a symlink with "
