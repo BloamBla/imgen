@@ -75,6 +75,14 @@ _SAFE_OUTPUT_EXTS: frozenset[str] = frozenset(
 _SAFE_IMAGE_INPUT_EXTS: frozenset[str] = frozenset({
     ".png", ".jpg", ".jpeg", ".webp", ".heic", ".heif",
 })
+# v0.9.3 C4 — tighter input allowlist for the i2v video branch. LTX
+# VAE's behaviour on .webp / .heic / .heif inputs has NOT been smoke-
+# verified; refuse rather than route them through and risk a half-
+# broken inference. Mirrors :data:`imgen._i2v_resolve._I2V_INPUT_EXTS`
+# at the trust boundary for defense-in-depth.
+_SAFE_I2V_INPUT_EXTS: frozenset[str] = frozenset({
+    ".png", ".jpg", ".jpeg",
+})
 
 # Per-output_type extension allowlist. The schema's matrix rule:
 # image payloads MUST use the image set; video payloads MUST use the
@@ -277,7 +285,11 @@ def _validate_payload_shape(payload: object) -> int:
                 "runner: output_path extension not in image allowlist"
             )
 
-    # input_path: optional. If present, absolute + safe image ext.
+    # input_path: optional. If present, absolute + safe ext per
+    # output_type. v0.9.3 C4: the video branch uses the tighter
+    # :data:`_SAFE_I2V_INPUT_EXTS` allowlist (no .webp / .heic) for
+    # defense-in-depth — the parent-side ``_i2v_resolve`` enforces the
+    # same set, but the runner re-checks at the trust boundary.
     input_path = payload.get("input_path")
     if input_path is not None:
         if not isinstance(input_path, str):
@@ -287,9 +299,14 @@ def _validate_payload_shape(payload: object) -> int:
         if not input_path.startswith("/"):
             return _ex_usage("runner: input_path must be absolute")
         in_ext = _splitext_lower(input_path)
-        if in_ext not in _SAFE_IMAGE_INPUT_EXTS:
+        allowed_input_exts = (
+            _SAFE_I2V_INPUT_EXTS
+            if output_type == "video"
+            else _SAFE_IMAGE_INPUT_EXTS
+        )
+        if in_ext not in allowed_input_exts:
             return _ex_usage(
-                "runner: input_path extension not in image allowlist"
+                "runner: input_path extension not in allowlist"
             )
 
     # cpu_offload_threshold_mp: optional, positive number.
@@ -601,6 +618,17 @@ def _run_video(payload: dict) -> int:
         ),
     )
     pipe_kwargs.update(payload.get("param_overrides") or {})
+
+    # v0.9.3 C4 — i2v image conditioning. When ``input_path`` is set
+    # the parent (engine) has constructed an i2v-flavoured Model with
+    # ``pipeline_class="LTXImageToVideoPipeline"``; we load the still
+    # via diffusers' ``load_image`` (same helper the image-i2i branch
+    # uses in ``_run_image``) and thread it into ``pipe(image=…)``.
+    # Path validation (absolute + .png/.jpg/.jpeg ext) already happened
+    # at :func:`_validate_payload_shape` above.
+    if payload.get("input_path"):
+        from diffusers.utils import load_image
+        pipe_kwargs["image"] = load_image(payload["input_path"])
 
     result = pipe(**pipe_kwargs)
     # diffusers LTX pipelines return result.frames[0] = list of PIL
