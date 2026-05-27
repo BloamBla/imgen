@@ -617,6 +617,15 @@ def run_one_iteration(
         # supports_video_codecs allowlist — stored value reflects
         # what the runner actually muxed.
         history_entry["video_codec"] = "libx264"
+        # v0.9.3 C6 — i2v conditioning image. Additive field per §J
+        # (no v=5 bump). ABSENCE (key not present) discriminates t2v
+        # entries from i2v — matches the v0.5 ``enhanced`` field
+        # pattern. ``str(Path)`` so JSON serialisation produces a
+        # plain string; the replay-read at
+        # ``commands/history.py:_replay_video_entry`` reconstructs
+        # the Path via ``Path(entry["image_path"])``.
+        if it.params.input_path is not None:
+            history_entry["image_path"] = str(it.params.input_path)
 
     # v0.5: optional LLM enhancer recording. Fields land only when the
     # enhancer was actually engaged this run (either ran or was opted-

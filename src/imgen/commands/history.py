@@ -301,6 +301,15 @@ def _replay_video_entry(entry: dict) -> int:
             f"no prompt — cannot replay.", code=1)
     info(f"Replaying #{entry.get('id')}: video \"{prompt[:60]}"
          f"{'...' if len(prompt) > 60 else ''}\"")
+    # v0.9.3 C6 — i2v replay: reconstruct args.image from the entry's
+    # ``image_path`` field. Absent (v0.9.0-v0.9.2 t2v rows) → None →
+    # cmd_video skips the i2v boundary work and replays t2v cleanly.
+    # Path-typed so the cmd_video validator gets the canonical shape;
+    # validate_image_path_or_die re-resolves so a moved file dies
+    # cleanly rather than silently mis-routing to LTX.
+    raw_image = entry.get("image_path")
+    replay_image = Path(raw_image) if raw_image else None
+
     args = argparse.Namespace(
         prompt=prompt,
         output=None,
@@ -319,6 +328,8 @@ def _replay_video_entry(entry: dict) -> int:
         num_frames=entry.get("num_frames", 25),
         fps=entry.get("fps", 24),
         duration=None,
+        # v0.9.3: conditioning image for i2v replay (None for t2v).
+        image=replay_image,
         no_open=False,
         dry_run=False,
         force=False,
