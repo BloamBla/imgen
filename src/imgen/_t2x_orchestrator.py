@@ -27,7 +27,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable
 
 from .colors import die, warn
 from .defaults import DEFAULTS
@@ -103,9 +103,9 @@ def _orchestrate_t2x(
     command: str,
     build_iterations_fn: Callable,
     confirm_fn: Callable,
-    enhancer_die_early_message: Optional[str] = None,
-    pre_dispatch_fn: Optional[Callable[[], None]] = None,
-    post_success_hint_fn: Optional[Callable] = None,
+    enhancer_die_early_message: str | None = None,
+    pre_dispatch_fn: Callable[[], None] | None = None,
+    post_success_hint_fn: Callable | None = None,
 ) -> int:
     """v0.9 commit 7: 12-step t2x pipeline shared between cmd_draw +
     cmd_video. Returns the exit code (0 / 130 on KeyboardInterrupt /
