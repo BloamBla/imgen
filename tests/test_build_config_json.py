@@ -97,11 +97,20 @@ class TestBuildConfigJsonScalarFields:
         config = build_config_json(_klein_4b_params(seed=123), num_entries=10)
         assert config["seed"] == 123
 
-    def test_steps_field(self):
-        config = build_config_json(
-            _klein_4b_params(total_steps=1000), num_entries=10,
-        )
-        assert config["steps"] == 1000
+    def test_steps_is_schedule_length_decoupled_from_total_steps(self):
+        """mflux's ``steps`` = diffusion SCHEDULE length (klein-4b inference
+        count, _TRAIN_SCHEDULE_STEPS) — NOT the training length, which is
+        num_epochs (driven by total_steps). The original code conflated
+        them (steps=total_steps → 800-step monitoring previews, ~34 min
+        each, hours wasted). steps must stay the small constant regardless
+        of total_steps, and respect mflux's timestep_high <= steps."""
+        from imgen.engines._training import _TRAIN_SCHEDULE_STEPS
+        for total in (50, 800, 5000):
+            config = build_config_json(
+                _klein_4b_params(total_steps=total), num_entries=10,
+            )
+            assert config["steps"] == _TRAIN_SCHEDULE_STEPS
+            assert config["training_loop"]["timestep_high"] <= config["steps"]
 
     def test_guidance_is_zero_for_klein_4b_distilled(self):
         """klein-4b is a distilled model — training-time CFG is OFF
@@ -182,11 +191,16 @@ class TestBuildConfigJsonTrainingLoop:
         config = build_config_json(_klein_4b_params(), num_entries=10)
         assert config["training_loop"]["timestep_low"] == 1
 
-    def test_timestep_high_equals_total_steps(self):
+    def test_timestep_high_equals_schedule_steps(self):
+        """timestep_high = the schedule length (_TRAIN_SCHEDULE_STEPS),
+        NOT total_steps — full range [1, steps], and satisfies mflux's
+        timestep_high <= steps regardless of the user's --steps."""
+        from imgen.engines._training import _TRAIN_SCHEDULE_STEPS
         config = build_config_json(
             _klein_4b_params(total_steps=800), num_entries=10,
         )
-        assert config["training_loop"]["timestep_high"] == 800
+        assert config["training_loop"]["timestep_high"] == _TRAIN_SCHEDULE_STEPS
+        assert config["training_loop"]["timestep_high"] <= config["steps"]
 
 
 class TestBuildConfigJsonOptimizer:

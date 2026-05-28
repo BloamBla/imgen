@@ -56,6 +56,22 @@ _BATTERY_STOP_MAX = 100
 _SEED_MIN = 0
 _SEED_MAX = 2**32 - 1
 
+# mflux's top-level ``steps`` is the diffusion SCHEDULE LENGTH — NOT the
+# training length (that's num_epochs × dataset_size, driven separately by
+# total_steps below). It bounds training timestep sampling (mflux requires
+# ``timestep_high <= steps``) AND is reused as the preview image's denoise
+# count (trainer.py:222). The original ``steps = total_steps`` (e.g. 800)
+# conflated the two: every monitoring preview rendered as a full 800-step
+# image (~34 min each → hours wasted; the hard/soft load oscillation seen
+# in the first full stas run), and an 800-point schedule is anomalous for
+# a model that infers in ~20. mflux's example uses ``steps`` = the model's
+# inference-step count (9 for z-image-turbo). So we DECOUPLE: the schedule
+# = klein-4b's inference step count (20); training LENGTH stays driven by
+# total_steps via num_epochs (unchanged — the LoRA trains the same amount).
+# (Reasoned fix 2026-05-28; verify likeness vs the colleague's recipe, and
+# make this per-model when a 2nd training base lands — v0.10.1.)
+_TRAIN_SCHEDULE_STEPS = 20
+
 
 @dataclass(frozen=True, slots=True)
 class TrainingParams:
@@ -222,7 +238,10 @@ def build_config_json(
         "model": params.base_model,
         "data": str(params.scratch_dir / "data"),
         "seed": params.seed,
-        "steps": params.total_steps,
+        # Diffusion schedule length = klein-4b inference steps (see
+        # _TRAIN_SCHEDULE_STEPS). Decoupled from total_steps: training
+        # LENGTH lives in num_epochs below. timestep_high must stay <= this.
+        "steps": _TRAIN_SCHEDULE_STEPS,
         "guidance": 0.0,  # klein-4b distilled: training-time CFG off
         "quantize": params.quantize,
         "max_resolution": params.max_resolution,
@@ -232,14 +251,16 @@ def build_config_json(
         # num_entries — colleague's 880/10 = 88-epoch recipe scales
         # linearly.
         "training_loop": {
-            # Floor at 1: a small --steps with a large dataset (e.g.
-            # --steps 50 over 60 images) would otherwise floor-divide to
-            # num_epochs=0 → mflux-train does zero passes / errors deep
-            # in setup. At least one epoch always runs.
+            # num_epochs = TRAINING LENGTH (driven by total_steps, i.e. the
+            # user's --steps). Floor at 1: a small --steps over a large
+            # dataset would otherwise floor-divide to 0 → mflux does zero
+            # passes. This is independent of the schedule `steps` above.
             "num_epochs": max(1, params.total_steps // safe_num_entries),
             "batch_size": 1,  # v0.10.0 locked; no batching surface
             "timestep_low": 1,
-            "timestep_high": params.total_steps,
+            # Must satisfy mflux's timestep_high <= steps. Full schedule
+            # range [1, _TRAIN_SCHEDULE_STEPS].
+            "timestep_high": _TRAIN_SCHEDULE_STEPS,
         },
 
         # Optimizer (AdamW lr=1e-4 default, colleague-validated).
