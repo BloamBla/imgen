@@ -3,12 +3,23 @@ from __future__ import annotations
 
 __all__ = [
     "DEFAULTS",
+    "FULL_PRECISION_QUANTIZE",
     "HISTORY_SCHEMA_VERSION",
     "MFLUX_PIN",
     "MIN_BATTERY_PCT",
     "MIN_DISK_GB",
     "PREVIEW_OVERRIDES",
 ]
+
+# v0.11.0: the user-facing "don't quantize" sentinel for mflux models.
+# `--quantize 16` = full bf16 weights → ``build_mflux_cmd`` OMITS the
+# ``--quantize`` argv entirely (mflux then loads native bf16). 16 is NOT
+# an mflux quant level ({3,4,5,6,8}); it reads as "16-bit / full" and
+# slots correctly into the RAM formula (weights = baseline * 16/8 = 2x Q8).
+# Use it when a small model (e.g. flux2-klein-4b) has RAM headroom and you
+# want max quality. ``MfluxEngine.validate`` accepts it on any mflux model
+# regardless of ``supported_quants`` (full precision is always runnable).
+FULL_PRECISION_QUANTIZE = 16
 # v0.8.0 commit 8 (§L): RAM_REQUIRED_GB + ACTIVATION_GB_PER_MP_ABOVE_BASELINE
 # DELETED. Per-Model RAM math moved into ``Model.ram_baseline_gb`` /
 # ``Model.ram_slope_gb_per_mp`` / ``Model.encoder_ram_gb`` declared on

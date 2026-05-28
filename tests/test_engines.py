@@ -230,6 +230,85 @@ class TestMfluxEngineBuildCmdMatchesV07_17:
         )
 
 
+class TestFullPrecisionQuantize:
+    """v0.11.0: `--quantize 16` = full bf16 (no quantization). build_cmd
+    omits --quantize so mflux loads native weights; validate accepts 16
+    on any mflux model regardless of supported_quants; the RAM estimate
+    scales weights to ~2x Q8 (16/8). Motivated by flux2-klein-4b having
+    RAM headroom on 32 GB — full precision for max quality."""
+
+    def _params(self, quantize: int):
+        from pathlib import Path
+        from imgen.engines.base import GenParams
+        return GenParams(
+            prompt="a samurai", negative="", width=1024, height=1024,
+            steps=20, guidance=1.0, seed=1, quantize=quantize, strength=0.0,
+            input_path=None, output_path=Path("/fake/out.png"), loras=(),
+            mlx_cache_gb=12, battery_stop=20,
+        )
+
+    def test_q16_omits_quantize_argv(self):
+        from pathlib import Path
+        from imgen.engines.mflux_engine import MfluxEngine
+        from imgen.models import BUILTIN_MODELS
+        argv = MfluxEngine().build_cmd(
+            BUILTIN_MODELS["flux2-klein-4b"], self._params(16),
+            binary=Path("/fake/mflux-generate-flux2"),
+        )
+        assert "--quantize" not in argv
+
+    def test_q8_includes_quantize_argv(self):
+        from pathlib import Path
+        from imgen.engines.mflux_engine import MfluxEngine
+        from imgen.models import BUILTIN_MODELS
+        argv = MfluxEngine().build_cmd(
+            BUILTIN_MODELS["flux2-klein-4b"], self._params(8),
+            binary=Path("/fake/mflux-generate-flux2"),
+        )
+        assert "--quantize" in argv
+        assert argv[argv.index("--quantize") + 1] == "8"
+
+    def test_q16_passes_validate_despite_supported_quants(self):
+        """flux2-klein-4b lists a supported_quants ladder; 16 is not in it
+        but must still validate (full bf16 is always runnable)."""
+        from imgen.engines.mflux_engine import MfluxEngine
+        from imgen.models import BUILTIN_MODELS
+        model = BUILTIN_MODELS["flux2-klein-4b"]
+        assert 16 not in model.supported_quants  # premise
+        errors = MfluxEngine().validate(model, self._params(16))
+        assert not any("quantize" in e for e in errors), errors
+
+    def test_q5_still_rejected(self):
+        """The ladder gate still works for a real out-of-ladder quant."""
+        from imgen.engines.mflux_engine import MfluxEngine
+        from imgen.models import BUILTIN_MODELS
+        model = BUILTIN_MODELS["flux2-klein-4b"]
+        # 5 IS in klein's ladder; use a model whose ladder excludes a
+        # value to confirm the gate is still live. klein supports {3,4,5,6,8}.
+        errors = MfluxEngine().validate(model, self._params(7))
+        assert any("quantize" in e for e in errors)
+
+    def test_q16_ram_estimate_adds_only_bf16_weight_premium(self):
+        """v0.11.0 RAM fix: bf16 must NOT double the whole Q8-fudge
+        baseline (that over-blocked klein-4b q16 at ~32.7 GB vs the real
+        ~22 GB). q16 adds only the weight-byte premium (~0.3x baseline),
+        so the q16→q8 delta is baseline*FRAC, not a full baseline."""
+        from imgen.engines.mflux_engine import (
+            MfluxEngine, _BF16_WEIGHT_PREMIUM_FRAC,
+        )
+        from imgen.models import BUILTIN_MODELS
+        model = BUILTIN_MODELS["flux2-klein-4b"]
+        eng = MfluxEngine()
+        ram16 = eng.ram_estimate_gb(model, self._params(16))
+        ram8 = eng.ram_estimate_gb(model, self._params(8))
+        assert ram16 - ram8 == pytest.approx(
+            model.ram_baseline_gb * _BF16_WEIGHT_PREMIUM_FRAC
+        )
+        # Sanity: klein-4b q16 at 1MP must estimate well under 32 GB so
+        # the preflight stops over-blocking on a 32 GB Mac.
+        assert ram16 < 26.0
+
+
 # ── v0.10 commit 1 — Engine.train Protocol method ─────────────────────
 
 

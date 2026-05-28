@@ -16,12 +16,28 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Mapping
 
 from ..backends import filter_compatible_loras
+from ..defaults import FULL_PRECISION_QUANTIZE
 from .base import GenParams
 
 if TYPE_CHECKING:
     from ._training import TrainingParams
 
 __all__ = ["MfluxEngine"]
+
+# v0.11.0: bf16 (--quantize 16) weight premium over the Q8 baseline, as a
+# fraction of ram_baseline_gb. ram_baseline_gb is a Q8-anchored fudge that
+# bundles quant-independent overhead with the true weight bytes; only the
+# weight bytes (~0.3 of it, per the klein-4b M2 Pro smoke) double at bf16.
+# Used by MfluxEngine.ram_estimate_gb so --quantize 16 isn't over-blocked.
+#
+# Calibrated from ONE smoke (klein-4b q8→q16 ≈ +3 GB on a 14 GB baseline).
+# Safe FLOOR for the registry: bigger bases have a larger baseline, and
+# this premium scales WITH baseline — so a heavier model's q16 estimate
+# grows proportionally and correctly BLOCKS on 32 GB (klein-9b q16 ≈ 40 GB
+# → blocked, as it should be). The risk is only forward: a FUTURE model
+# whose true weight-fraction exceeds ~0.3 could be slightly under-estimated
+# — re-smoke + refine this when a 2nd bf16-practical base lands.
+_BF16_WEIGHT_PREMIUM_FRAC: float = 0.3
 
 
 class MfluxEngine:
@@ -72,7 +88,11 @@ class MfluxEngine:
         # at commit 7 ship with omit_quantize=False; the field is
         # forward-compat for user TOMLs declaring prequant repos.
         cmd = [str(binary)]
-        if not model.omit_quantize:
+        # v0.11.0: --quantize 16 (FULL_PRECISION_QUANTIZE) = full bf16 →
+        # omit --quantize so mflux loads native bf16 (it only quantizes
+        # when the flag is present). Same omit path as a prequantized
+        # repo (omit_quantize), but chosen per-invocation.
+        if not model.omit_quantize and params.quantize != FULL_PRECISION_QUANTIZE:
             cmd += ["--quantize", str(params.quantize)]
         if params.input_path is not None:
             cmd += [model.image_flag, str(params.input_path)]
@@ -186,11 +206,18 @@ class MfluxEngine:
         helper).
         """
         errors: list[str] = []
-        if model.supported_quants and params.quantize not in model.supported_quants:
+        # v0.11.0: FULL_PRECISION_QUANTIZE (16) = full bf16, always
+        # runnable on any mflux model (build_mflux_cmd omits --quantize),
+        # so it bypasses the supported_quants ladder gate.
+        if (
+            model.supported_quants
+            and params.quantize != FULL_PRECISION_QUANTIZE
+            and params.quantize not in model.supported_quants
+        ):
             allowed = sorted(model.supported_quants)
             errors.append(
                 f"--quantize {params.quantize} not supported by "
-                f"{model.binary}; allowed: {allowed}"
+                f"{model.binary}; allowed: {allowed} (or 16 = full bf16)"
             )
         if not (
             model.min_guidance <= params.guidance <= model.max_guidance
@@ -229,7 +256,21 @@ class MfluxEngine:
             → both match v0.7.7 real-mflux smoke run.
         """
         mp = params.width * params.height / 1_000_000.0
-        weights_gb = model.ram_baseline_gb * (params.quantize / 8.0)
+        if params.quantize == FULL_PRECISION_QUANTIZE:
+            # v0.11.0: full bf16 (no quant). The naive baseline*(16/8)=2x
+            # blows up because ``ram_baseline_gb`` is a Q8-anchored
+            # empirical fudge that BUNDLES quant-independent overhead
+            # (MLX/Metal graph, KV, activations headroom) with the true
+            # weight bytes. Q8→bf16 doubles ONLY the weight bytes, not the
+            # bundled overhead. Real M2 Pro measurement: flux2-klein-4b
+            # q8→q16 added ~3 GB (vm_stat 19→22 GB used), NOT the +14 GB
+            # the 2x rule predicted (which over-blocked at 32.7 GB est).
+            # Model the bf16 premium as the weight-byte fraction of the
+            # baseline (~0.3, from the klein-4b smoke); refine when a 2nd
+            # base is bf16-smoked.
+            weights_gb = model.ram_baseline_gb * (1.0 + _BF16_WEIGHT_PREMIUM_FRAC)
+        else:
+            weights_gb = model.ram_baseline_gb * (params.quantize / 8.0)
         activations_gb = model.ram_slope_gb_per_mp * mp
         encoder_gb = model.encoder_ram_gb
         overhead_gb = 0.5

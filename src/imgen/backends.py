@@ -27,6 +27,7 @@ from typing import Any, Callable
 
 from ._safe import has_control_bytes as _has_control_bytes
 from ._schema import validate_against_schema
+from .defaults import FULL_PRECISION_QUANTIZE
 
 __all__ = [
     "BACKENDS",
@@ -1219,7 +1220,11 @@ def build_mflux_cmd(
     # with omit_quantize=False (default); user TOMLs gain the v0.8
     # schema field at commit 6+ once the loader extension lands.
     cmd = [str(binary)]
-    if not getattr(model, "omit_quantize", False):
+    # v0.11.0: --quantize FULL_PRECISION_QUANTIZE (16) means "full bf16,
+    # no quantization" → omit the flag so mflux loads native bf16 weights
+    # (mflux only quantizes when --quantize is present). Same omit path as
+    # a prequantized repo (omit_quantize), but per-invocation not per-Model.
+    if not getattr(model, "omit_quantize", False) and quantize != FULL_PRECISION_QUANTIZE:
         cmd += ["--quantize", str(quantize)]
     if input_path is not None:
         cmd += [model.image_flag, str(input_path)]

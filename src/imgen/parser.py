@@ -877,10 +877,11 @@ def _add_generate_args(
         help=f"Model (default {_model_default}). "
              f"Run --list-models for the full set.",
     )
-    p.add_argument("-q", "--quantize", type=int, choices=[3, 4, 5, 6, 8],
+    p.add_argument("-q", "--quantize", type=int, choices=[3, 4, 5, 6, 8, 16],
                    default=None,
                    help=f"Quantization (default {defaults['quantize']}, "
-                        f"preview {PREVIEW_OVERRIDES['quantize']})")
+                        f"preview {PREVIEW_OVERRIDES['quantize']}; "
+                        f"16 = full bf16, no quantization, ~2x RAM, max quality)")
     p.add_argument("--scope", choices=["person", "scene"], default="scene",
                    help="scene=transform whole image (default — most photos "
                         "are scenes, not portraits); person=keep background "
@@ -959,10 +960,11 @@ def _add_batch_args(
         help=f"Model (default {_model_default}). "
              f"Run --list-models for the full set.",
     )
-    p.add_argument("-q", "--quantize", type=int, choices=[3, 4, 5, 6, 8],
+    p.add_argument("-q", "--quantize", type=int, choices=[3, 4, 5, 6, 8, 16],
                    default=None,
                    help=f"Quantization (default {defaults['quantize']}, "
-                        f"preview {PREVIEW_OVERRIDES['quantize']})")
+                        f"preview {PREVIEW_OVERRIDES['quantize']}; "
+                        f"16 = full bf16, no quantization, ~2x RAM, max quality)")
     p.add_argument("--scope", choices=["person", "scene"], default="scene",
                    help="scene=transform whole image (default); "
                         "person=keep background photorealistic and unchanged")
@@ -1093,9 +1095,10 @@ def _add_draw_args(
              f"Run --list-models to see all.",
     )
     p.add_argument(
-        "-q", "--quantize", type=int, choices=[3, 4, 5, 6, 8], default=None,
+        "-q", "--quantize", type=int, choices=[3, 4, 5, 6, 8, 16], default=None,
         help=f"Quantization (default {defaults['quantize']}, "
-             f"preview {PREVIEW_OVERRIDES['quantize']})",
+             f"preview {PREVIEW_OVERRIDES['quantize']}; "
+             f"16 = full bf16, no quantization, ~2x RAM, max quality)",
     )
     # t2i: --width/--height carry defaults — there's no input to detect
     # from. 1024x1024 is FLUX.1-dev canonical.
@@ -1193,10 +1196,11 @@ def _add_refine_args(
              "ceiling).",
     )
     p.add_argument(
-        "-q", "--quantize", type=int, choices=[3, 4, 5, 6, 8],
+        "-q", "--quantize", type=int, choices=[3, 4, 5, 6, 8, 16],
         default=4,
         help="Quantization (default 4 — safe for 2K² activations on 32GB "
-             "Mac with klein-9B). Use 8 for max quality if you have headroom.",
+             "Mac with klein-9B). Use 8 for max quality if you have headroom; "
+             "16 = full bf16 (no quant, ~2x RAM — only on smaller bases).",
     )
     _add_run_control_args(
         p,

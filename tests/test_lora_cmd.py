@@ -144,6 +144,18 @@ class TestBuildMfluxCmdNoLora:
         cmd = _cmd()  # no loras kwarg at all
         assert "--lora-paths" not in cmd
 
+    def test_quantize_16_omits_quantize_argv(self):
+        """v0.11.0: --quantize 16 = full bf16 → the LEGACY build path
+        (build_mflux_cmd) must omit --quantize too, identically to
+        MfluxEngine.build_cmd, so dry-run preview == dispatch."""
+        cmd = _cmd(quantize=16)
+        assert "--quantize" not in cmd
+
+    def test_quantize_8_keeps_quantize_argv(self):
+        cmd = _cmd(quantize=8)
+        assert "--quantize" in cmd
+        assert cmd[cmd.index("--quantize") + 1] == "8"
+
 
 # ── build_mflux_cmd: LoRA argv shape ──────────────────────────────────
 

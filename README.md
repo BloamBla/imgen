@@ -362,7 +362,7 @@ If you want to re-run with the same args, re-invoke `imgen` with the same flags 
 | `--steps`           | 1-200  | More = better, slower. Sweet spot 15-30 |
 | `--guidance` / `-g` | 0-15   | How strictly to follow prompt. 3.5-4.5 (0 = no CFG, for distilled models) |
 | `--strength`        | 0-1    | How much to keep from original. 0.5-0.7 |
-| `--quantize` / `-q` | 3,4,5,6,8 | Lower = smaller/faster, more artifacts |
+| `--quantize` / `-q` | 3,4,5,6,8,16 | Lower = smaller/faster, more artifacts. **16 = full bf16 (no quantization, ~2× RAM, max quality)** — good on a small base like `flux2-klein-4b` where 32 GB has headroom |
 | `--preview` / `-p`  | flag   | Q4, 8 steps, 768x — ~5x faster |
 | `--scope`           | person/scene | default `scene` — restyle whole image with identity preserved; `person` keeps background unchanged |
 | `--enhance-prompt`  | flag         | Expand the prompt via local AI before generating. See "Smart prompts" below |
