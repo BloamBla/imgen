@@ -371,7 +371,7 @@ def _resolve_iteration_params(
                        (preset.steps intentionally NOT honoured —
                        preset is a style preset, not a CLI override;
                        v0.6.2 design lock-in)
-      * ``quantize`` : CLI > preview > merged_defaults
+      * ``quantize`` : CLI > preview > bf16-only(0) > model.default_quantize > merged_defaults
       * ``guidance`` : CLI > preset > model.default_guidance > merged_defaults
       * ``strength`` : CLI > preset > merged_defaults
 
@@ -411,6 +411,11 @@ def _resolve_iteration_params(
         # DiffusersMpsEngine._validate_video. LTX-Video at v0.9.0 is
         # the only such Model; future bf16-only Models inherit.
         final_quantize = 0
+    elif model is not None and model.default_quantize is not None:
+        # v0.11.0: per-Model inference quant default (flux2-klein-4b → 16
+        # full bf16, since its q8 t2i is poor). Wins over the global
+        # default but NOT over an explicit --quantize or --preview.
+        final_quantize = model.default_quantize
     else:
         final_quantize = merged_defaults["quantize"]
 

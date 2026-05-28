@@ -156,6 +156,25 @@ def test_doctor_ram_forecast_table_uses_engine_ram_estimate(capsys):
     assert "✅" in out
 
 
+def test_doctor_forecast_includes_klein_4b_q16_default_row(capsys):
+    """v0.11.0 (architect H-1): klein-4b's default_quantize=16 is NOT in
+    its supported_quants ladder (3-8), so the forecast must add a
+    synthetic q16 row — else a 16 GB colleague sees klein-4b 'fits' at
+    q3-q8 and gets hard-blocked at draw time (which runs q16). The row
+    is marked '(default)'."""
+    from imgen.commands.doctor import _render_ram_forecast_rows
+    _render_ram_forecast_rows(available_ram=32.0)
+    out = capsys.readouterr().out
+    klein_q16 = [
+        ln for ln in out.splitlines()
+        if "flux2-klein-4b" in ln and "q16" in ln
+    ]
+    assert klein_q16, "klein-4b q16 (default) row missing from forecast"
+    assert "(default)" in klein_q16[0]
+    # ~22.9 GB at 1024² — fits 32 GB but the row must be present.
+    assert "GB" in klein_q16[0]
+
+
 # ── Diffusers engine overhead is heavier than mflux ───────────────────
 
 

@@ -133,9 +133,12 @@ class TestDrawParser:
         assert args.command == "draw"
         assert args.prompt == "a samurai"
 
-    def test_default_backend_is_flux_dev(self):
+    def test_default_model_is_flux2_klein_4b(self):
+        """v0.11.0: draw's default flipped flux-dev → flux2-klein-4b
+        (FLUX.2 migration; the row defaults to q16 full bf16). Pass
+        --model flux-dev for FLUX.1-dev t2i with CFG/negatives."""
         args = _parse_draw("a samurai")
-        assert args.model == "flux-dev"
+        assert args.model == "flux2-klein-4b"
 
     def test_default_dimensions_1024x1024(self):
         args = _parse_draw("a samurai")

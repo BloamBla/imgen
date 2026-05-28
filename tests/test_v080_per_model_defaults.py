@@ -112,6 +112,88 @@ def test_model_default_steps_overridden_by_preview():
     assert params.final_steps == PREVIEW_OVERRIDES["steps"]
 
 
+def test_model_default_quantize_applied_when_user_omits():
+    """v0.11.0: when ``args.quantize is None`` AND not preview AND the
+    model is not bf16-only, the resolver picks ``model.default_quantize``
+    over the global ``merged_defaults['quantize']``. flux2-klein-4b sets
+    16 (full bf16) because its q8 t2i is poor."""
+    import argparse
+    from imgen.cmd_helpers import _resolve_iteration_params
+    from imgen.styles import Style
+
+    sentinel_model = Model(
+        engine="mflux", binary="mflux-generate-fake",
+        default_steps=20, default_guidance=1.0,
+        min_guidance=1.0, max_guidance=1.0,
+        default_quantize=16,
+        ram_baseline_gb=14.0, ram_slope_gb_per_mp=4.0,
+    )
+    args = argparse.Namespace(
+        steps=None, quantize=None, guidance=None, strength=None,
+        preview=False,
+    )
+    params = _resolve_iteration_params(
+        args=args, preset=Style(),
+        merged_defaults={"steps": 20, "quantize": 8, "guidance": 1.0,
+                         "strength": 0.55},
+        model=sentinel_model,
+    )
+    assert params.final_quantize == 16, (
+        "model.default_quantize must win over merged_defaults['quantize']"
+    )
+
+
+def test_model_default_quantize_overridden_by_explicit_flag():
+    """An explicit --quantize still wins over model.default_quantize."""
+    import argparse
+    from imgen.cmd_helpers import _resolve_iteration_params
+    from imgen.styles import Style
+
+    sentinel_model = Model(
+        engine="mflux", binary="mflux-generate-fake",
+        default_steps=20, default_guidance=1.0,
+        min_guidance=1.0, max_guidance=1.0,
+        default_quantize=16,
+        ram_baseline_gb=14.0, ram_slope_gb_per_mp=4.0,
+    )
+    args = argparse.Namespace(
+        steps=None, quantize=4, guidance=None, strength=None,
+        preview=False,
+    )
+    params = _resolve_iteration_params(
+        args=args, preset=Style(),
+        merged_defaults={"steps": 20, "quantize": 8, "guidance": 1.0,
+                         "strength": 0.55},
+        model=sentinel_model,
+    )
+    assert params.final_quantize == 4
+
+
+def test_model_default_quantize_none_falls_through_to_global():
+    """default_quantize=None (the field default) → global default."""
+    import argparse
+    from imgen.cmd_helpers import _resolve_iteration_params
+    from imgen.styles import Style
+
+    sentinel_model = Model(
+        engine="mflux", binary="mflux-generate-fake",
+        default_steps=20, default_guidance=3.5,
+        min_guidance=0.0, max_guidance=10.0,
+        ram_baseline_gb=14.0, ram_slope_gb_per_mp=4.0,
+    )
+    args = argparse.Namespace(
+        steps=None, quantize=None, guidance=None, strength=None,
+        preview=False,
+    )
+    params = _resolve_iteration_params(
+        args=args, preset=Style(),
+        merged_defaults={"steps": 20, "quantize": 8, "guidance": 3.5,
+                         "strength": 0.55},
+        model=sentinel_model,
+    )
+    assert params.final_quantize == 8
+
+
 # ── §Q lock-in 2: turbo + guidance error ──────────────────────────────
 
 

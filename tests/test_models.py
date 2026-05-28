@@ -82,6 +82,8 @@ class TestModelDataclassShape:
             "default_steps", "default_guidance",
             "min_guidance", "max_guidance",
             "supported_quants", "omit_quantize", "param_overrides",
+            # v0.11.0 — per-Model inference quant default (None ⇒ global)
+            "default_quantize",
             "ram_baseline_gb", "ram_slope_gb_per_mp", "encoder_ram_gb",
             "enhance_system_prompt", "enhance_invariants",
             # v0.9 commit 1 — nested video config (None ⇒ image Model)

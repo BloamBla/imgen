@@ -886,7 +886,15 @@ def _render_ram_forecast_rows(available_ram: float) -> None:
             # per-quant rows; LTX is bf16-only at v0.9.0).
             continue
         engine = engine_instances[model.engine]
-        for q in sorted(model.supported_quants):
+        # v0.11.0: include the Model's default_quantize even if it's not
+        # in supported_quants (klein-4b defaults to 16 = full bf16, which
+        # is NOT a quant ladder level). Without this the forecast hides
+        # the quant `imgen draw` actually runs — a 16 GB colleague would
+        # see klein-4b "fits" at q3-q8 then get blocked at draw time.
+        quants = set(model.supported_quants)
+        if model.default_quantize is not None:
+            quants.add(model.default_quantize)
+        for q in sorted(quants):
             params = GenParams(
                 prompt="", negative="", width=1024, height=1024,
                 steps=1, guidance=0.0, seed=0, quantize=q,
@@ -897,7 +905,10 @@ def _render_ram_forecast_rows(available_ram: float) -> None:
             need = engine.ram_estimate_gb(model, params)
             verdict = (f"{C.OK}✅ fits{C.END}" if available_ram >= need
                        else f"{C.ERR}❌ no{C.END}")
-            label = f"{model_name} q{q}"
+            default_mark = (
+                " (default)" if q == model.default_quantize else ""
+            )
+            label = f"{model_name} q{q}{default_mark}"
             print(f"   {label:<24} {need:>5.1f} GB  "
                   f"{available_ram:>4.1f} GB  {verdict}")
 

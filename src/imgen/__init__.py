@@ -1,6 +1,7 @@
 """imgen — local image + video generation CLI for Apple Silicon Macs.
 
-Modes as of v0.10.0: text-to-image (``imgen draw``) via FLUX.1-dev,
+Modes as of v0.11.0: text-to-image (``imgen draw``) via FLUX.2-klein-4b
+at full bf16 by default (``--model flux-dev`` for FLUX.1-dev),
 Hires-Fix upsample (``imgen refine``) via FLUX.2-klein-edit-9b,
 photo restyle (``imgen generate`` / ``imgen batch``) via FLUX.1-Kontext
 or Qwen-Image-Edit, text-or-image-to-video (``imgen video``) via
@@ -14,4 +15,4 @@ mflux + MLX; video path via HuggingFace ``diffusers`` on MPS in a
 separate ``.venv-diffusers/`` to avoid the torch ↔ MLX conflict.
 """
 
-__version__ = "0.10.3"
+__version__ = "0.11.0"

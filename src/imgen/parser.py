@@ -1087,7 +1087,7 @@ def _add_draw_args(
     # migrating to ``flux-kontext`` would replace one wrong with a
     # different wrong. The ``_resolve_v07_alias`` ArgumentTypeError
     # surfaces the rename explicitly so the user fixes their config.
-    _draw_default = defaults.get("backend_draw", "flux-dev")
+    _draw_default = defaults.get("backend_draw", "flux2-klein-4b")
     p.add_argument(
         "--model", type=_resolve_v07_alias, dest="model",
         default=_draw_default, metavar="NAME",

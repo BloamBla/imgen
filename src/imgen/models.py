@@ -478,6 +478,12 @@ class Model:
     max_guidance: float = 10.0
     supported_quants: tuple[int, ...] = (3, 4, 5, 6, 8)
     omit_quantize: bool = False
+    # v0.11.0: per-Model inference quant default. None = fall through to the
+    # global ``DEFAULTS["quantize"]``. A value wins over the global default
+    # (but NOT over an explicit --quantize or --preview). flux2-klein-4b
+    # sets 16 (full bf16): its q8 t2i is poor, q16 is excellent — so the
+    # quality default must be q16, not the global 8.
+    default_quantize: int | None = None
     # Tuple-of-tuples rather than dict — immutable so frozen=True actually
     # IS frozen. Engine code converts to dict at the call boundary.
     param_overrides: tuple[tuple[str, object], ...] = ()
@@ -869,6 +875,10 @@ BUILTIN_MODELS: dict[str, Model] = {
         default_guidance=1.0,
         min_guidance=1.0,
         max_guidance=1.0,
+        # v0.11.0: q8 t2i is poor on klein-4b, full bf16 (q16) is excellent
+        # (real M2 Pro smoke). As the `imgen draw` default it must default to
+        # q16 for quality; ~22 GB → 32 GB Mac (preflight gates lower-RAM).
+        default_quantize=16,
         # — v0.10.0 commit 2: training enabled —
         training=TrainingConfig(
             # §M.1 smoke (2026-05-28, M2 Pro 32 GB, q4/512/rank16/low_ram):

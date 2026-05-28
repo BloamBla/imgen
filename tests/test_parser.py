@@ -851,19 +851,17 @@ class TestNoModelFlagDefault:
         assert args.model == "flux-kontext"
 
     def test_draw_no_model_resolves_to_backend_draw_default(self):
-        """Architect HIGH-1 lock-in: draw's default is
-        ``defaults["backend_draw"]`` ("flux-dev"), which is ALREADY
-        v0.8-canonical and NOT in the rename map. The translation
-        helper is intentionally NOT applied to backend_draw — a user
-        with `[defaults] backend_draw = "flux"` in config.toml would
-        get the v0.7-rejection error from `_resolve_v07_alias`
-        instead of being silently migrated to `flux-kontext` for the
-        t2i subcommand (which would be the wrong model for t2i).
+        """draw's default is ``defaults["backend_draw"]``, which v0.11.0
+        flipped flux-dev → ``flux2-klein-4b`` (FLUX.2 migration). Already
+        v0.8-canonical, NOT in the rename map — the translation helper is
+        intentionally not applied to backend_draw (a user with
+        `[defaults] backend_draw = "flux"` gets the v0.7-rejection error
+        rather than a silent wrong migration).
         """
         from imgen.parser import build_parser
         parser = build_parser()
         args = parser.parse_args(["draw", "a prompt"])
-        assert args.model == "flux-dev"
+        assert args.model == "flux2-klein-4b"
 
     def test_refine_no_model_resolves_to_literal_default(self):
         """Refine's default is a literal "flux2-klein-edit-9b" (not

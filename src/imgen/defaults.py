@@ -36,14 +36,15 @@ DEFAULTS = {
     # `[defaults] model = ...` (preferred) through the v0.8.x
     # deprecation window; v0.9.0 drops the legacy key.
     "model": "flux-kontext",
-    # v0.7.0 t2i default for `imgen draw`. Key unchanged at commit 5
-    # — §J §Q scope only covers `backend` → `model`; `backend_draw`
-    # stays its own config key. Architect HIGH-1 (4a pre-vet) tied
-    # this back-compat to a real risk: silently auto-translating
-    # `[defaults] backend_draw = "flux"` to `flux-kontext` would
-    # replace one config wrong (FLUX.1-Kontext is i2i, not t2i) with
-    # a different wrong.
-    "backend_draw": "flux-dev",
+    # t2i default for `imgen draw`. Its own config key (NOT covered by
+    # the `backend`→`model` rename; architect HIGH-1, 4a pre-vet).
+    # v0.11.0: flipped flux-dev → flux2-klein-4b (FLUX.2 migration). The
+    # row carries default_quantize=16 (full bf16) because klein-4b's q8
+    # t2i is poor; q16 is excellent (real M2 Pro smoke) but needs ~22 GB
+    # → 32 GB Mac (like `imgen refine`). On 16 GB, or for real CFG +
+    # negative prompts, pass `--model flux-dev` (or set
+    # `[defaults] backend_draw = "flux-dev"`).
+    "backend_draw": "flux2-klein-4b",
     "quantize": 8,       # 3 4 5 6 8
     "steps": 20,
     "guidance": 3.5,

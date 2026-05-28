@@ -1724,6 +1724,29 @@ def test_preflight_resources_low_ram_exits_4(stub_check_resources, capsys):
     assert "--preview" in err or "--quantize" in err
 
 
+def test_preflight_low_ram_q16_hint_points_to_flux_dev(
+    stub_check_resources, capsys
+):
+    """v0.11.0 (architect H-2): when the RAM-bound model runs at full
+    bf16 (-q 16, e.g. the klein-4b draw default), the hint must steer to
+    --model flux-dev — NOT --quantize 4, which gives klein-4b's poor
+    quantized t2i (the exact thing q16 exists to avoid). The wrong hint
+    would strand a 16 GB colleague on bad output."""
+    stub_check_resources["res"]["ram_ok"] = False
+    stub_check_resources["res"]["ram_available_gb"] = 13.0
+    stub_check_resources["res"]["ram_required_gb"] = 22.9
+
+    with pytest.raises(SystemExit):
+        preflight_resources(
+            model="flux2-klein-4b", heaviest_quant=16, force=False,
+        )
+
+    err = capsys.readouterr().err
+    assert "--model flux-dev" in err
+    # Must NOT recommend dropping to q4 on the full-bf16 path.
+    assert "--quantize 4" not in err
+
+
 def test_preflight_resources_low_disk_warns_not_dies(
     stub_check_resources, capsys
 ):

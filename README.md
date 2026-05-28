@@ -1,16 +1,17 @@
 # imgen
 
-Local image + video generation CLI for Apple Silicon Macs. Modes today: **`imgen draw`** generates images from text prompts (FLUX.1-dev), **`imgen refine`** upsamples an existing image at 1.5×/2× via FLUX.2-klein-edit (Hires-Fix pattern), **`imgen generate` / `imgen batch`** restyle photos (FLUX.1-Kontext, Qwen-Image-Edit), and **`imgen video`** (v0.9.0+) generates short clips from text prompts (LTX-Video via diffusers) — or, with **v0.9.3+**, animates a still image via `--image PATH` (image-to-video on the same LTX-Video checkpoint). Wraps [mflux](https://github.com/filipstrand/mflux) for the image side; the video side uses HuggingFace `diffusers` in a separate isolated venv. On-device via MLX / MPS, no cloud, no API keys outside HuggingFace's gated-repo token.
+Local image + video generation CLI for Apple Silicon Macs. Modes today: **`imgen draw`** generates images from text prompts (FLUX.2-klein-4b at full bf16 by default — needs 32 GB; `--model flux-dev` for FLUX.1-dev with CFG/negatives on 16 GB), **`imgen refine`** upsamples an existing image at 1.5×/2× via FLUX.2-klein-edit (Hires-Fix pattern), **`imgen generate` / `imgen batch`** restyle photos (FLUX.1-Kontext, Qwen-Image-Edit), and **`imgen video`** (v0.9.0+) generates short clips from text prompts (LTX-Video via diffusers) — or, with **v0.9.3+**, animates a still image via `--image PATH` (image-to-video on the same LTX-Video checkpoint). Wraps [mflux](https://github.com/filipstrand/mflux) for the image side; the video side uses HuggingFace `diffusers` in a separate isolated venv. On-device via MLX / MPS, no cloud, no API keys outside HuggingFace's gated-repo token.
 
 ```bash
 # Text-to-image (v0.7.0+)
-imgen draw "a samurai on a misty mountain at dawn"            # FLUX.1-dev default
+imgen draw "a samurai on a misty mountain at dawn"            # FLUX.2-klein-4b @ full bf16 default (32 GB; --model flux-dev on 16 GB)
 imgen draw "samurai" --enhance-prompt                         # LLM expands the brief into a rich prompt
 imgen draw "samurai" --lora some/style-lora,other/detail:0.6  # stack LoRAs
 imgen draw "samurai" --width 1280 --height 720                # custom aspect
 
-# Recommended LoRA for crisper detail (v0.7.7 A/B verdict, see tests/lora_ab_results.md):
-imgen draw "samurai" --lora Shakker-Labs/FLUX.1-dev-LoRA-add-details
+# Recommended detail LoRA (v0.7.7 A/B, see tests/lora_ab_results.md) — it's a
+# FLUX.1-dev LoRA, so pair it with --model flux-dev (the klein-4b default won't load it):
+imgen draw --model flux-dev "samurai" --lora Shakker-Labs/FLUX.1-dev-LoRA-add-details
 
 # Hires-Fix refine (v0.7.5+) — upsample an existing image at 1.5x/2x
 imgen draw "samurai" --num-iterations 5 --preview             # explore: 5 variants at 1024²
@@ -79,7 +80,7 @@ Photos without people work fine too — the identity-preserving language doesn't
 
 - **macOS on Apple Silicon** (M1/M2/M3/M4) — MLX does not support Intel
 - **Python 3.12** (install: `brew install python@3.12`)
-- **32 GB unified memory recommended** for full feature set; 16 GB works for `imgen generate` / `imgen draw` with `--quantize 4`. **`imgen refine` requires 32 GB** (real measurement Q4/1536² peaks at ~23 GB resident + compression — 16 GB Macs would OOM mid-inference). **`imgen video` (LTX-Video) needs ~17 GB available** for the canonical 768×512 × 25-frame envelope — close Chrome/IDE before running on 32 GB Macs.
+- **32 GB unified memory recommended** for full feature set; 16 GB works for `imgen generate` with `--quantize 4`. **`imgen draw`'s default (FLUX.2-klein-4b at full bf16) needs 32 GB** (~22 GB peak) — on 16 GB use `imgen draw --model flux-dev --quantize 4`. **`imgen refine` requires 32 GB** (real measurement Q4/1536² peaks at ~23 GB resident + compression — 16 GB Macs would OOM mid-inference). **`imgen video` (LTX-Video) needs ~17 GB available** for the canonical 768×512 × 25-frame envelope — close Chrome/IDE before running on 32 GB Macs.
 - **~60 GB free disk** for image (FLUX + Qwen models combined ~80 GB cached); **add ~26 GB more for video** (LTX-Video weights).
 - **HuggingFace account** (for FLUX Kontext — gated model, needs license acceptance). LTX-Video is **open** (no token, no license click-through).
 
@@ -656,7 +657,8 @@ Built-in:
   - HF token (any classic Read token)
   - License acceptance at https://huggingface.co/black-forest-labs/FLUX.1-Kontext-dev
 - `qwen-image-edit-v1` — **Qwen-Image-Edit-2509** — open model, no token required. Lower quality at low quants.
-- `flux-dev` — **FLUX.1-dev** — t2i base for `imgen draw`. Gated, same HF token + license as `flux-kontext`.
+- `flux2-klein-4b` (**default for `imgen draw`** since v0.11.0) — **FLUX.2-klein-4B** distilled t2i — fast 4B base, also the `imgen train` LoRA base. **Runs at full bf16 by default** (its q8 t2i is poor; full precision is excellent — ~22 GB peak, 32 GB Mac). **Distilled**: guidance pinned to 1.0, negative prompts dropped (explicit `--guidance != 1.0` rejected). Gated, accept license at https://huggingface.co/black-forest-labs/FLUX.2-klein-4B.
+- `flux-dev` — **FLUX.1-dev** — the *previous* `imgen draw` default; pass `--model flux-dev` (or set `[defaults] backend_draw = "flux-dev"`) for FLUX.1-dev t2i with real CFG / negative prompts, and on 16 GB Macs (`-q 4`). Gated, same HF token + license as `flux-kontext`.
 - `flux2-klein-edit-9b` — **FLUX.2-klein-9B** distilled edit — default for `imgen refine` (v0.7.5+). Native ~4 MP support (up to 2048²) past FLUX.1's 1.5K clean ceiling. Gated, accept license at https://huggingface.co/black-forest-labs/FLUX.2-klein-9B. Q4 default needs **~24 GB peak RAM** (real measurement at 1.5K-2K²; 32 GB Mac required, 16 GB will OOM). Internal `--guidance` pinned to 1.0 by mflux — `imgen refine` handles this automatically (the `--guidance` flag still works for `--model flux-kontext` fallback).
 
 `imgen --list-models` shows the full set including any user-defined models below. The legacy `imgen --list-backends` form is detected and dies with a migration hint pointing at the new flag.

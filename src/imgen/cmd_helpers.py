@@ -599,6 +599,27 @@ def preflight_resources(
                  f"{res['other_mflux_pid']}), or pass --force.")
 
     if not res["ram_ok"]:
+        from .defaults import FULL_PRECISION_QUANTIZE
+
+        # v0.11.0: tailor the hint for the full-bf16 default (klein-4b, the
+        # `imgen draw` default). On that path `--quantize 4` is the WRONG
+        # advice — klein-4b's quantized t2i is poor, which is exactly why
+        # it defaults to bf16. The only good escape for a RAM-bound user is
+        # the lighter FLUX.1-dev t2i model. (Generic quant-drop advice for
+        # every other model/quant.)
+        if heaviest_quant == FULL_PRECISION_QUANTIZE:
+            hint = ("How to fix (this model runs at full bf16 / -q 16):\n"
+                    "     • For text-to-image, switch to the lighter base: "
+                    "--model flux-dev -q 4 (fits 16 GB, adds CFG + negatives)\n"
+                    "     • Close other apps (Chrome often eats 5+ GB)\n"
+                    "     • Or --force (accepts swap; ~22 GB usually fits a "
+                    "quiet 32 GB Mac)")
+        else:
+            hint = ("How to fix:\n"
+                    "     • Close other apps (Chrome often eats 5+ GB)\n"
+                    "     • Drop quant: --quantize 4 (needs ~9 GB for flux)\n"
+                    "     • Or --preview (uses --quantize 4 automatically)\n"
+                    "     • Or --force (swaps to disk, very slow, may freeze)")
         # :.1f float format avoids "14.239999..." garbage in stderr
         # (ram_required_gb returns a float since v0.7.14).
         die(f"Not enough RAM: need ~{res['ram_required_gb']:.1f} GB peak "
@@ -606,11 +627,7 @@ def preflight_resources(
             f"{res['ram_available_gb']:.1f} GB available "
             f"(of {res['ram_total_gb']:.0f} GB total).",
             code=4,
-            hint=("How to fix:\n"
-                  "     • Close other apps (Chrome often eats 5+ GB)\n"
-                  "     • Drop quant: --quantize 4 (needs ~9 GB for flux)\n"
-                  "     • Or --preview (uses --quantize 4 automatically)\n"
-                  "     • Or --force (swaps to disk, very slow, may freeze)"))
+            hint=hint)
 
     # v0.9 commit 7.1 (§R.2 HIGH-1 / §L locked buffer): video
     # Models get +3 GB headroom over the base estimate — T5 encoder
