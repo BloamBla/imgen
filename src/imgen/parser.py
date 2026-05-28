@@ -287,8 +287,33 @@ def _lora_ref_arg(s: str):
     # doesn't know the architectural distinction. Per-LoRA verification
     # round (mirror of v0.6.3 work, flipped to flux-dev) is a v0.7.1
     # candidate ([[feedback-kontext-lora-compat]] discipline).
+    compatible_with = ("flux-1", "flux-dev")
+    trigger: str | None = None
+
+    # v0.10.0 commit 10 (§I + §H.3): trained-LoRA enrichment. Any ref
+    # pointing at a ``.safetensors`` file with a sibling ``.meta.json``
+    # (i.e. an `imgen train` output, whether referenced by bare name —
+    # resolved above — or by an explicit absolute path) carries its
+    # trigger word + compat group. Reading them here lets the EXISTING
+    # ``build_iteration.prepend_trigger_words`` auto-prepend the trigger
+    # (word-boundary + dedup) and the EXISTING compat-filter keep the
+    # LoRA on its base model. Best-effort: a missing / corrupt sidecar
+    # leaves the broad CLI default untouched.
+    if ref.endswith(".safetensors"):
+        from .lora_meta import read_lora_meta
+        meta_trigger, meta_compat = read_lora_meta(Path(ref))
+        if meta_trigger is not None:
+            trigger = meta_trigger
+        if meta_compat is not None:
+            # A trained LoRA is compatible ONLY with its declared
+            # group (e.g. flux2-klein-4b) — override the broad CLI
+            # default so it isn't mis-applied to an incompatible model
+            # nor filtered out of its own.
+            compatible_with = (meta_compat,)
+
     return LoraRef(
-        ref=ref, weight=weight, compatible_with=("flux-1", "flux-dev"),
+        ref=ref, weight=weight, compatible_with=compatible_with,
+        trigger=trigger,
     )
 
 
