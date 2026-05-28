@@ -257,6 +257,17 @@ class TestPromoteFinalSafetensors:
         with pytest.raises(FileNotFoundError):
             _promote_final_safetensors(scratch, output)
 
+    def test_raises_when_only_pretrain_snapshot(self, tmp_path):
+        """Iteration 0 is the pre-train snapshot. If it's the only (hence
+        max) checkpoint — e.g. --steps at the floor saved nothing past it
+        — promoting would write an untrained adapter. Must raise."""
+        scratch = tmp_path / ".alina.training"
+        _write_checkpoint_zip(scratch, 0, b"pretrain-snapshot")
+        output = tmp_path / "alina.safetensors"
+        with pytest.raises(FileNotFoundError, match="pre-train snapshot"):
+            _promote_final_safetensors(scratch, output)
+        assert not output.exists()
+
     def test_raises_when_zip_has_no_adapter_member(self, tmp_path):
         """A checkpoint zip with no ``*_adapter.safetensors`` member means
         mflux-train's output shape changed — surface loudly, don't write

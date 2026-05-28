@@ -170,6 +170,15 @@ def _promote_final_safetensors(
     candidates.sort(key=lambda pair: pair[0])
     final_iter, final_zip = candidates[-1]
 
+    # Guard the floor case: iteration 0 is the pre-train snapshot. If it's
+    # the highest (sole) checkpoint, mflux-train saved nothing trained —
+    # promoting it would write an untrained adapter. Surface as failure.
+    if final_iter == 0:
+        raise FileNotFoundError(
+            f"only the pre-train snapshot (0000000_checkpoint.zip) exists "
+            f"in {ckpt_dir} — mflux-train saved no trained checkpoint."
+        )
+
     # Pull the adapter member out of the zip. Read by exact name first
     # (``{NNNNNNN}_adapter.safetensors``), fall back to any member ending
     # in ``_adapter.safetensors``. We read the single member into memory
@@ -185,7 +194,9 @@ def _promote_final_safetensors(
                     f"*_adapter.safetensors member (saw {names!r}) — "
                     "mflux-train output shape changed; promotion needs review."
                 )
-            member = fallback[-1]
+            # Sort so a multi-adapter zip (hypothetical future mflux) yields
+            # the highest-iteration member, not archive-insertion order.
+            member = sorted(fallback)[-1]
         adapter_bytes = zf.read(member)
 
     # Atomic write, mode 0o600 — trained weights are PII-bearing identity

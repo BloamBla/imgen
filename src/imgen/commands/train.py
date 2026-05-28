@@ -370,10 +370,15 @@ _PREFLIGHT_SAFETY_BUFFER_GB: float = 3.0
 # spawn is unsafe regardless of estimate.
 _ABSOLUTE_RAM_FLOOR_GB: float = 4.0
 
-# §K.3 wall-time heuristic: M2 Pro 32 GB at q4/rank-16/res-512/low_ram
-# clocks ~25-30 sec/step. Midpoint 27.5 sec used as the conservative
-# baseline. Smoke at §M.1 refines this number per-tag.
-_M2_PRO_SECONDS_PER_STEP: float = 27.5
+# Wall-time heuristic for the confirm-gate estimate. §M.1 smoke
+# (2026-05-28, M2 Pro 32 GB, q4/rank16/res512/low_ram, cached base):
+# 50 --steps ran end-to-end in 419 s → ~8.4 s/--step. The earlier 27.5
+# came from the colleague's DENSE-preview M5 Pro run (previews ≈ doubled
+# wall); imgen's default preview_frequency=100 is sparse, so the real
+# rate is ~3× lower. 8.5 = measured + small buffer. Note: long runs with
+# previews enabled (--preview-every below --steps) add a full image-gen
+# per preview, so treat this as a baseline, not a ceiling.
+_M2_PRO_SECONDS_PER_STEP: float = 8.5
 
 
 def _train_preflight(model, params, *, force: bool) -> None:
@@ -430,15 +435,12 @@ def _train_preflight(model, params, *, force: bool) -> None:
 def _estimate_wall_hours(params) -> float:
     """Heuristic wall-time estimate for the confirm-gate UX.
 
-    Pure (params dataclass + module constants). Calibrated against
-    colleague's M5 Pro 48 GB recipe (880 steps / 10 photos / rank 16 /
-    q4 / max_res 512 / low_ram / preview_frequency 10 → ~10h wall,
-    inflated 2× by frequent previews). Imgen default preview_frequency
-    is 100 (sparse) which keeps wall on the colleague's lower curve.
-
-    On M2 Pro 32 GB the per-step cost ~doubles vs M5 Pro 48 GB. We
-    use the M2 Pro number as the conservative baseline; cross-Mac
-    refinement is post-v0.10.0 work (see §K.3).
+    Pure (params dataclass + module constants). Grounded in the §M.1
+    smoke measurement (~8.4 s/--step end-to-end on M2 Pro 32 GB with
+    sparse previews); see _M2_PRO_SECONDS_PER_STEP. So a default
+    ``80 × N_images`` run lands around ~2 h for ~10 photos / ~4 h for
+    ~20. Dense previews (``--preview-every`` below ``--steps``) add a
+    full image-gen per preview and push the real wall above this floor.
     """
     return params.total_steps * _M2_PRO_SECONDS_PER_STEP / 3600.0
 

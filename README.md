@@ -615,7 +615,7 @@ imgen draw --model flux2-klein-4b --lora alina "in a samurai outfit, cinematic"
 
 v0.10.0 trains on **`flux2-klein-4b` only** — the one base validated to fit consumer Macs. It's gated: needs the same HF token + license acceptance as the other FLUX.2 models (accept at https://huggingface.co/black-forest-labs/FLUX.2-klein-4B), and the base is fetched on first `imgen train`.
 
-Measured envelope on an **M2 Pro 32 GB** (q4 / 512² / rank 16 / low-RAM): **~22 GB peak resident + ~3 GB swap**, ran clean. Practical advice: **close heavy apps** (browser, etc.) before a long run. The preflight refuses below ~25 GB available unless you pass `--force` (which accepts the modest swap; a 4 GB absolute floor still applies). Training runs ~2.6 s/step on this machine, so the default of `80 × N_images` steps is roughly an hour for ~20 photos — plan an overnight-ish run if you go big, and keep the Mac on AC.
+Measured envelope on an **M2 Pro 32 GB** (q4 / 512² / rank 16 / low-RAM): **~22 GB peak resident + ~3 GB swap**, ran clean. Practical advice: **close heavy apps** (browser, etc.) before a long run. The preflight refuses below ~25 GB available unless you pass `--force` (which accepts the modest swap; a 4 GB absolute floor still applies). Training clocks **~8.5 s/step** end-to-end on this machine (sparse previews), so the default `80 × N_images` steps is roughly **~2 h for ~10 photos / ~4 h for ~20** — keep the Mac on AC and plan an overnight-ish run if you go big. Dense previews (`--preview-every` below your step count) add a full image-gen per preview and push that higher.
 
 ### Flags
 

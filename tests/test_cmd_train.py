@@ -760,12 +760,13 @@ class TestEstimateWallHours:
         # 10× steps → 10× wall (within float rounding).
         assert big / small == pytest.approx(10.0, rel=1e-6)
 
-    def test_colleague_recipe_at_880_steps_is_about_seven_hours(self):
-        """§K.3 anchor: ~880 steps × 27.5 sec / 3600 ≈ 6.7 h on
-        M2 Pro 32 GB (colleague's M5 Pro 48 GB was ~10h with dense
-        previews; imgen default sparse previews bring it down)."""
+    def test_default_recipe_880_steps_is_about_two_hours(self):
+        """§M.1-grounded anchor: ~880 steps × 8.5 sec / 3600 ≈ 2.08 h on
+        M2 Pro 32 GB (measured 8.4 s/step end-to-end with sparse
+        previews; the old 27.5 was the colleague's dense-preview M5 Pro
+        number). Must agree with the README's Training section."""
         from imgen.commands.train import _estimate_wall_hours
 
         hours = _estimate_wall_hours(SimpleNamespace(total_steps=880))
-        # 880 × 27.5 / 3600 ≈ 6.722
-        assert 6.5 < hours < 7.0
+        # 880 × 8.5 / 3600 ≈ 2.078
+        assert 1.9 < hours < 2.3
