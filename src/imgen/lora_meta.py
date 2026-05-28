@@ -23,6 +23,7 @@ Per [[project-v100-design]] §I + §H.3 + §R.1 ROUND-1 CLOSURES:
 from __future__ import annotations
 
 import json
+import unicodedata
 from pathlib import Path
 
 from ._safe import has_control_bytes
@@ -86,7 +87,14 @@ def read_lora_meta(
 
 
 def _extract_trigger(meta: dict) -> str | None:
-    """python H-8 + control-byte re-validation on READ."""
+    """python H-8 + control-byte + Unicode Cf/Mn re-validation on READ.
+
+    Mirrors the write-side ``_trigger_token_arg`` validator: the
+    ``.meta.json`` is hand-editable, so re-apply the SAME rejections
+    (length, C0/DEL/C1 control bytes, and bidi-override / zero-width /
+    combining-mark categories) before the trigger is prepended to an
+    ``imgen draw`` prompt (security M-2 — identity-spoofing defence).
+    """
     trigger = meta.get("trigger")
     if not isinstance(trigger, str):
         return None
@@ -94,6 +102,8 @@ def _extract_trigger(meta: dict) -> str | None:
     if not (_TRIGGER_MIN_LEN <= len(trigger) <= _TRIGGER_MAX_LEN):
         return None
     if has_control_bytes(trigger):
+        return None
+    if any(unicodedata.category(ch) in ("Cf", "Mn") for ch in trigger):
         return None
     return trigger
 

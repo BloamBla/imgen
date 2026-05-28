@@ -414,6 +414,8 @@ def _replay_train_entry(entry: dict) -> int:
     rank = entry.get("lora_rank")
     quantize = entry.get("quantize")
     max_res = entry.get("max_resolution")
+    preview_every = entry.get("preview_frequency")
+    battery_stop = entry.get("battery_stop", 20)
     seed = entry.get("seed")
 
     # ── 1. Print the equivalent command (shlex.quote every field) ──
@@ -428,6 +430,10 @@ def _replay_train_entry(entry: dict) -> int:
         parts += ["--quantize", str(quantize)]
     if max_res:
         parts += ["--max-resolution", str(max_res)]
+    if preview_every:
+        parts += ["--preview-every", str(preview_every)]
+    if battery_stop != 20:  # only emit when non-default
+        parts += ["--battery-stop", str(battery_stop)]
     if seed is not None:
         parts += ["--seed", str(seed)]
     quoted = " ".join(shlex.quote(p) for p in parts)
@@ -467,9 +473,9 @@ def _replay_train_entry(entry: dict) -> int:
         rank=rank,
         quantize=quantize,
         max_resolution=max_res,
-        preview_every=entry.get("preview_frequency"),
+        preview_every=preview_every,
         seed=seed,
-        battery_stop=entry.get("battery_stop", 20),
+        battery_stop=battery_stop,
         overwrite=True,   # confirmed re-run replaces the prior weights
         no_open=False,
         yes=True,         # the replay gate above IS the confirmation

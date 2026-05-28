@@ -50,6 +50,7 @@ from pathlib import Path
 
 from .._safe import has_control_bytes
 from ..colors import C, die, err, info, ok, step, warn
+from ..defaults import HISTORY_SCHEMA_VERSION
 
 
 __all__ = [
@@ -502,7 +503,7 @@ def _append_train_history(
     from ..engine_dispatch import safe_append_history
 
     entry = {
-        "v": 4,
+        "v": HISTORY_SCHEMA_VERSION,
         "ts": datetime.now().isoformat(timespec="seconds"),
         "command": "train",
         "model": params.base_model,
@@ -514,6 +515,12 @@ def _append_train_history(
         "lora_rank": params.lora_rank,
         "quantize": params.quantize,
         "max_resolution": params.max_resolution,
+        # preview_frequency + battery_stop are written so `imgen replay`
+        # reconstructs the run at full fidelity — _replay_train_entry
+        # reads both back; omitting them silently reverted a replayed
+        # job to the config defaults.
+        "preview_frequency": params.preview_frequency,
+        "battery_stop": params.battery_stop,
         "seed": params.seed,
         "output": str(params.output_path),
         "status": status,
@@ -620,25 +627,33 @@ def cmd_train(args) -> int:
     )
 
     scratch_dir = loras_dir / f".{args.name}.training"
-    params = TrainingParams(
-        dataset_dir=dataset_dir,
-        scratch_dir=scratch_dir,
-        lora_name=args.name,
-        trigger=args.trigger,
-        base_model=args.base,
-        total_steps=total_steps,
-        lora_rank=lora_rank,
-        max_resolution=max_resolution,
-        quantize=quantize,
-        low_ram=tc.default_low_ram,
-        optimizer_name=tc.optimizer_name,
-        optimizer_lr=tc.optimizer_lr,
-        target_modules=tc.target_modules,
-        preview_frequency=preview_frequency,
-        seed=seed,
-        battery_stop=args.battery_stop,
-        output_path=output_path,
-    )
+    # TrainingParams.__post_init__ range-checks every numeric field.
+    # argparse already bounds the direct-CLI path, but `imgen replay`
+    # reconstructs args from a hand-editable history entry — a tampered
+    # rank/quantize/steps must die cleanly (exit 2) rather than escape
+    # as an uncaught ValueError traceback.
+    try:
+        params = TrainingParams(
+            dataset_dir=dataset_dir,
+            scratch_dir=scratch_dir,
+            lora_name=args.name,
+            trigger=args.trigger,
+            base_model=args.base,
+            total_steps=total_steps,
+            lora_rank=lora_rank,
+            max_resolution=max_resolution,
+            quantize=quantize,
+            low_ram=tc.default_low_ram,
+            optimizer_name=tc.optimizer_name,
+            optimizer_lr=tc.optimizer_lr,
+            target_modules=tc.target_modules,
+            preview_frequency=preview_frequency,
+            seed=seed,
+            battery_stop=args.battery_stop,
+            output_path=output_path,
+        )
+    except (ValueError, TypeError) as e:
+        die(f"invalid training parameter: {e}", code=2)
 
     # ── 5. Build mflux JSON config (used by both dry-run + real spawn) ──
     config = build_config_json(params, num_entries=num_entries)
@@ -695,24 +710,41 @@ def cmd_train(args) -> int:
 
         if rc == 0:
             # ── 11. Promote + write meta.json ──
-            _train_scratch._promote_final_safetensors(
-                scratch_dir, output_path,
-            )
-            meta = _train_scratch.build_meta_json(
-                params=params,
-                model=model,
-                num_entries=num_entries,
-                wall_seconds=int(time.monotonic() - started),
-                # v0.10.0: peak observed RAM is not measured live —
-                # would need a sampler thread. Recorded as 0.0
-                # sentinel; pre-tag smoke (§M.1) writes a real number
-                # post-run via doctor inspection. v0.10.x can add a
-                # background pmem sampler if it proves useful.
-                peak_ram_gb_observed=0.0,
-                trained_at_iso=datetime.now().isoformat(timespec="seconds"),
-            )
-            _train_scratch._write_meta_json(meta_path, meta)
-            status = "success"
+            # mflux-train can exit 0 yet leave no usable checkpoint
+            # (e.g. --battery-percentage-stop-limit tripped before the
+            # first save, or a full disk on the meta write). Treat a
+            # promote/meta failure as a run failure: status stays
+            # "fail", scratch is kept (cleanup is gated on status, not
+            # rc), and we surface a clean error instead of letting an
+            # OSError escape as an uncaught traceback.
+            try:
+                _train_scratch._promote_final_safetensors(
+                    scratch_dir, output_path,
+                )
+                meta = _train_scratch.build_meta_json(
+                    params=params,
+                    model=model,
+                    num_entries=num_entries,
+                    wall_seconds=int(time.monotonic() - started),
+                    # v0.10.0: peak observed RAM is not measured live —
+                    # would need a sampler thread. Recorded as 0.0
+                    # sentinel; pre-tag smoke (§M.1) writes a real number
+                    # post-run via doctor inspection. v0.10.x can add a
+                    # background pmem sampler if it proves useful.
+                    peak_ram_gb_observed=0.0,
+                    trained_at_iso=datetime.now().isoformat(timespec="seconds"),
+                )
+                _train_scratch._write_meta_json(meta_path, meta)
+            except OSError as e:
+                err(
+                    f"mflux-train exited 0 but no usable LoRA could be "
+                    f"promoted ({e}); scratch kept at {scratch_dir} for "
+                    "diagnosis."
+                )
+                # status stays "fail" → finally keeps scratch + records
+                # the failed run; the post-finally branch returns non-zero.
+            else:
+                status = "success"
         else:
             err(
                 f"mflux-train exited {rc}; scratch kept at "
@@ -722,8 +754,11 @@ def cmd_train(args) -> int:
             # the finally block + the post-finally die().
     finally:
         wall_seconds = int(time.monotonic() - started)
-        # ── 12. Cleanup scratch on success; KEEP on failure ──
-        if rc == 0:
+        # ── 12. Cleanup scratch on full success; KEEP on any failure ──
+        # Gate on ``status``, NOT ``rc``: a promote failure leaves rc==0
+        # but status=="fail", and the scratch dir must survive so the
+        # user can inspect what mflux-train actually wrote.
+        if status == "success":
             shutil.rmtree(scratch_dir, ignore_errors=True)
         # History entry: always recorded so cmd_history can show
         # the cancelled / failed runs alongside successes.
@@ -734,10 +769,12 @@ def cmd_train(args) -> int:
             status=status,
         )
 
-    if rc != 0:
-        # Non-zero rc: error already surfaced via err(); exit with the
-        # mflux-train exit code so shell pipelines see the failure.
-        return rc
+    if status != "success":
+        # Either mflux-train failed (rc != 0) or it exited 0 but no
+        # usable checkpoint could be promoted (rc == 0). Error already
+        # surfaced via err(); exit non-zero — prefer mflux-train's own
+        # code, falling back to 2 for the promote-failure case.
+        return rc if rc != 0 else 2
 
     ok(
         f"LoRA trained: ~/.imgen/loras/{args.name}.safetensors "

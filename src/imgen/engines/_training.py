@@ -232,7 +232,11 @@ def build_config_json(
         # num_entries — colleague's 880/10 = 88-epoch recipe scales
         # linearly.
         "training_loop": {
-            "num_epochs": params.total_steps // safe_num_entries,
+            # Floor at 1: a small --steps with a large dataset (e.g.
+            # --steps 50 over 60 images) would otherwise floor-divide to
+            # num_epochs=0 → mflux-train does zero passes / errors deep
+            # in setup. At least one epoch always runs.
+            "num_epochs": max(1, params.total_steps // safe_num_entries),
             "batch_size": 1,  # v0.10.0 locked; no batching surface
             "timestep_low": 1,
             "timestep_high": params.total_steps,

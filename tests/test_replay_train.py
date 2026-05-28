@@ -144,6 +144,21 @@ class TestReplayTrainAccept:
         assert args.max_resolution == 512
         assert args.seed == 42
 
+    def test_preview_and_battery_round_trip_when_present(
+        self, captured_cmd_train, patch_prompt,
+    ):
+        """§R.3 architect M-2: a history entry carrying preview_frequency
+        + battery_stop must reconstruct both on replay (not silently
+        revert to config defaults)."""
+        patch_prompt["answer"] = True
+        from imgen.commands.history import _replay_train_entry
+        _replay_train_entry(
+            _train_entry(preview_frequency=50, battery_stop=40),
+        )
+        args = captured_cmd_train["args"]
+        assert args.preview_every == 50
+        assert args.battery_stop == 40
+
 
 # ── §M.11 N-2 — re-validation on READ ────────────────────────────
 

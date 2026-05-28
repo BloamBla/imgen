@@ -130,6 +130,28 @@ class TestReadLoraMetaTriggerValidation:
         assert trigger is None
         assert compat == "flux2-klein-4b"
 
+    def test_bidi_override_trigger_dropped(self, loras_dir):
+        """§R.3 security MEDIUM: read-side re-validation must mirror the
+        write-side _trigger_token_arg Cf rejection — a bidi-override
+        (U+202E) in a hand-edited sidecar must not reach the prompt."""
+        st = _write_meta(loras_dir, "alina", trigger="al1na‮woman")
+        trigger, compat = read_lora_meta(st)
+        assert trigger is None
+        assert compat == "flux2-klein-4b"
+
+    def test_zero_width_trigger_dropped(self, loras_dir):
+        """Zero-width space (U+200B, category Cf) dropped on read."""
+        st = _write_meta(loras_dir, "alina", trigger="al1na​woman")
+        trigger, _ = read_lora_meta(st)
+        assert trigger is None
+
+    def test_combining_mark_trigger_dropped(self, loras_dir):
+        """Nonspacing combining mark (U+0301, category Mn) dropped on
+        read — matches the write-side Mn rejection."""
+        st = _write_meta(loras_dir, "alina", trigger="al1náwoman")
+        trigger, _ = read_lora_meta(st)
+        assert trigger is None
+
     def test_non_string_trigger_dropped(self, loras_dir):
         st = _write_meta(loras_dir, "alina", trigger=12345)
         trigger, _ = read_lora_meta(st)

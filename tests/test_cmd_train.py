@@ -448,6 +448,22 @@ class TestCmdTrainSuccessPath:
         assert entry["status"] == "success"
         assert entry["dataset_image_count"] == 5
 
+    def test_history_entry_carries_replay_fidelity_fields(
+        self, state_dir, dataset_dir, fake_mflux_train_bin,
+        mock_subprocess, patch_preflight, patch_token, patch_prompt,
+    ):
+        """§R.3 architect M-2: preview_frequency + battery_stop must be
+        WRITTEN to history so `imgen replay` reconstructs them — the
+        replay handler reads both back; omitting them silently reverted
+        a replayed job to the config defaults."""
+        from imgen.commands.train import cmd_train
+        cmd_train(_make_args(dataset_dir, preview_every=50, battery_stop=40))
+        entry = json.loads(
+            (state_dir / "history.jsonl").read_text().splitlines()[-1],
+        )
+        assert entry["preview_frequency"] == 50
+        assert entry["battery_stop"] == 40
+
 
 # ── Failure paths ────────────────────────────────────────────────
 
@@ -505,6 +521,89 @@ class TestCmdTrainFailurePath:
         lines = history_file.read_text().splitlines()
         entry = json.loads(lines[-1])
         assert entry["status"] == "fail"
+
+
+# ── Promotion-failure path (rc=0, no checkpoint) ─────────────────
+
+
+class TestCmdTrainPromoteFailure:
+    """§R.3 python HIGH-1: mflux-train can exit 0 yet leave no usable
+    checkpoint (e.g. --battery-percentage-stop-limit tripped before the
+    first save). cmd_train must NOT report success, must keep the
+    scratch dir for diagnosis, and must surface a clean non-zero return
+    instead of an uncaught traceback (the finally-block scratch cleanup
+    must gate on status, not rc)."""
+
+    @staticmethod
+    def _patch_rc0_no_checkpoint(monkeypatch):
+        """mflux-train returns 0 but writes NO checkpoint."""
+        def fake_run(cmd, env, log_file=None, *, stdin_data=None):
+            return 0  # success exit code, but no checkpoint written
+
+        from imgen import subprocess_helpers as sh
+        monkeypatch.setattr(sh, "run_with_stderr_redaction", fake_run)
+
+    def test_returns_nonzero(
+        self, state_dir, dataset_dir, fake_mflux_train_bin,
+        patch_preflight, patch_token, patch_prompt, monkeypatch, capsys,
+    ):
+        self._patch_rc0_no_checkpoint(monkeypatch)
+        from imgen.commands.train import cmd_train
+        rc = cmd_train(_make_args(dataset_dir))
+        assert rc != 0
+
+    def test_no_safetensors_at_output(
+        self, state_dir, dataset_dir, fake_mflux_train_bin,
+        patch_preflight, patch_token, patch_prompt, monkeypatch, capsys,
+    ):
+        self._patch_rc0_no_checkpoint(monkeypatch)
+        from imgen.commands.train import cmd_train
+        cmd_train(_make_args(dataset_dir))
+        assert not (state_dir / "loras" / "alina.safetensors").exists()
+
+    def test_scratch_kept_for_diagnosis(
+        self, state_dir, dataset_dir, fake_mflux_train_bin,
+        patch_preflight, patch_token, patch_prompt, monkeypatch, capsys,
+    ):
+        self._patch_rc0_no_checkpoint(monkeypatch)
+        from imgen.commands.train import cmd_train
+        cmd_train(_make_args(dataset_dir))
+        assert (state_dir / "loras" / ".alina.training").exists()
+
+    def test_history_status_fail_not_success(
+        self, state_dir, dataset_dir, fake_mflux_train_bin,
+        patch_preflight, patch_token, patch_prompt, monkeypatch, capsys,
+    ):
+        self._patch_rc0_no_checkpoint(monkeypatch)
+        from imgen.commands.train import cmd_train
+        cmd_train(_make_args(dataset_dir))
+        entry = json.loads(
+            (state_dir / "history.jsonl").read_text().splitlines()[-1],
+        )
+        assert entry["status"] == "fail"
+
+
+# ── Numeric param validation (replay-from-tampered-history) ──────
+
+
+class TestCmdTrainNumericValidation:
+    """§R.3 python MEDIUM: `imgen replay` reconstructs args from a
+    hand-editable history entry, bypassing argparse `choices=`. An
+    out-of-range numeric must die cleanly (exit 2) via the
+    TrainingParams.__post_init__ guard, not escape as an uncaught
+    ValueError traceback."""
+
+    def test_out_of_range_rank_dies_cleanly(
+        self, state_dir, dataset_dir, fake_mflux_train_bin,
+        mock_subprocess, patch_preflight, patch_token, patch_prompt,
+    ):
+        from imgen.commands.train import cmd_train
+        # rank=7 is not in {4, 8, 16, 32, 64}; argparse would reject it,
+        # but a tampered history entry reaches cmd_train directly.
+        with pytest.raises(SystemExit) as exc:
+            cmd_train(_make_args(dataset_dir, rank=7))
+        assert exc.value.code == 2
+        assert mock_subprocess["calls"] == 0
 
 
 # ── KeyboardInterrupt path ───────────────────────────────────────

@@ -162,6 +162,16 @@ class TestBuildConfigJsonTrainingLoop:
         )
         assert config["training_loop"]["num_epochs"] == 800
 
+    def test_num_epochs_floored_to_one_when_steps_below_entries(self):
+        """§R.3 python MEDIUM: --steps below the dataset size (e.g. the
+        50-step floor over a 60-image dataset) would floor-divide to
+        num_epochs=0 → mflux-train does zero passes / errors deep in
+        setup. The max(1, ...) numerator floor keeps at least one epoch."""
+        config = build_config_json(
+            _klein_4b_params(total_steps=50), num_entries=60,
+        )
+        assert config["training_loop"]["num_epochs"] == 1
+
     def test_batch_size_is_one(self):
         """v0.10.0: batch_size locked to 1 — colleague-validated; no
         batching surface on the CLI."""

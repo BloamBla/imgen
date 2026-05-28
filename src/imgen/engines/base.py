@@ -150,9 +150,21 @@ class Engine(Protocol):
         """
         ...
 
-    def train(self, model, params: "TrainingParams") -> int:
+    def train(
+        self,
+        model,
+        params: "TrainingParams",
+        env: Mapping[str, str] | None = None,
+    ) -> int:
         """Execute LoRA training. Returns exit code (0 success,
         non-zero failure).
+
+        ``env`` is the allowlisted subprocess environment from
+        ``build_mflux_env(token=hf_token)`` (security H-4 — never the
+        raw inherited environment at the ``Popen`` boundary). Part of
+        the Protocol signature so implementations stay uniform with
+        ``MfluxEngine.train``; engines that raise ``NotImplementedError``
+        accept it without use.
 
         v0.10.0 commit 1: Protocol verb added per
         [[project-v100-design]] §R.1 round-1 architect H-3 closure —

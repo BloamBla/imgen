@@ -1395,8 +1395,8 @@ def _add_train_args(
     )
     p.add_argument(
         "--steps", type=_int_range(50, 5000), default=None,
-        help="Total training steps (default: 88 × N_images per "
-             "TrainingConfig.default_steps_per_image).",
+        help="Total training steps (default: 80 × N_images per "
+             "TrainingConfig.default_epochs).",
     )
     p.add_argument(
         "--rank", type=int, choices=sorted(_VALID_LORA_RANKS), default=None,
