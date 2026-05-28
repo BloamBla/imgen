@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import difflib
 import re
+import stat
 import unicodedata
 from pathlib import Path
 
@@ -234,6 +235,47 @@ def _lora_ref_arg(s: str):
         raise argparse.ArgumentTypeError(
             f"--lora weight out of range: {weight} (must be -2.0..2.0)"
         )
+
+    # v0.10.0 commit 9 (§H.2 + §R.1 M-4): bare-name local LoRA resolution.
+    # Resolution order (locked):
+    #   1. Absolute path (starts with '/') — used as-is (handled below).
+    #   2. Has '/' separator — HF repo id, used as-is (handled below).
+    #   3. Bare slug — probe ~/.imgen/loras/<slug>.safetensors and
+    #      resolve to that absolute path if it's a regular file.
+    # A bare token (no '/', not absolute) can ONLY be a local trained-
+    # LoRA reference: HF repo ids are always 'author/name'. So if the
+    # local probe misses, REJECT with a clear error (§R.1 M-4) rather
+    # than fall through to an HF fetch that would fail confusingly.
+    if not ref.startswith("/") and "/" not in ref:
+        if _LORA_NAME_RE.fullmatch(ref) and len(ref) <= 32:
+            from .paths import STATE_DIR
+            candidate = STATE_DIR / "loras" / f"{ref}.safetensors"
+            # Security H-5: lstat + S_ISREG, NOT is_file() (which
+            # follows symlinks). An attacker with write access to
+            # ~/.imgen/loras/ could otherwise point a symlink named
+            # <slug>.safetensors at an arbitrary file.
+            try:
+                st = candidate.lstat()
+            except (FileNotFoundError, NotADirectoryError):
+                st = None
+            if st is not None and stat.S_ISREG(st.st_mode):
+                ref = str(candidate)
+            else:
+                raise argparse.ArgumentTypeError(
+                    f"--lora {ref!r}: no local LoRA at "
+                    f"~/.imgen/loras/{ref}.safetensors, and {ref!r} is "
+                    "not an HF repo id (those need 'author/name' "
+                    f"format). Train one with `imgen train --name "
+                    f"{ref} ...`, or pass a full HF id / absolute path."
+                )
+        else:
+            # No '/' AND not a valid local-LoRA slug → can't be local
+            # (bad slug) nor HF (no '/'). Reject with the grammar hint.
+            raise argparse.ArgumentTypeError(
+                f"--lora {ref!r}: not a valid local LoRA name "
+                "(a-z 0-9 - _, 1-32 chars, alnum at both ends), an HF "
+                "repo id ('author/name'), or an absolute path."
+            )
 
     # v0.7.0 (architect §A): CLI default widened from `("flux-1",)` to
     # `("flux-1", "flux-dev")` so a user's `--lora foo/bar` works on
