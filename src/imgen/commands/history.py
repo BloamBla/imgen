@@ -13,6 +13,7 @@ from .._safe import has_control_bytes, safe_display, safe_path_display
 from ..colors import C, dim, die, info
 from ..defaults import DEFAULTS, HISTORY_SCHEMA_VERSION
 from ..history import entry_model_name, load_history
+from ..paths import STATE_DIR
 from ..styles import LoraRef
 from .draw import cmd_draw
 from .generate import cmd_generate
@@ -375,6 +376,109 @@ def _replay_video_entry(entry: dict) -> int:
     return cmd_video(args)
 
 
+def _replay_train_entry(entry: dict) -> int:
+    """v0.10.0 (§J.2 + §R.1 C-3): replay a ``command="train"`` entry
+    through the replay-CONFIRM-GATE.
+
+    Unlike draw/refine/video (which re-execute immediately), a training
+    replay would re-run a ~10-hour overnight job — catastrophic if
+    triggered mid-day or on battery. So this handler:
+
+    1. Prints the equivalent ``imgen train`` command (every interpolated
+       field ``shlex.quote``-escaped per python H-10 + security H-6 —
+       NOT ``safe_display(repr(...))`` double-wrap).
+    2. Asks ``prompt_yes_no("Re-run this ~10h training job? [y/N]")``.
+    3. On ``n`` → return 0 (printed command stays as a copy-paste recipe).
+    4. On ``y`` → re-validate every field through its argparse validator
+       (§M.11 N-2 — history.jsonl is hand-editable; a dirty
+       lora_name / trigger must NOT reach cmd_train un-checked), then
+       dispatch to :func:`cmd_train` with ``yes=True`` (the gate above
+       IS the confirmation) and ``overwrite=True`` (re-running the same
+       name means replacing the prior weights — the user just confirmed).
+
+    Preserves the project-wide "replay = re-execute" ``_REPLAY_DISPATCH``
+    contract (architect C-3) while keeping the battery/overnight safety
+    of the original print-only proposal.
+    """
+    import shlex
+
+    from ..cmd_helpers import prompt_yes_no
+    from ..parser import _lora_name_arg, _trigger_token_arg
+    from .train import cmd_train
+
+    name = entry.get("lora_name", "")
+    trigger = entry.get("trigger", "")
+    dataset = entry.get("dataset_path", "")
+    base = entry_model_name(entry) or "flux2-klein-4b"
+    steps = entry.get("total_steps")
+    rank = entry.get("lora_rank")
+    quantize = entry.get("quantize")
+    max_res = entry.get("max_resolution")
+    seed = entry.get("seed")
+
+    # ── 1. Print the equivalent command (shlex.quote every field) ──
+    parts = ["imgen", "train", "--dataset", str(dataset),
+             "--name", str(name), "--trigger", str(trigger),
+             "--base", str(base)]
+    if steps:
+        parts += ["--steps", str(steps)]
+    if rank:
+        parts += ["--rank", str(rank)]
+    if quantize:
+        parts += ["--quantize", str(quantize)]
+    if max_res:
+        parts += ["--max-resolution", str(max_res)]
+    if seed is not None:
+        parts += ["--seed", str(seed)]
+    quoted = " ".join(shlex.quote(p) for p in parts)
+    info(f"Replaying #{entry.get('id')}: train {safe_display(str(name))}")
+    print(f"  {dim(quoted)}")
+
+    # ── 2. Confirm gate ──
+    out_path = STATE_DIR / "loras" / f"{name}.safetensors"
+    overwrite_note = (
+        " (this OVERWRITES the existing LoRA)" if out_path.exists() else ""
+    )
+    if not prompt_yes_no(
+        f"Re-run this ~10h training job?{overwrite_note} [y/N]: "
+    ):
+        info("Not re-running. Copy the command above to retrain manually.")
+        return 0
+
+    # ── 3. Re-validate via argparse validators (§M.11 N-2) ──
+    # history.jsonl is hand-editable — a tampered lora_name / trigger
+    # must be re-checked against the SAME validators the parser applies
+    # before reaching cmd_train. A failure dies cleanly (exit 2) rather
+    # than letting a dirty value flow into filesystem paths / argv.
+    try:
+        name = _lora_name_arg(str(name))
+        trigger = _trigger_token_arg(str(trigger))
+    except argparse.ArgumentTypeError as e:
+        die(f"History entry #{entry.get('id', '?')} (command=train) has "
+            f"an invalid field for replay: {e}", code=2)
+
+    # ── 4. Dispatch to cmd_train ──
+    args = argparse.Namespace(
+        dataset=str(dataset),
+        name=name,
+        trigger=trigger,
+        base=base,
+        steps=steps,
+        rank=rank,
+        quantize=quantize,
+        max_resolution=max_res,
+        preview_every=entry.get("preview_frequency"),
+        seed=seed,
+        battery_stop=entry.get("battery_stop", 20),
+        overwrite=True,   # confirmed re-run replaces the prior weights
+        no_open=False,
+        yes=True,         # the replay gate above IS the confirmation
+        dry_run=False,
+        force=False,
+    )
+    return cmd_train(args)
+
+
 # v0.9.5 M-4 (architect M-4 from v0.9.4 image-arc audit): replay-by-
 # command dispatch table. Replaces the prior if/elif chain on
 # ``entry.get("command")`` at the bottom of ``replay_entry``. Adding
@@ -389,12 +493,13 @@ _REPLAY_DISPATCH: dict[str, Callable[[dict], int]] = {
     "draw": _replay_draw_entry,
     "refine": _replay_refine_entry,
     "video": _replay_video_entry,
+    "train": _replay_train_entry,  # v0.10 — confirm-gate, then re-execute
     # "generate" + "batch" intentionally absent: BatchContext.command's
     # Literal also lists "generate" and "batch" (runs.py), but those
     # entries fall through to the i2i ``cmd_generate`` path at the
     # bottom of ``replay_entry`` for historical reasons (batch replay
     # was never wired up — running batch reruns the same set as a
-    # generate replay loses per-input semantics anyway). v0.10.x B-19
+    # generate replay loses per-input semantics anyway). v0.10.0 B-19
     # adds a registration-completeness test against this Literal set
     # so a future Literal extension can't silently mis-route.
 }
