@@ -49,7 +49,7 @@ imgen batch ~/Desktop/holiday --style anime,ghibli       # every photo in folder
 >
 > Some model names also changed (`flux` → `flux-kontext`, `qwen` → `qwen-image-edit-v1`). Run `imgen --list-models` for the current canonical names.
 >
-> User TOMLs in `~/.imgen/backends.d/` keep working in v0.8.x **and v0.9.x** but emit a DEPRECATED warn on every run. Run `imgen migrate-toml` to move them to `~/.imgen/models.d/`. The `backends.d/` fallback is targeted for hard-removal in v0.10.0 — earlier README claimed v0.9.0 drop, but the bridge survives the v0.9 arc for continuity. The helper also detects redundant files (where a user TOML's stem matches a new v0.8 built-in Model) and offers to delete them.
+> User TOMLs in `~/.imgen/backends.d/` keep working in v0.8.x **and v0.9.x** but emit a DEPRECATED warn on every run. Run `imgen migrate-toml` to move them to `~/.imgen/models.d/`. The `backends.d/` fallback is targeted for hard-removal in a future release — it survives v0.9.x **and v0.10.0** (the v0.10.0 arc was LoRA training, not legacy-bridge removal). The helper also detects redundant files (where a user TOML's stem matches a new v0.8 built-in Model) and offers to delete them.
 >
 > `[defaults] style` in `~/.imgen/config.toml` — REMOVED. Pass `--style NAME` per invocation instead. (Soft-deprecated since v0.7.13.)
 >
@@ -227,6 +227,12 @@ imgen batch <dir> -s anime --custom-prompt "..." # shared --custom-prompt augmen
 imgen batch <dir> --style anime --yes          # skip the N×M confirm gate
 imgen batch <dir> --enhance-prompt             # smart-prompt the whole batch (one model load, all images)
 imgen batch <dir> --dry-run                    # show every mflux command without running
+
+# Train a LoRA (v0.10.0+, flux2-klein-4b base) — see "Training a LoRA" below
+imgen train --dataset <dir> --name alina --trigger "al1na woman"   # 10-20 photos → ~/.imgen/loras/alina.safetensors
+imgen train --dataset <dir> --name alina --trigger "al1na woman" --steps 880   # stronger likeness
+imgen train --dataset <dir> --name alina --trigger "al1na woman" --dry-run     # print config, train nothing
+imgen draw --model flux2-klein-4b --lora alina "in a samurai outfit"           # use it (trigger auto-prepended)
 
 # Diagnostics
 imgen doctor                                   # env + RAM forecast + cached models + backends + enhancer
@@ -579,6 +585,58 @@ The blanket caveat in the LoRA section above (FLUX-NC base gates commercial use)
 
 `--lora` references you supply yourself are entirely your responsibility — `imgen` doesn't check upstream licenses, and (as the Kontext-compatibility note above explains) most FLUX-LoRAs on HuggingFace target FLUX.1-dev base and will crash on Kontext. The same applies to user `styles.d/*.toml` LoRA entries.
 
+## Training a LoRA (v0.10.0+)
+
+Fine-tune a personal-identity (or style) LoRA from a folder of photos, entirely on your Mac — no cloud, no external tools, nothing leaves your machine:
+
+```bash
+# 1. Put 10-20 photos of the subject in a folder
+mkdir -p ~/.imgen/datasets/alina
+cp ~/Photos/alina/*.jpg ~/.imgen/datasets/alina/
+
+# 2. Train (first run downloads the klein-4b base once)
+imgen train --dataset ~/.imgen/datasets/alina --name alina --trigger "al1na woman"
+
+# 3. Use it — the trigger is auto-prepended to your prompt
+imgen draw --model flux2-klein-4b --lora alina "in a samurai outfit, cinematic"
+#   → effective prompt: "al1na woman in a samurai outfit, cinematic"
+```
+
+`train` writes `~/.imgen/loras/<name>.safetensors` + `<name>.meta.json` (both `0o600` — trained weights are personal data). The `.meta.json` carries the trigger word, so `--lora <name>` (bare name) both loads the weights AND auto-prepends the trigger — word-boundary dedup means if you already typed the trigger in your prompt it isn't doubled.
+
+### Dataset
+
+- **Location**: `~/.imgen/datasets/<name>/` by convention (any `--dataset DIR` works). Non-recursive, flat layout.
+- **Formats**: `.jpg` `.jpeg` `.png` `.webp`. HEIC/HEIF/BMP/TIFF/GIF are rejected with a hint — convert first: `sips -s format png in.heic --out out.png`.
+- **How many**: minimum 3 (refused below), **10-20 recommended** for a good identity likeness; more than ~30 warns (overfitting/noise risk).
+- **Captions (optional)**: drop a `<stem>.txt` next to an image with a caption; images without one fall back to the trigger word alone. UTF-8, ≤4 KB, no control bytes.
+
+### Base model + hardware
+
+v0.10.0 trains on **`flux2-klein-4b` only** — the one base validated to fit consumer Macs. It's gated: needs the same HF token + license acceptance as the other FLUX.2 models (accept at https://huggingface.co/black-forest-labs/FLUX.2-klein-4B), and the base is fetched on first `imgen train`.
+
+Measured envelope on an **M2 Pro 32 GB** (q4 / 512² / rank 16 / low-RAM): **~22 GB peak resident + ~3 GB swap**, ran clean. Practical advice: **close heavy apps** (browser, etc.) before a long run. The preflight refuses below ~25 GB available unless you pass `--force` (which accepts the modest swap; a 4 GB absolute floor still applies). Training runs ~2.6 s/step on this machine, so the default of `80 × N_images` steps is roughly an hour for ~20 photos — plan an overnight-ish run if you go big, and keep the Mac on AC.
+
+### Flags
+
+Required: `--dataset DIR`, `--name NAME` (a-z0-9-_, 1-32 chars), `--trigger "TOKEN"` (1-64 chars). Everything else is optional with a working default:
+
+- `--steps N` — total training steps (default `80 × N_images`). More = stronger likeness; the ~880-step / ~10-photo recipe is a solid target.
+- `--rank {4,8,16,32,64}` — LoRA rank (default `16`). Higher = stronger + larger file + more RAM.
+- `--quantize {3,4,5,6,8}` — base-model quant during training (default `4`). Not the quality bottleneck — likeness is driven by steps × data, not quant.
+- `--max-resolution {256,384,512,768,1024}` — training resolution (default `512`). 512 fits 32 GB; 768+ pushes the ceiling.
+- `--preview-every N` — preview image every N steps (default `100`). Each preview is a full inference pass, so dense previews inflate wall time; set a value above `--steps` to disable them.
+- `--battery-stop PCT` — stop if battery drops below this (default `20`). Plug in for long runs.
+- `--seed N`, `--base NAME` (klein-4b only at v0.10.0), `--dry-run` (print the generated config + invocation, train nothing), `-y`/`--yes` (skip the confirm gate), `--overwrite`, `--force`.
+
+### Notes
+
+- **Confirm gate**: `train` shows an estimated wall time and asks `[y/N]` before the long run (skip with `-y`). On Ctrl-C or failure the scratch workspace under `~/.imgen/loras/.<name>.training/` is **kept** for inspection; on success it's removed.
+- **Name collision**: if `<name>.safetensors` already exists, `train` refuses up front (before the long run) and names the existing LoRA's trigger + train date so you can decide — pass `--overwrite` to replace, or pick a new `--name`.
+- **Replay**: `imgen replay <id>` on a training entry **prints the equivalent command and asks before re-running** — it won't silently re-burn an hour of GPU. Resume-from-checkpoint isn't wired into imgen yet (planned); for now a run trains from scratch.
+- **Portability**: `<name>.safetensors` + `<name>.meta.json` are filesystem-portable — `scp` both to another Mac's `~/.imgen/loras/` and `--lora <name>` works there (copy the meta too — that's where the trigger lives).
+- **Compatibility**: a klein-4b LoRA only loads on `--model flux2-klein-4b` (its `lora_compat_group`). Load it under the default flux-1 model and it warns-and-skips.
+
 ## Models
 
 > v0.8.0 renamed `--backend` → `--model` and two built-in names moved to honest
@@ -608,7 +666,7 @@ Built-in:
 
 Drop `*.toml` files into `~/.imgen/models.d/` (v0.8.0+ canonical path). Filename becomes the `--model NAME`. Same drop-in pattern as styles.d, applied to the image-gen binaries imgen drives — useful for experimenting with new mflux-shaped models (future SDXL ports, your own wrapper script, etc.) without editing imgen's code.
 
-> Pre-v0.8.0 the directory was `~/.imgen/backends.d/`. Files there still load with a DEPRECATED warn through v0.8.x **and v0.9.x** — run `mv ~/.imgen/backends.d/<NAME>.toml ~/.imgen/models.d/<NAME>.toml` per file to clear it. The legacy read is targeted for hard-removal in v0.10.0; v0.9.0's README originally claimed it dropped at v0.9.0 but the bridge survives the v0.9 arc for continuity.
+> Pre-v0.8.0 the directory was `~/.imgen/backends.d/`. Files there still load with a DEPRECATED warn through v0.8.x **and v0.9.x** — run `mv ~/.imgen/backends.d/<NAME>.toml ~/.imgen/models.d/<NAME>.toml` per file to clear it. The legacy read is targeted for hard-removal in a future release; it survives v0.9.x **and v0.10.0** (v0.10.0 shipped LoRA training, not bridge removal).
 
 ```toml
 # ~/.imgen/models.d/sdxl.toml
@@ -654,7 +712,7 @@ model = "qwen-image-edit-v1"  # see `imgen --list-models`
                               # (legacy `backend = "qwen"` still loads
                               #  with a DEPRECATED warn through v0.8.x
                               #  and v0.9.x; targeted for hard-removal
-                              #  in v0.10.0.)
+                              #  in a future release.)
 quantize = 4
 steps = 12
 guidance = 4.0
@@ -668,7 +726,7 @@ color = "auto"              # "auto" | "always" | "never"
 
 **Precedence:** CLI flag > `~/.imgen/config.toml` > built-in defaults. Bad value (e.g. `steps = 999`) → `imgen` warns and falls back to built-ins until you fix the file. Unknown keys are dropped with a warning so old `imgen` versions don't break on configs written by newer ones.
 
-> **v0.8.0 migration:** `[defaults] style = ...` was REMOVED (soft-deprecated since v0.7.13, hard-removed at v0.8.0) — pass `--style NAME` per-invocation instead, or set `[enhance] default = true` to keep enhanced prompts as your default. `[defaults] backend = "flux"` still loads through v0.8.x **and v0.9.x** with a DEPRECATED warn that auto-maps to `[defaults] model = "flux-kontext"`. Rename in your config to clear the warn; the legacy key is targeted for hard-removal in v0.10.0 (not v0.9.0 — earlier README claimed v0.9.0 drop, but the bridge survives the v0.9 arc for continuity).
+> **v0.8.0 migration:** `[defaults] style = ...` was REMOVED (soft-deprecated since v0.7.13, hard-removed at v0.8.0) — pass `--style NAME` per-invocation instead, or set `[enhance] default = true` to keep enhanced prompts as your default. `[defaults] backend = "flux"` still loads through v0.8.x **and v0.9.x** with a DEPRECATED warn that auto-maps to `[defaults] model = "flux-kontext"`. Rename in your config to clear the warn; the legacy key is targeted for hard-removal in a future release (it survives v0.9.x **and v0.10.0** too).
 
 For `output_dir` specifically the resolution is **`--output-dir` CLI flag > `$IMGEN_OUTPUT_DIR` env > config > default**.
 
