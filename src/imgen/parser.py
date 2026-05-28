@@ -1598,6 +1598,7 @@ from .hf_cache import hf_cache_dir_for
 def print_loras(
     hf_cache: Path | None = None,
     mflux_loras_cache: Path | None = None,
+    loras_dir: Path | None = None,
 ) -> int:
     """Handler for the top-level --list-loras flag (v0.6).
 
@@ -1621,6 +1622,8 @@ def print_loras(
     tests (point at tmp directories). Production passes ``None`` for
     both → :data:`HF_CACHE` + :data:`MFLUX_LORAS_CACHE` from paths.py.
     """
+    from .lora_meta import scan_trained_loras
+
     if hf_cache is None:
         hf_cache = HF_CACHE
     if mflux_loras_cache is None:
@@ -1667,6 +1670,37 @@ def print_loras(
     if text_only:
         print(f"  {C.BOLD}Text-only styles (no LoRA):{C.END} "
               f"{C.DIM}{', '.join(text_only)}{C.END}")
+
+    # Trained LoRAs (imgen train output) — separate from the style
+    # presets above. These live as ``~/.imgen/loras/<name>.safetensors``
+    # and are NOT surfaced by the style walk, so without this section a
+    # user who ran ``imgen train`` couldn't see their own LoRA or learn
+    # which --model it loads on.
+    if loras_dir is None:
+        from .paths import STATE_DIR
+        loras_dir = STATE_DIR / "loras"
+    trained = scan_trained_loras(loras_dir)
+    if trained:
+        from .models import models_for_compat_groups
+        print()
+        print(f"  {C.BOLD}Trained LoRAs (imgen train):{C.END}")
+        for name, trigger, group in trained:
+            # Single source of the compat→model mapping (shared with the
+            # run-time incompat warn) — don't re-implement it inline.
+            models = models_for_compat_groups((group,)) if group else []
+            if models:
+                hint = (
+                    f"use: --lora {name} --model "
+                    f"{' or --model '.join(models)}"
+                )
+            elif group:
+                hint = f"compat group {group!r} — no matching built-in --model"
+            else:
+                hint = "missing/corrupt .meta.json — trigger/compat unknown"
+            trig = f' trigger="{trigger}"' if trigger else ""
+            print(f"    {C.BOLD}{name:14}{C.END} "
+                  f"{C.DIM}[{group or '?'}]{trig}  {hint}{C.END}")
+
     print()
     print(f"  {C.DIM}Override per-invocation with "
           f"--lora REF[:WEIGHT] (repeatable) or --no-lora.{C.END}")

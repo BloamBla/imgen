@@ -49,6 +49,7 @@ __all__ = [
     "_VALID_TRAIN_RESOLUTIONS",
     "get_model",
     "list_models",
+    "models_for_compat_groups",
 ]
 
 
@@ -951,3 +952,18 @@ def list_models() -> list[str]:
     facade (see backends.py ``list_backends``). Commit 6+ Engine layer
     wires user-TOML-derived Models into this list."""
     return sorted(BUILTIN_MODELS.keys())
+
+
+def models_for_compat_groups(groups: tuple[str, ...]) -> list[str]:
+    """Built-in Model names whose ``lora_compat_group`` is in ``groups``.
+
+    Turns a LoRA's ``compatible_with`` tuple into an actionable
+    ``--model X`` suggestion when the LoRA was filtered out as
+    incompatible with the active model (see build_iterations' warn).
+    Sorted; empty when no shipped Model matches the group(s) — e.g. a
+    LoRA tagged with a compat group no built-in Model uses."""
+    wanted = set(groups)
+    return sorted(
+        name for name, m in BUILTIN_MODELS.items()
+        if m.lora_compat_group and m.lora_compat_group in wanted
+    )

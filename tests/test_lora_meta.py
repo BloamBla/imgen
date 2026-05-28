@@ -30,7 +30,7 @@ from pathlib import Path
 
 import pytest
 
-from imgen.lora_meta import read_lora_meta
+from imgen.lora_meta import read_lora_meta, scan_trained_loras
 
 
 def _write_meta(loras_dir: Path, name: str, **overrides) -> Path:
@@ -265,3 +265,69 @@ class TestTriggerPrependEndToEnd:
         r2 = _lora_ref_arg("alina2")
         out = prepend_trigger_words("in a park", (r1, r2))
         assert out.lower().count("al1na woman") == 1
+
+
+# ── scan_trained_loras (P1: --list-loras discovery of trained LoRAs) ─
+
+
+class TestScanTrainedLoras:
+    def test_missing_dir_returns_empty(self, tmp_path):
+        assert scan_trained_loras(tmp_path / "does-not-exist") == []
+
+    def test_empty_dir_returns_empty(self, loras_dir):
+        assert scan_trained_loras(loras_dir) == []
+
+    def test_lists_trained_lora_with_trigger_and_group(self, loras_dir):
+        _write_meta(loras_dir, "stas", trigger="stas man",
+                    lora_compat_group="flux2-klein-4b")
+        assert scan_trained_loras(loras_dir) == [
+            ("stas", "stas man", "flux2-klein-4b"),
+        ]
+
+    def test_bare_safetensors_without_meta_still_listed(self, loras_dir):
+        """A .safetensors with no/corrupt sidecar must still appear (so
+        the user sees the file) — trigger + group degrade to None."""
+        (loras_dir / "orphan.safetensors").write_bytes(b"weights")
+        assert scan_trained_loras(loras_dir) == [("orphan", None, None)]
+
+    def test_sorted_by_name(self, loras_dir):
+        _write_meta(loras_dir, "zeta", trigger="z man")
+        _write_meta(loras_dir, "alpha", trigger="a man")
+        names = [n for n, _, _ in scan_trained_loras(loras_dir)]
+        assert names == ["alpha", "zeta"]
+
+    def test_ignores_non_safetensors(self, loras_dir):
+        """meta.json sidecars and stray files are not LoRA entries."""
+        _write_meta(loras_dir, "stas", trigger="stas man")
+        (loras_dir / "notes.txt").write_text("hi")
+        names = [n for n, _, _ in scan_trained_loras(loras_dir)]
+        assert names == ["stas"]
+
+    def test_control_byte_filename_skipped(self, loras_dir):
+        """security: a filename with terminal-control bytes prints raw to
+        stdout via --list-loras — it must be filtered from discovery,
+        consistent with the trigger sanitization."""
+        (loras_dir / "evil\x1b[2J.safetensors").write_bytes(b"weights")
+        _write_meta(loras_dir, "stas", trigger="stas man")
+        names = [n for n, _, _ in scan_trained_loras(loras_dir)]
+        assert names == ["stas"]  # the control-byte file is dropped
+
+
+class TestCompatGroupValidation:
+    """security LOW: lora_compat_group also reaches stdout, so it's
+    length-capped + control-byte-filtered on read like the trigger."""
+
+    def test_oversized_compat_group_dropped(self, loras_dir):
+        st = _write_meta(loras_dir, "x", lora_compat_group="g" * 100)
+        _, compat = read_lora_meta(st)
+        assert compat is None
+
+    def test_control_byte_compat_group_dropped(self, loras_dir):
+        st = _write_meta(loras_dir, "x", lora_compat_group="flux\x07evil")
+        _, compat = read_lora_meta(st)
+        assert compat is None
+
+    def test_valid_compat_group_kept(self, loras_dir):
+        st = _write_meta(loras_dir, "x", lora_compat_group="flux2-klein-4b")
+        _, compat = read_lora_meta(st)
+        assert compat == "flux2-klein-4b"

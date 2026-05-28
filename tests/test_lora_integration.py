@@ -164,6 +164,43 @@ class TestPrependTriggerWords:
         # prepended.
         assert out == "cinematic, Pixar 3D portrait"
 
+
+class TestTriggersToPrepend:
+    """P3: the helper that powers both the prepend AND the 'applied
+    trigger X' runtime feedback — same word-boundary + dedup logic, no
+    drift between what's added and what's announced."""
+
+    def test_returns_missing_triggers_only(self):
+        from imgen.build_iteration import triggers_to_prepend
+        loras = (
+            LoraRef(ref="a/1", trigger="Pixar 3D"),
+            LoraRef(ref="b/2", trigger="cinematic"),
+        )
+        assert triggers_to_prepend("Pixar 3D portrait", loras) == ["cinematic"]
+
+    def test_empty_when_all_present(self):
+        from imgen.build_iteration import triggers_to_prepend
+        loras = (LoraRef(ref="x/y", trigger="stas man"),)
+        assert triggers_to_prepend("a photo of stas man driving", loras) == []
+
+    def test_dedups_shared_trigger(self):
+        from imgen.build_iteration import triggers_to_prepend
+        loras = (
+            LoraRef(ref="a/1", trigger="stas man"),
+            LoraRef(ref="b/2", trigger="stas man"),
+        )
+        assert triggers_to_prepend("on a beach", loras) == ["stas man"]
+
+    def test_consistent_with_prepend(self):
+        """The helper's output exactly drives prepend_trigger_words."""
+        from imgen.build_iteration import (
+            prepend_trigger_words, triggers_to_prepend,
+        )
+        loras = (LoraRef(ref="x/y", trigger="stas man"),)
+        needed = triggers_to_prepend("a knight", loras)
+        assert needed == ["stas man"]
+        assert prepend_trigger_words("a knight", loras) == "stas man, a knight"
+
     def test_duplicate_triggers_across_loras_deduped(self):
         """Two LoRAs sharing the same trigger word → prepend once, not
         twice. Defensive against author of a style TOML giving every
@@ -421,6 +458,104 @@ class TestBuildIterationsLoRA:
         captured = capsys.readouterr()
         message = captured.out + captured.err
         assert "flux2-only/x" in message
+
+    def test_applied_trigger_announced_once(self, tmp_path, capsys):
+        """P3: when a compatible LoRA's trigger isn't already in the
+        prompt, the run prints a one-line 'Applied LoRA trigger X' note
+        so the auto-prepend isn't opaque (the user's confusion)."""
+        styles = {
+            "anime": Style(
+                prompt="a portrait",  # trigger NOT present
+                loras=(LoraRef(
+                    ref="my/style", weight=0.8,
+                    compatible_with=("flux-1",), trigger="Ghibli style",
+                ),),
+            ),
+        }
+        _build(fake_styles=styles, tmp_path=tmp_path)
+        message = "".join(capsys.readouterr())
+        assert "Applied LoRA trigger" in message
+        assert "Ghibli style" in message
+
+    def test_no_trigger_note_when_already_in_prompt(self, tmp_path, capsys):
+        """If the trigger is already in the prompt, nothing is prepended
+        → no announcement."""
+        styles = {
+            "anime": Style(
+                prompt="a Ghibli style portrait",  # trigger present
+                loras=(LoraRef(
+                    ref="my/style", weight=0.8,
+                    compatible_with=("flux-1",), trigger="Ghibli style",
+                ),),
+            ),
+        }
+        _build(fake_styles=styles, tmp_path=tmp_path)
+        message = "".join(capsys.readouterr())
+        assert "Applied LoRA trigger" not in message
+
+    def test_incompatible_lora_warn_suggests_compatible_model(
+        self, tmp_path, capsys,
+    ):
+        """P2: when the dropped LoRA's compat group maps to a built-in
+        model, the warn names the exact --model to re-run with — so the
+        user isn't left guessing why --lora did nothing. (The trap: a
+        klein-4b LoRA on the flux-kontext default silently skips.)"""
+        styles = {
+            "anime": Style(
+                prompt="anime portrait",
+                loras=(LoraRef(
+                    ref="my/stas",
+                    weight=0.8,
+                    compatible_with=("flux2-klein-4b",),
+                ),),
+            ),
+        }
+        _build(fake_styles=styles, tmp_path=tmp_path)
+        message = "".join(capsys.readouterr())
+        assert "my/stas" in message
+        assert "NOT applied" in message
+        assert "--model flux2-klein-4b" in message
+
+    def test_draw_path_incompat_lora_warns(self, tmp_path, capsys):
+        """P2 regression — the user's exact trap: a klein-4b --lora on the
+        t2i/draw path (default flux model) was filtered SILENTLY pre-fix.
+        Now build_draw_iterations surfaces the actionable warn."""
+        from imgen.build_iteration import build_draw_iterations
+        incompat = LoraRef(
+            ref="my/stas", weight=0.8,
+            compatible_with=("flux2-klein-4b",), trigger="stas man",
+        )
+        args = _build_args(model="flux", lora=[incompat])
+        build_draw_iterations(
+            args=args, prompt="a knight", merged_defaults=DEFAULTS,
+            be=_flux_backend(), width=1024, height=1024,
+            explicit_output=None, run_dir=tmp_path, base_seed=42,
+            num_iterations=3,  # ladder → warn must still fire ONCE
+        )
+        message = "".join(capsys.readouterr())
+        assert message.count("my/stas") == 1, "warn must dedup across ladder"
+        assert "--model flux2-klein-4b" in message
+
+    def test_draw_path_compatible_lora_announces_trigger(
+        self, tmp_path, capsys,
+    ):
+        """P3 regression on the draw path: a compatible LoRA whose trigger
+        isn't in the prompt announces once across the -n ladder."""
+        from imgen.build_iteration import build_draw_iterations
+        compat = LoraRef(
+            ref="my/style", weight=0.8,
+            compatible_with=("flux-1",), trigger="Ghibli style",
+        )
+        args = _build_args(model="flux", lora=[compat])
+        build_draw_iterations(
+            args=args, prompt="a portrait", merged_defaults=DEFAULTS,
+            be=_flux_backend(), width=1024, height=1024,
+            explicit_output=None, run_dir=tmp_path, base_seed=42,
+            num_iterations=3,
+        )
+        message = "".join(capsys.readouterr())
+        assert message.count("Applied LoRA trigger") == 1
+        assert "Ghibli style" in message
 
     def test_incompatible_lora_warn_deduped_within_call(self, tmp_path, capsys):
         """v0.6.x backlog python IMP-3 regression: an incompatible LoRA

@@ -471,6 +471,73 @@ def test_print_loras_marks_local_path_correctly(tmp_path, capsys, monkeypatch):
     assert "(missing)" in missing_lines[0]
 
 
+def test_print_loras_lists_trained_loras_with_model_hint(tmp_path, capsys):
+    """P1: `imgen train` output (~/.imgen/loras/<name>.safetensors) is
+    surfaced in a dedicated section with its trigger and an actionable
+    --model hint mapped from the compat group. Without this, a user who
+    trained a LoRA couldn't discover it via --list-loras."""
+    import json
+    from imgen.parser import print_loras
+    loras_dir = tmp_path / "loras"
+    loras_dir.mkdir()
+    (loras_dir / "stas.safetensors").write_bytes(b"weights")
+    (loras_dir / "stas.meta.json").write_text(json.dumps({
+        "version": 1, "lora_name": "stas", "trigger": "stas man",
+        "lora_compat_group": "flux2-klein-4b", "base_model": "flux2-klein-4b",
+    }), encoding="utf-8")
+    rc = print_loras(
+        hf_cache=tmp_path, mflux_loras_cache=tmp_path / "empty",
+        loras_dir=loras_dir,
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Trained LoRAs" in out
+    stas_lines = [ln for ln in out.splitlines() if "stas" in ln and "trigger" in ln]
+    assert stas_lines, "expected a trained-LoRA line for stas"
+    line = stas_lines[0]
+    assert 'trigger="stas man"' in line
+    # Actionable: tells the user exactly how to invoke it.
+    assert "--lora stas" in line
+    assert "--model flux2-klein-4b" in line
+
+
+def test_print_loras_trained_lora_no_matching_model(tmp_path, capsys):
+    """A trained LoRA whose compat group matches no built-in model (e.g.
+    a user-defined model's group) shows an honest 'no matching built-in
+    --model' hint rather than a misleading --model suggestion."""
+    import json
+    from imgen.parser import print_loras
+    loras_dir = tmp_path / "loras"
+    loras_dir.mkdir()
+    (loras_dir / "custom.safetensors").write_bytes(b"weights")
+    (loras_dir / "custom.meta.json").write_text(json.dumps({
+        "version": 1, "lora_name": "custom", "trigger": "cust tok",
+        "lora_compat_group": "my-private-group",
+    }), encoding="utf-8")
+    print_loras(
+        hf_cache=tmp_path, mflux_loras_cache=tmp_path / "empty",
+        loras_dir=loras_dir,
+    )
+    out = capsys.readouterr().out
+    custom_lines = [ln for ln in out.splitlines() if "custom" in ln and "trigger" in ln]
+    assert custom_lines
+    assert "no matching built-in --model" in custom_lines[0]
+    # Must NOT print a bogus "--model my-private-group" suggestion.
+    assert "--model my-private-group" not in custom_lines[0]
+
+
+def test_print_loras_omits_trained_section_when_none(tmp_path, capsys):
+    """No trained LoRAs (empty/missing dir) → no 'Trained LoRAs' header,
+    so the section never shows an empty heading."""
+    from imgen.parser import print_loras
+    print_loras(
+        hf_cache=tmp_path, mflux_loras_cache=tmp_path / "empty",
+        loras_dir=tmp_path / "no-loras-here",
+    )
+    out = capsys.readouterr().out
+    assert "Trained LoRAs" not in out
+
+
 def test_print_loras_help_footer_mentions_lora_flag_and_styles_d(tmp_path, capsys):
     """Tail of output points users at the --lora flag and styles.d/
     extension surface — discoverability for both ad-hoc and persistent

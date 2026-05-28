@@ -28,7 +28,7 @@ from pathlib import Path
 
 from ._safe import has_control_bytes
 
-__all__ = ["read_lora_meta"]
+__all__ = ["read_lora_meta", "scan_trained_loras"]
 
 # Security C-3: 16 KB cap. The sidecar imgen writes is ~600 bytes; a
 # file an order of magnitude larger is a tampering / DoS signal.
@@ -38,6 +38,12 @@ _META_MAX_BYTES: int = 16 * 1024
 # as the _trigger_token_arg validator at train time).
 _TRIGGER_MIN_LEN: int = 1
 _TRIGGER_MAX_LEN: int = 64
+
+# v0.10.2 security LOW: cap the compat-group string too — it also reaches
+# stdout (--list-loras "[<group>]" column). The sidecar is hand-editable,
+# so bound it like the trigger to keep a giant / control-byte-bearing
+# value from scroll-bombing or injecting into the terminal.
+_COMPAT_GROUP_MAX_LEN: int = 64
 
 
 def read_lora_meta(
@@ -86,6 +92,46 @@ def read_lora_meta(
     return (_extract_trigger(meta), _extract_compat_group(meta))
 
 
+def scan_trained_loras(
+    loras_dir: Path,
+) -> list[tuple[str, str | None, str | None]]:
+    """List the trained-LoRA sidecars under ``loras_dir`` for the
+    ``--list-loras`` / ``imgen doctor`` discovery surface.
+
+    Scans for ``*.safetensors`` (the ``imgen train`` output) and pairs
+    each with its sidecar via :func:`read_lora_meta`. Returns
+    ``(name, trigger, compat_group)`` triples sorted by name. A bare
+    ``.safetensors`` with a missing / corrupt sidecar still appears
+    (``trigger`` + ``compat_group`` degrade to ``None``) so the user
+    always sees the file. A missing / unreadable directory yields ``[]``.
+
+    Best-effort, like :func:`read_lora_meta`: never raises on a bad
+    file — discovery is a convenience, not a correctness path.
+    """
+    # Missing dir → []. (``glob`` would also return empty, but an
+    # explicit check documents the intent and exercises the right path.)
+    if not loras_dir.is_dir():
+        return []
+    try:
+        entries = sorted(loras_dir.glob("*.safetensors"))
+    except OSError:
+        # Unreadable directory (e.g. permissions) — discovery degrades
+        # to empty rather than crashing an --list-loras / doctor run.
+        return []
+    out: list[tuple[str, str | None, str | None]] = []
+    for path in entries:
+        stem = path.stem
+        # security: the stem prints raw to stdout (--list-loras) — filter
+        # terminal-control bytes the same way ``_extract_trigger`` filters
+        # the trigger, so a maliciously-named file can't inject an escape
+        # sequence. A bad name is skipped from discovery entirely.
+        if has_control_bytes(stem):
+            continue
+        trigger, compat = read_lora_meta(path)
+        out.append((stem, trigger, compat))
+    return out
+
+
 def _extract_trigger(meta: dict) -> str | None:
     """python H-8 + control-byte + Unicode Cf/Mn re-validation on READ.
 
@@ -110,6 +156,11 @@ def _extract_trigger(meta: dict) -> str | None:
 
 def _extract_compat_group(meta: dict) -> str | None:
     compat = meta.get("lora_compat_group")
-    if not isinstance(compat, str) or not compat:
+    if not isinstance(compat, str):
+        return None
+    compat = compat.strip()
+    if not (1 <= len(compat) <= _COMPAT_GROUP_MAX_LEN):
+        return None
+    if has_control_bytes(compat):
         return None
     return compat

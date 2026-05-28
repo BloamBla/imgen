@@ -238,7 +238,7 @@ imgen draw --model flux2-klein-4b --lora alina "in a samurai outfit"           #
 imgen doctor                                   # env + RAM forecast + cached models + backends + enhancer
 imgen --list-styles                            # show presets
 imgen --list-models                            # show built-in + user models from ~/.imgen/models.d/ + ~/.imgen/backends.d/
-imgen --list-loras                             # show LoRAs each style ships with + HF cache state
+imgen --list-loras                             # styles' LoRAs + HF cache state + your trained LoRAs
 imgen --dry-run <photo> -s anime               # show mflux command, don't run
 imgen -v   /   imgen --version                 # print version
 
@@ -471,7 +471,7 @@ Six built-in styles ship with curated LoRAs after v0.6.3 (research round 2 on Ko
 
 **Why is the table this short?** Most HuggingFace "Flux LoRA" weights were trained on **FLUX.1-dev** (the base text-to-image model). `imgen`'s default backend is **FLUX.1-Kontext-dev** — a different model in the same family, with a modified attention layer to accept image conditioning. Many FLUX.1-dev LoRAs *load* on Kontext (all tensor keys match) but **crash at the first denoise step** with an attention shape mismatch, because the rank-16 weight deltas don't fit Kontext's attention shape. v0.6.0 originally shipped LoRA mappings for `anime` (Flux-Animeo) and `pixar` (Canopus-Pixar-3D-FluxDev); v0.6.1 reverted both to text-only after they crashed in real runs. v0.6.3 went hunting for actual Kontext-trained replacements; the ones above are what survived a Phase-1 crash-screen against a real photo. **Even HF "Kontext"-tagged repos are not always Kontext-compat** — `prithivMLmods/Monochrome-Pencil` (328 dl, prominent) crashed with the same shape signature as the v0.6.0 controls. Per-LoRA Kontext compatibility must be verified by actual inference — name, tag, and key-match are not enough.
 
-`imgen --list-loras` shows the active mapping plus which LoRAs are already cached locally vs. about to download:
+`imgen --list-loras` shows the active style mapping plus which LoRAs are already cached locally vs. about to download — **and any LoRAs you've trained with `imgen train`**, with the trigger word and the exact `--model` to load each on:
 
 ```
 $ imgen --list-loras
@@ -485,7 +485,12 @@ Available LoRAs
     pixar_alt      Kontext-Style/3D_Chibi_lora                             @0.80  [flux-1] trigger="3D Chibi"             (cached)
     vangogh        Kontext-Style/Oil_Painting_lora                         @0.80  [flux-1] trigger="Oil Painting"         (cached)
   Text-only styles (no LoRA): simpsons
+
+  Trained LoRAs (imgen train):
+    stas           [flux2-klein-4b] trigger="stas man"  use: --lora stas --model flux2-klein-4b
 ```
+
+When you pass `--lora <name>` on a model it isn't compatible with (e.g. a `flux2-klein-4b` LoRA on the default Kontext model), `imgen` prints a warning naming the `--model` to re-run with — the LoRA is **not** silently applied. When a LoRA's trigger word isn't already in your prompt, `imgen` auto-prepends it and prints `Applied LoRA trigger '…'` so you can see it happen.
 
 ### A/B against the base model
 

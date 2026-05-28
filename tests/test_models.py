@@ -538,3 +538,33 @@ class TestGenParams:
         )
         with pytest.raises(FrozenInstanceError):
             p.prompt = "y"  # type: ignore[misc]
+
+
+class TestModelsForCompatGroups:
+    """P2: maps a LoRA's compat group(s) to the --model(s) that load it,
+    powering the actionable incompat warn."""
+
+    def test_klein_4b_group_maps_to_klein_4b_model(self):
+        from imgen.models import models_for_compat_groups
+        assert models_for_compat_groups(("flux2-klein-4b",)) == [
+            "flux2-klein-4b",
+        ]
+
+    def test_unknown_group_maps_to_empty(self):
+        from imgen.models import models_for_compat_groups
+        assert models_for_compat_groups(("flux-2",)) == []
+
+    def test_empty_groups_maps_to_empty(self):
+        from imgen.models import models_for_compat_groups
+        assert models_for_compat_groups(()) == []
+
+    def test_result_is_sorted(self):
+        from imgen.models import BUILTIN_MODELS, models_for_compat_groups
+        # Every built-in model with a non-empty compat group should be
+        # reachable from its own group, and the result is sorted.
+        groups = tuple(
+            m.lora_compat_group for m in BUILTIN_MODELS.values()
+            if m.lora_compat_group
+        )
+        out = models_for_compat_groups(groups)
+        assert out == sorted(out)

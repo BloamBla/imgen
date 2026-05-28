@@ -47,7 +47,7 @@ from pathlib import Path
 
 from . import styles as _styles
 from .backends import Backend, filter_compatible_loras, get_backend
-from .colors import die, warn
+from .colors import die, info, warn
 from .defaults import PREVIEW_OVERRIDES
 from .engine_dispatch import (
     _genparams_from_iteration_inputs,
@@ -74,6 +74,7 @@ __all__ = [
     "build_refine_iteration",
     "check_prompt_style_compat",
     "prepend_trigger_words",
+    "triggers_to_prepend",
     "prompt_slug",
     "resolve_effective_loras",
 ]
@@ -190,6 +191,25 @@ def prepend_trigger_words(
 
     Pure: no I/O. Returns the (possibly-prepended) prompt string.
     """
+    needed = triggers_to_prepend(prompt, loras)
+    if not needed:
+        return prompt
+    return ", ".join(needed) + ", " + prompt
+
+
+def triggers_to_prepend(
+    prompt: str,
+    loras: tuple[LoraRef, ...],
+) -> list[str]:
+    """The compatible-LoRA triggers NOT already present in ``prompt``
+    (i.e. the ones :func:`prepend_trigger_words` would prepend), in
+    order, de-duplicated across LoRAs sharing a trigger.
+
+    Extracted from ``prepend_trigger_words`` so the runtime can surface
+    "applied LoRA trigger X" feedback (P3) using the SAME word-boundary
+    + dedup logic that decides the prepend — no drift between what gets
+    added and what gets announced. Pure: no I/O.
+    """
     needed: list[str] = []
     seen: set[str] = set()
     for lora in loras:
@@ -213,9 +233,7 @@ def prepend_trigger_words(
             continue  # de-dup across multiple LoRAs sharing a trigger
         seen.add(trig_lower)
         needed.append(trig)
-    if not needed:
-        return prompt
-    return ", ".join(needed) + ", " + prompt
+    return needed
 
 
 # ── Pre-build invariant check ──────────────────────────────────────────
@@ -492,6 +510,36 @@ def _resolve_iteration_prompt(
     return prompt
 
 
+def _format_incompat_warn(
+    group: str,
+    ref: str,
+    compat: tuple[str, ...],
+) -> str:
+    """Build the user-facing message for a ``--lora`` dropped as
+    incompatible with the active model.
+
+    P2: names the ``--model`` that WOULD load the LoRA (mapped from its
+    compat group) so a silently-skipped LoRA always tells the user how
+    to fix it — the trap being a klein-4b LoRA passed on the
+    flux-kontext / flux-dev default, filtered out before a long run.
+    Falls back to naming the group when no built-in model matches.
+    """
+    from .models import models_for_compat_groups
+
+    suggested = models_for_compat_groups(compat)
+    if suggested:
+        return (
+            f"LoRA {ref!r} was NOT applied — incompatible with the active "
+            f"model. Re-run with --model {' or --model '.join(suggested)} "
+            f"to use it (its compat group: {list(compat)})."
+        )
+    return (
+        f"LoRA {ref!r} was NOT applied — incompatible with the active "
+        f"model (compat group {group!r}); its compat group {list(compat)} "
+        f"matches no built-in --model."
+    )
+
+
 def _resolve_iteration_loras(
     *,
     preset: Style,
@@ -608,6 +656,7 @@ def _assemble_iteration_no_style(
     negative: str = "",
     num_frames: int = 1,
     fps: int = 24,
+    lora_feedback_seen: set | None = None,
 ) -> Iteration:
     """Shared core for `build_draw_iterations` + `build_refine_iteration`
     (v0.7.8 refactor — closes python NIT #5 + architect NIT #F from
@@ -656,12 +705,31 @@ def _assemble_iteration_no_style(
     lora_resolution = _resolve_iteration_loras(
         preset=preset, args=args, be=be, prompt=prompt,
     )
-    # Note: ``lora_resolution.incompat_loras`` is intentionally
-    # dropped on the floor here — naked callers have no cross-style
-    # accumulator like :func:`build_iterations`' per-style loop. A
-    # user --lora pointing at a backend-incompat LoRA gets silently
-    # filtered (warn is on the build_iterations path only). Matches
-    # pre-v0.7.8 behaviour of both draw + refine.
+    # P2 + P3: surface LoRA feedback on the t2i (draw) + refine paths.
+    # Pre-P2 the incompat-skip was dropped silently here — so
+    # ``imgen draw --lora stas`` on the flux-dev default filtered the
+    # klein-4b LoRA with NO feedback, the exact trap users hit. When the
+    # caller passes a shared ``lora_feedback_seen`` set (build_draw_
+    # iterations does, across its N-iteration ladder), each message fires
+    # once. Namespaced keys keep incompat warns (P2) and applied-trigger
+    # notes (P3) deduped independently. Callers that pass None (e.g.
+    # video) keep the old silent behaviour.
+    if lora_feedback_seen is not None:
+        for lora in lora_resolution.incompat_loras:
+            key = ("incompat", be.lora_compat_group, lora.ref)
+            if key in lora_feedback_seen:
+                continue
+            lora_feedback_seen.add(key)
+            warn(_format_incompat_warn(
+                be.lora_compat_group, lora.ref,
+                tuple(sorted(lora.compatible_with)),
+            ))
+        for trig in triggers_to_prepend(prompt, lora_resolution.compatible_loras):
+            key = ("trigger", trig)
+            if key in lora_feedback_seen:
+                continue
+            lora_feedback_seen.add(key)
+            info(f"Applied LoRA trigger {trig!r} to the prompt.")
     #
     # v0.8.4 M-NEW-D: build_mflux_cmd no longer called at iteration-
     # build time — MfluxEngine.build_cmd is invoked inside
@@ -757,6 +825,10 @@ def build_draw_iterations(
 
     iterations: list[Iteration] = []
     slug = prompt_slug(prompt)
+    # P2 + P3: one shared set across the N-iteration ladder so an
+    # incompatible --lora warns / an applied trigger announces ONCE per
+    # run, not once per -n iteration.
+    lora_feedback_seen: set = set()
     for idx in range(1, num_iterations + 1):
         seed = (base_seed + idx - 1) % (2**32)
         if explicit_output is not None:
@@ -790,6 +862,7 @@ def build_draw_iterations(
             seed=seed,
             style_name="draw",
             negative=negative,
+            lora_feedback_seen=lora_feedback_seen,
         ))
     return iterations
 
@@ -961,6 +1034,11 @@ def build_video_iteration(
         negative=negative,
         num_frames=num_frames,
         fps=fps,
+        # P2 (architect MEDIUM): surface the incompat-skip on video too.
+        # ltx-video's compat group means any flux-*/qwen --lora can NEVER
+        # match → a silent no-op was the LIKELY case, and video runs are
+        # the most expensive to waste. Single shot, so a fresh set.
+        lora_feedback_seen=set(),
     )
     # v0.9.3 C5 — flip Model's VideoConfig.pipeline_class to the i2v
     # variant when an image is set. ``dataclasses.replace`` returns a
@@ -1085,6 +1163,9 @@ def build_refine_iteration(
         height=height,
         seed=seed,
         style_name="refine",
+        # P2 + P3: refine takes --lora too; surface incompat-skip + the
+        # applied trigger (single iteration, so a fresh set is fine).
+        lora_feedback_seen=set(),
     )
 
 
@@ -1134,6 +1215,10 @@ def build_bare_i2i_iteration(
         height=height,
         seed=seed,
         style_name=style_name,
+        # P2 + P3: this is the bare `imgen <photo> --custom-prompt --lora`
+        # path — the exact trap (a klein-4b --lora silently skipped on the
+        # flux-kontext default). Surface incompat warn + trigger note.
+        lora_feedback_seen=set(),
     )
 
 
@@ -1182,6 +1267,9 @@ def build_iterations(
     iterations: list[Iteration] = []
     incompat_keys: set = set()
     incompat_details: dict = {}
+    # P3: applied-trigger notes, deduped across the M-style loop so a
+    # shared trigger announces once per call.
+    announced_triggers: set = set()
     # v0.3.5 augmentation key: explicit ``--style`` + ``--custom-prompt``
     # combines preset prompt + user text; bare ``--custom-prompt``
     # without an explicit style replaces the default style's prompt.
@@ -1238,6 +1326,14 @@ def build_iterations(
         lora_resolution = _resolve_iteration_loras(
             preset=preset, args=args, be=be, prompt=prompt,
         )
+        # P3: announce auto-prepended triggers (once per call). Computed
+        # against the pre-prepend prompt, before the overwrite below.
+        for trig in triggers_to_prepend(
+            prompt, lora_resolution.compatible_loras,
+        ):
+            if trig not in announced_triggers:
+                announced_triggers.add(trig)
+                info(f"Applied LoRA trigger {trig!r} to the prompt.")
         # v0.6: overwrite ``prompt`` with the trigger-prepended version
         # so the Iteration's recorded prompt matches the argv emission
         # (and dry-run / history.jsonl both display the trigger).
@@ -1305,10 +1401,7 @@ def build_iterations(
         for key in sorted(new_keys):
             group, ref = key
             compat = incompat_details.get(key, ())
-            warn(
-                f"LoRA {ref!r} (compat: {list(compat)}) is not compatible "
-                f"with backend {group!r} — skipped"
-            )
+            warn(_format_incompat_warn(group, ref, tuple(compat)))
             already_warned.add(key)
 
     return iterations
