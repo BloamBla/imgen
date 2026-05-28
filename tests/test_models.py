@@ -398,19 +398,17 @@ class TestFlux2Klein4bRow:
         )
 
     def test_klein_4b_training_peak_ram_calibrated(self):
-        """Per colleague's M5 Pro 48 GB recipe: klein-4b training peaks
-        at 26-30 GB. v0.10.0 ships with training_peak_ram_gb=28.0
-        midpoint. Pre-tag smoke on M2 Pro 32 GB refines this (§M.1
-        open S-question)."""
+        """§M.1 smoke (M2 Pro 32 GB, 2026-05-28) measured klein-4b
+        training at ~21 GB resident + ~3 GB swap (q4/512/rank16/low_ram);
+        v0.10.0 ships training_peak_ram_gb=22.0. Must stay >0 (sentinel
+        rule) and well under 32 so the preflight pings green on the
+        primary target without forcing --force unnecessarily."""
         from imgen.models import BUILTIN_MODELS
         m = BUILTIN_MODELS["flux2-klein-4b"]
-        # Allow some range — exact value may be adjusted by smoke.
-        # Hard floor: must be > 0 (sentinel rule) and < total system
-        # RAM (sanity); soft target: in colleague's observed 26-30 range.
         assert m.training.training_peak_ram_gb > 0
-        assert m.training.training_peak_ram_gb < 64.0, (
-            "training_peak_ram_gb of 64+ GB would mean klein-4b doesn't "
-            "fit M5 Pro 48 GB — contradicts colleague's evidence"
+        assert m.training.training_peak_ram_gb < 28.0, (
+            "training_peak_ram_gb should reflect the §M.1-measured ~21 GB "
+            "peak, not the pre-smoke 28 GB guess"
         )
 
     def test_klein_4b_no_enhance_system_prompt_at_v0_10_0(self):

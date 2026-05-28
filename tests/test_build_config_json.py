@@ -308,8 +308,9 @@ class TestBuildConfigJsonLoraLayersShape:
     def test_blocks_as_dict_when_present(self):
         config = build_config_json(_klein_4b_params(), num_entries=10)
         first = config["lora_layers"]["targets"][0]
-        # All klein-4b targets have blocks set.
-        assert first["blocks"] == {"start": 0, "end": 38}
+        # First target = transformer_blocks (double-stream); klein-4b has
+        # num_layers=5 so the range is (0, 5), end exclusive.
+        assert first["blocks"] == {"start": 0, "end": 5}
 
     def test_blocks_as_none_when_target_has_no_blocks(self):
         """A target without ``{block}`` placeholder + ``blocks=None``

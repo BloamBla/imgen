@@ -529,6 +529,36 @@ def _append_train_history(
     safe_append_history(entry)
 
 
+def _existing_lora_summary(meta_path: Path) -> str:
+    """Best-effort one-line ``" (trigger 'x', trained Y)"`` suffix for the
+    name-collision refusal message, read from an existing LoRA's
+    ``.meta.json``.
+
+    Display-only on an error path — NEVER raises. A missing / corrupt /
+    oversized / control-byte-bearing meta degrades to ``""`` (the bare
+    "already exists" message). Same 16 KB read-cap + control-byte filter
+    posture as :func:`imgen.lora_meta.read_lora_meta`.
+    """
+    try:
+        raw = meta_path.read_bytes()
+        if len(raw) > 16 * 1024:
+            return ""
+        meta = json.loads(raw.decode("utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return ""
+    if not isinstance(meta, dict):
+        return ""
+
+    bits: list[str] = []
+    trigger = meta.get("trigger")
+    if isinstance(trigger, str) and trigger.strip() and not has_control_bytes(trigger):
+        bits.append(f"trigger {trigger.strip()!r}")
+    trained_at = meta.get("trained_at")
+    if isinstance(trained_at, str) and trained_at.strip() and not has_control_bytes(trained_at):
+        bits.append(f"trained {trained_at.strip()}")
+    return f" ({', '.join(bits)})" if bits else ""
+
+
 def cmd_train(args) -> int:
     """v0.10.0 — ``imgen train`` subcommand handler.
 
@@ -602,7 +632,8 @@ def cmd_train(args) -> int:
     meta_path = loras_dir / f"{args.name}.meta.json"
     if output_path.exists() and not args.overwrite:
         die(
-            f"~/.imgen/loras/{args.name}.safetensors already exists. "
+            f"~/.imgen/loras/{args.name}.safetensors already exists"
+            f"{_existing_lora_summary(meta_path)}. "
             "Pass --overwrite to replace, or pick a different --name.",
             code=2,
         )

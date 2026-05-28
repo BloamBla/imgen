@@ -19,10 +19,19 @@ FS-side helpers sequenced by ``cmd_train`` (commit 8):
 7. ``cmd_train`` removes scratch dir on success; KEEPS scratch on
    failure for inspection.
 
-Per [[project-v100-design]] §E.3 + §H.3 + §R.1 ROUND-1 CLOSURES:
+Per [[project-v100-design]] §E.3 + §H.3 + §R.1 ROUND-1 CLOSURES, as
+corrected by the §M.1 32 GB smoke (2026-05-28):
 
-* mflux-train output filename: ``<output_path>/checkpoints/{NNNNNNN}_adapter.safetensors``
-  (verified at ``mflux/models/common/training/state/training_state.py:28-29``).
+* mflux-train REAL output (verified by smoke, NOT the memo's guess):
+  ``<output_path>/checkpoints/{NNNNNNN}_checkpoint.zip`` — a resumable
+  training-state archive. Our configured ``output_path`` is
+  ``scratch/checkpoints``, so the zips land in
+  ``scratch/checkpoints/checkpoints/``. The usable LoRA lives INSIDE
+  each zip as ``{NNNNNNN}_adapter.safetensors`` (alongside the
+  optimizer state + iterator/config json used by ``mflux-train
+  --resume``). The original memo's bare-``{NNNNNNN}_adapter.safetensors``
+  convention was wrong — :func:`_promote_final_safetensors` now globs
+  the zips, picks the max iteration, and extracts the adapter member.
 * meta.json schema includes ``lora_compat_group: str`` (architect H-5 —
   required for compat-checks against ``--model`` at inference).
 * Atomic file writes via ``<path>.tmp`` + ``os.replace`` mirror the
@@ -34,6 +43,7 @@ import json
 import os
 import re
 import shutil
+import zipfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -53,9 +63,12 @@ __all__ = [
 ]
 
 
-# 7-digit zero-padded iteration prefix per
-# ``mflux/models/common/training/state/training_state.py:28-29``.
-_ADAPTER_FILENAME_RE = re.compile(r"^(\d{7})_adapter\.safetensors$")
+# mflux-train checkpoint archive: 7-digit zero-padded iteration prefix.
+# Each zip contains ``{NNNNNNN}_adapter.safetensors`` (the LoRA) + the
+# optimizer/iterator state for ``--resume``. Verified by the §M.1 smoke.
+_CHECKPOINT_ZIP_RE = re.compile(r"^(\d{7})_checkpoint\.zip$")
+# The adapter member name inside the zip mirrors the iteration prefix.
+_ADAPTER_MEMBER_SUFFIX = "_adapter.safetensors"
 
 
 def _materialise_scratch_dataset(
@@ -112,44 +125,84 @@ def _promote_final_safetensors(
     scratch_dir: Path,
     output_path: Path,
 ) -> Path:
-    """Glob the highest-iteration adapter under
-    ``scratch_dir/checkpoints/``, atomic-rename to ``output_path``.
+    """Find the highest-iteration ``{NNNNNNN}_checkpoint.zip`` written by
+    mflux-train, extract its ``{NNNNNNN}_adapter.safetensors`` member, and
+    write it atomically (mode 0o600) to ``output_path``.
+
+    mflux-train nests its checkpoints under
+    ``<config.output_path>/checkpoints/``; our config sets ``output_path``
+    to ``scratch_dir/checkpoints``, so the zips land in
+    ``scratch_dir/checkpoints/checkpoints/`` (verified by the §M.1 smoke).
+    Each zip is a resumable training-state archive holding the adapter +
+    optimizer state; we lift out only the adapter safetensors.
 
     Returns the ``output_path`` on success.
 
     Raises:
-      * ``FileNotFoundError`` if ``checkpoints/`` is missing or
-        contains zero ``{NNNNNNN}_adapter.safetensors`` files —
-        mflux-train produced no artifact, caller surfaces as error.
+      * ``FileNotFoundError`` if the checkpoints dir is missing, contains
+        zero ``{NNNNNNN}_checkpoint.zip`` files, or the chosen zip has no
+        ``*_adapter.safetensors`` member — mflux-train produced no usable
+        LoRA, caller surfaces as a clean training failure.
     """
-    ckpt_dir = scratch_dir / "checkpoints"
+    ckpt_dir = scratch_dir / "checkpoints" / "checkpoints"
     if not ckpt_dir.is_dir():
         raise FileNotFoundError(
             f"mflux-train checkpoints dir missing: {ckpt_dir} — "
-            "training likely failed before any save."
+            "training likely failed before any checkpoint save."
         )
 
-    # Filter to the canonical 7-digit adapter shape, pick max iteration.
+    # Filter to the canonical 7-digit checkpoint-zip shape, pick max
+    # iteration (the latest = most-trained; iteration 0 is the pre-train
+    # snapshot).
     candidates: list[tuple[int, Path]] = []
     for entry in ckpt_dir.iterdir():
-        m = _ADAPTER_FILENAME_RE.match(entry.name)
+        m = _CHECKPOINT_ZIP_RE.match(entry.name)
         if m is None:
             continue
         candidates.append((int(m.group(1)), entry))
 
     if not candidates:
         raise FileNotFoundError(
-            f"no {{NNNNNNN}}_adapter.safetensors files found in "
-            f"{ckpt_dir} — mflux-train produced no LoRA artifact."
+            f"no {{NNNNNNN}}_checkpoint.zip files found in {ckpt_dir} — "
+            "mflux-train produced no LoRA artifact."
         )
 
     candidates.sort(key=lambda pair: pair[0])
-    final_iter, final_path = candidates[-1]
+    final_iter, final_zip = candidates[-1]
 
-    # ``os.replace`` is atomic on the same FS and overwrites
-    # unconditionally — cmd_train has already collision-checked
-    # ``--overwrite`` at the user-confirm gate.
-    os.replace(final_path, output_path)
+    # Pull the adapter member out of the zip. Read by exact name first
+    # (``{NNNNNNN}_adapter.safetensors``), fall back to any member ending
+    # in ``_adapter.safetensors``. We read the single member into memory
+    # (~27 MB) rather than extractall — no zip-slip path-traversal risk.
+    with zipfile.ZipFile(final_zip) as zf:
+        names = zf.namelist()
+        member = f"{final_iter:07d}{_ADAPTER_MEMBER_SUFFIX}"
+        if member not in names:
+            fallback = [n for n in names if n.endswith(_ADAPTER_MEMBER_SUFFIX)]
+            if not fallback:
+                raise FileNotFoundError(
+                    f"checkpoint zip {final_zip.name} has no "
+                    f"*_adapter.safetensors member (saw {names!r}) — "
+                    "mflux-train output shape changed; promotion needs review."
+                )
+            member = fallback[-1]
+        adapter_bytes = zf.read(member)
+
+    # Atomic write, mode 0o600 — trained weights are PII-bearing identity
+    # data (mirror _write_meta_json discipline). tmp + os.replace.
+    tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(adapter_bytes)
+        os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, output_path)
+    except BaseException:
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
     return output_path
 
 

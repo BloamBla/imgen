@@ -379,10 +379,13 @@ class TestKlein4bTargetModulesConstant:
         )
 
     def test_constant_blocks_ranges_within_klein_4b_layer_count(self):
-        """FLUX.2 klein-4b: 38 transformer_blocks (per colleague memo) +
-        20 single_transformer_blocks (per transformer.py:20). The
-        constant must respect those counts — block range (0, 38) for
-        double-stream + (0, 20) for single-stream."""
+        """FLUX.2 klein-4b real architecture (transformer.py:19-20):
+        num_layers=5 double-stream transformer_blocks + num_single_layers=20
+        single_transformer_blocks. mflux BlockRange end is EXCLUSIVE, so the
+        constant must stay within (0, 5] double / (0, 20] single. The §M.1
+        smoke (2026-05-28) caught the original (0, 38) draft as an IndexError
+        at LoRA injection — this test now locks the real counts so a
+        regression to the FLUX.1-dev-shaped range is rejected."""
         from imgen.models import _KLEIN_4B_TARGET_MODULES
         for spec in _KLEIN_4B_TARGET_MODULES:
             if spec.blocks is None:
@@ -394,9 +397,10 @@ class TestKlein4bTargetModulesConstant:
                     f"20-layer limit: {spec.module_path} blocks={spec.blocks}"
                 )
             elif "transformer_blocks" in spec.module_path:
-                assert end <= 38, (
-                    f"transformer_blocks range exceeds klein-4b's 38-layer "
-                    f"limit: {spec.module_path} blocks={spec.blocks}"
+                assert end <= 5, (
+                    f"transformer_blocks range exceeds klein-4b's 5-layer "
+                    f"limit (num_layers=5): {spec.module_path} "
+                    f"blocks={spec.blocks}"
                 )
 
     def test_constant_used_with_default_rank_16(self):

@@ -277,39 +277,43 @@ class TrainingTargetSpec:
 
 # ── Klein-4b canonical target modules (module-level constant) ─────────
 #
-# Per [[project-colleague-lora-training-2026-05-27]] proven recipe +
-# FLUX.2 transformer architecture grep
-# (``mflux/models/flux2/weights/flux2_lora_mapping.py:336`` for the
-# ``transformer_blocks.{block}.attn.*`` path shape;
-# ``mflux/models/flux2/model/flux2_transformer/transformer.py:20`` for
-# the num_single_layers=20 constant).
+# Verified against the real flux2-klein-4b transformer
+# (mflux/models/flux2/model/flux2_transformer/), confirmed by the §M.1
+# 32 GB smoke on 2026-05-28 which caught the original draft's wrong block
+# counts + path at LoRA-injection time (IndexError, before any training):
 #
-# Klein-4b architecture:
-# * transformer_blocks #38 (double-stream) with attn q/k/v/to_out targets
-# * single_transformer_blocks #20 (single-stream) with attn.to_out target
+# * transformer.py:19-20 — num_layers=5 (double-stream transformer_blocks,
+#   indices 0..4) + num_single_layers=20 (single_transformer_blocks 0..19).
+#   mflux's BlockRange is EXCLUSIVE of end (training_spec.BlockRange.
+#   get_blocks → range(start, end)), so end=5 / end=20.
+# * attention.py:14-19 — double-block attn has to_q/to_k/to_v + to_out, and
+#   to_out is a DIRECT nn.Linear (NOT a diffusers ModuleList → no `.0`).
+# * parallel_self_attention.py:20 — single-block attn exposes only to_out
+#   (q/k/v are fused into to_qkv_mlp_proj, not separately LoRA-targeted).
 #
-# BUILTIN_MODELS klein-4b row (commit 2) will reference this by NAME so
-# the schema-and-content split lives in one place. Adding a 2nd
-# training base = new module-level constant + new BUILTIN_MODELS row.
+# The original draft used (0,38) ranges + `to_out.0` — FLUX.1-dev diffusers
+# conventions (19+38 blocks, ModuleList to_out). klein-4b is a far smaller
+# 5+20 architecture with a direct to_out. Adding a 2nd training base = new
+# module-level constant + new BUILTIN_MODELS row.
 _KLEIN_4B_TARGET_MODULES: tuple[TrainingTargetSpec, ...] = (
     TrainingTargetSpec(
         module_path="transformer_blocks.{block}.attn.to_q",
-        blocks=(0, 38),
+        blocks=(0, 5),
         rank=16,
     ),
     TrainingTargetSpec(
         module_path="transformer_blocks.{block}.attn.to_k",
-        blocks=(0, 38),
+        blocks=(0, 5),
         rank=16,
     ),
     TrainingTargetSpec(
         module_path="transformer_blocks.{block}.attn.to_v",
-        blocks=(0, 38),
+        blocks=(0, 5),
         rank=16,
     ),
     TrainingTargetSpec(
-        module_path="transformer_blocks.{block}.attn.to_out.0",
-        blocks=(0, 38),
+        module_path="transformer_blocks.{block}.attn.to_out",
+        blocks=(0, 5),
         rank=16,
     ),
     TrainingTargetSpec(
@@ -814,10 +818,10 @@ BUILTIN_MODELS: dict[str, Model] = {
     # ``target_modules=_KLEIN_4B_TARGET_MODULES`` (module-level constant
     # — single source of truth per architect C-2 closure; B-1
     # anti-pattern shape that v0.9.3 fixed for pipeline_class).
-    # training_peak_ram_gb=28.0 calibrated from colleague's M5 Pro 48 GB
-    # observation (~26-30 GB resident at q4/rank-16/low_ram/sparse
-    # preview); M2 Pro 32 GB smoke at pre-tag gate refines this number
-    # (§M.1 open S-question — THE ship blocker for v0.10.0).
+    # training_peak_ram_gb=22.0 — recalibrated by the §M.1 32 GB smoke
+    # (2026-05-28): real klein-4b training peaks ~21 GB resident + ~3 GB
+    # swap at q4/512/rank16/low_ram on M2 Pro. The colleague's earlier
+    # ~28 GB was a 48 GB observation; our path is lighter. §M.1 CLOSED.
     #
     # RAM math: roughly half klein-9b (which has ram_baseline_gb=27.0
     # at Q8 1MP). Klein-4b lighter ≈ 14 GB Q8 1MP baseline; same
@@ -866,8 +870,13 @@ BUILTIN_MODELS: dict[str, Model] = {
         max_guidance=1.0,
         # — v0.10.0 commit 2: training enabled —
         training=TrainingConfig(
-            training_peak_ram_gb=28.0,  # colleague's M5 Pro observation;
-                                        # M2 Pro 32 GB smoke refines (§M.1)
+            # §M.1 smoke (2026-05-28, M2 Pro 32 GB, q4/512/rank16/low_ram):
+            # real peak ~21 GB resident + ~3 GB swap at 20 GB available —
+            # ran to completion, no thrash. Recalibrated 28.0 → 22.0 (the
+            # colleague's 28 was a 48 GB observation; our low_ram + q4 path
+            # is lighter). At ~25 GB available the preflight passes
+            # swap-free; the 20-25 GB band runs with modest swap via --force.
+            training_peak_ram_gb=22.0,
             target_modules=_KLEIN_4B_TARGET_MODULES,
         ),
     ),

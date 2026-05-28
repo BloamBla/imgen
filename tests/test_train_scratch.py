@@ -6,8 +6,11 @@ Covers the FS-side helpers that ``cmd_train`` (commit 8) will sequence:
   images and caption sidecars into a fresh scratch dir under
   ``~/.imgen/loras/.<name>.training/data/``.
 * :func:`_promote_final_safetensors` — globs the highest-iteration
-  ``{NNNNNNN}_adapter.safetensors`` from ``<scratch>/checkpoints/``
-  and atomic-renames it to ``~/.imgen/loras/<name>.safetensors``.
+  ``{NNNNNNN}_checkpoint.zip`` from
+  ``<scratch>/checkpoints/checkpoints/``, extracts the
+  ``{NNNNNNN}_adapter.safetensors`` member, and writes it (0o600) to
+  ``~/.imgen/loras/<name>.safetensors``. (Real mflux output shape per
+  the §M.1 smoke — NOT the bare-file convention the memo guessed.)
 * :func:`build_meta_json` — pure dict builder for the ``.meta.json``
   sidecar (read by ``--lora <name>`` resolver + ``imgen doctor``).
 * :func:`_write_meta_json` — atomic write of the meta-json dict
@@ -20,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -167,13 +171,35 @@ class TestMaterialiseScratchDataset:
 
 # ── _promote_final_safetensors ──────────────────────────────────
 
+
+def _write_checkpoint_zip(
+    scratch: Path,
+    iteration: int,
+    adapter_bytes: bytes,
+    *,
+    adapter_member: str | None = None,
+    extra_members: bool = True,
+) -> Path:
+    """Build a ``{NNNNNNN}_checkpoint.zip`` under
+    ``scratch/checkpoints/checkpoints/`` containing the adapter member
+    (+ optimizer/run decoys), mirroring real mflux-train output verified
+    by the §M.1 smoke."""
+    ckpt_dir = scratch / "checkpoints" / "checkpoints"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    zip_path = ckpt_dir / f"{iteration:07d}_checkpoint.zip"
+    member = adapter_member or f"{iteration:07d}_adapter.safetensors"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr(member, adapter_bytes)
+        if extra_members:
+            zf.writestr(f"{iteration:07d}_optimizer.safetensors", b"optstate")
+            zf.writestr("run.json", b"{}")
+    return zip_path
+
+
 class TestPromoteFinalSafetensors:
     def test_picks_single_checkpoint(self, tmp_path):
         scratch = tmp_path / ".alina.training"
-        ckpt_dir = scratch / "checkpoints"
-        ckpt_dir.mkdir(parents=True)
-        ckpt = ckpt_dir / "0000800_adapter.safetensors"
-        ckpt.write_bytes(b"\x00\x01\x02")
+        _write_checkpoint_zip(scratch, 800, b"\x00\x01\x02")
         output = tmp_path / "alina.safetensors"
         promoted = _promote_final_safetensors(scratch, output)
         assert promoted == output
@@ -181,75 +207,92 @@ class TestPromoteFinalSafetensors:
         assert output.read_bytes() == b"\x00\x01\x02"
 
     def test_picks_max_iteration_among_many(self, tmp_path):
-        """§R.1 closure: mflux-train writes ``{NNNNNNN}_adapter.safetensors``
-        (7-digit zero-padded). Final = highest iteration count."""
+        """mflux-train writes ``{NNNNNNN}_checkpoint.zip`` (7-digit
+        zero-padded; iteration 0 is the pre-train snapshot). Final =
+        highest iteration count."""
         scratch = tmp_path / ".alina.training"
-        ckpt_dir = scratch / "checkpoints"
-        ckpt_dir.mkdir(parents=True)
-        # Out of order to verify sort isn't by listdir() order.
-        for idx in (200, 800, 400, 100):
-            (ckpt_dir / f"{idx:07d}_adapter.safetensors").write_bytes(
-                f"weights-{idx}".encode(),
-            )
+        # Out of order to verify sort isn't by listdir() order; include
+        # the iteration-0 pre-train snapshot which must NOT be picked.
+        for idx in (0, 200, 800, 400, 100):
+            _write_checkpoint_zip(scratch, idx, f"weights-{idx}".encode())
         output = tmp_path / "alina.safetensors"
         _promote_final_safetensors(scratch, output)
         assert output.read_bytes() == b"weights-800"
 
-    def test_source_removed_after_promote(self, tmp_path):
-        """``os.replace`` is atomic-rename, not copy — source ceases to
-        exist after the move."""
+    def test_output_mode_is_0o600(self, tmp_path):
+        """Trained weights are PII-bearing identity data → promoted file
+        is mode 0o600 (mirror _write_meta_json)."""
         scratch = tmp_path / ".alina.training"
-        ckpt_dir = scratch / "checkpoints"
-        ckpt_dir.mkdir(parents=True)
-        ckpt = ckpt_dir / "0000050_adapter.safetensors"
-        ckpt.write_bytes(b"x")
+        _write_checkpoint_zip(scratch, 50, b"x")
         output = tmp_path / "alina.safetensors"
         _promote_final_safetensors(scratch, output)
-        assert not ckpt.exists()
+        assert stat.S_IMODE(output.stat().st_mode) == 0o600
 
-    def test_raises_when_no_checkpoints(self, tmp_path):
-        """``mflux-train`` produced zero checkpoints — training failed
+    def test_source_zip_is_not_consumed(self, tmp_path):
+        """Extraction copies the adapter out of the zip — the resumable
+        checkpoint zip itself survives (cmd_train rmtree's the whole
+        scratch dir on success; promotion alone must not delete it)."""
+        scratch = tmp_path / ".alina.training"
+        zip_path = _write_checkpoint_zip(scratch, 50, b"x")
+        output = tmp_path / "alina.safetensors"
+        _promote_final_safetensors(scratch, output)
+        assert zip_path.exists()
+
+    def test_raises_when_no_checkpoint_zips(self, tmp_path):
+        """``mflux-train`` produced zero checkpoint zips — training failed
         silently. Caller (cmd_train) should surface this as an error,
         not promote nothing."""
         scratch = tmp_path / ".alina.training"
-        ckpt_dir = scratch / "checkpoints"
-        ckpt_dir.mkdir(parents=True)
+        (scratch / "checkpoints" / "checkpoints").mkdir(parents=True)
         output = tmp_path / "alina.safetensors"
-        with pytest.raises(FileNotFoundError, match="adapter.safetensors"):
+        with pytest.raises(FileNotFoundError, match="checkpoint.zip"):
             _promote_final_safetensors(scratch, output)
 
     def test_raises_when_checkpoints_dir_missing(self, tmp_path):
-        """Scratch dir exists but mflux-train never wrote checkpoints/."""
+        """Scratch dir exists but mflux-train never wrote the nested
+        checkpoints/checkpoints/ dir."""
         scratch = tmp_path / ".alina.training"
         scratch.mkdir()
         output = tmp_path / "alina.safetensors"
         with pytest.raises(FileNotFoundError):
             _promote_final_safetensors(scratch, output)
 
-    def test_ignores_non_adapter_files_in_checkpoints(self, tmp_path):
-        """Decoy files (logs, configs, partial uploads) in checkpoints/
-        must not be picked. Only ``{NNNNNNN}_adapter.safetensors``."""
+    def test_raises_when_zip_has_no_adapter_member(self, tmp_path):
+        """A checkpoint zip with no ``*_adapter.safetensors`` member means
+        mflux-train's output shape changed — surface loudly, don't write
+        an empty/garbage LoRA."""
         scratch = tmp_path / ".alina.training"
-        ckpt_dir = scratch / "checkpoints"
+        _write_checkpoint_zip(
+            scratch, 100, b"unused",
+            adapter_member="0000100_optimizer.safetensors",
+            extra_members=False,
+        )
+        output = tmp_path / "alina.safetensors"
+        with pytest.raises(FileNotFoundError, match="adapter.safetensors"):
+            _promote_final_safetensors(scratch, output)
+
+    def test_ignores_non_zip_files_in_checkpoints(self, tmp_path):
+        """Decoy files (logs, loss html, partial files) in the nested
+        checkpoints dir must not be picked. Only
+        ``{NNNNNNN}_checkpoint.zip``."""
+        scratch = tmp_path / ".alina.training"
+        ckpt_dir = scratch / "checkpoints" / "checkpoints"
         ckpt_dir.mkdir(parents=True)
         (ckpt_dir / "training.log").write_text("log")
-        (ckpt_dir / "config.json").write_text("{}")
-        (ckpt_dir / "0000050_adapter.bin").write_bytes(b"wrong-ext")
+        (ckpt_dir / "0000050_checkpoint.bin").write_bytes(b"wrong-ext")
         # Real one we want picked.
-        (ckpt_dir / "0000100_adapter.safetensors").write_bytes(b"real")
+        _write_checkpoint_zip(scratch, 100, b"real")
         output = tmp_path / "alina.safetensors"
         _promote_final_safetensors(scratch, output)
         assert output.read_bytes() == b"real"
 
     def test_overwrites_existing_output_path(self, tmp_path):
         """The cmd_train flow has already collision-checked
-        ``--overwrite``; ``os.replace`` here is atomic + overwrites
+        ``--overwrite``; the tmp + os.replace here overwrites
         unconditionally so a half-promoted leftover doesn't block
-        the final move."""
+        the final write."""
         scratch = tmp_path / ".alina.training"
-        ckpt_dir = scratch / "checkpoints"
-        ckpt_dir.mkdir(parents=True)
-        (ckpt_dir / "0000800_adapter.safetensors").write_bytes(b"new")
+        _write_checkpoint_zip(scratch, 800, b"new")
         output = tmp_path / "alina.safetensors"
         output.write_bytes(b"old")
         _promote_final_safetensors(scratch, output)

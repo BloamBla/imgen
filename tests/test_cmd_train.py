@@ -24,6 +24,7 @@ import json
 import os
 import shutil
 import stat as stat_module
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -99,18 +100,23 @@ def mock_subprocess(monkeypatch):
         recorded["argv"] = list(cmd)
         recorded["env"] = dict(env)
         recorded["calls"] += 1
-        # Simulate what mflux-train would do on success — write a
-        # checkpoint that _promote_final_safetensors can pick up.
+        # Simulate what mflux-train writes on success: a resumable
+        # checkpoint zip under <scratch>/checkpoints/checkpoints/ with
+        # the adapter safetensors INSIDE it (real shape per §M.1 smoke).
         if recorded["rc"] == 0:
             # Find the --config arg to locate the scratch dir.
             i = cmd.index("--config")
             config_path = Path(cmd[i + 1])
             scratch = config_path.parent
-            ckpt_dir = scratch / "checkpoints"
+            ckpt_dir = scratch / "checkpoints" / "checkpoints"
             ckpt_dir.mkdir(parents=True, exist_ok=True)
-            (ckpt_dir / "0000800_adapter.safetensors").write_bytes(
-                b"fake-trained-lora-weights",
-            )
+            zip_path = ckpt_dir / "0000800_checkpoint.zip"
+            with zipfile.ZipFile(zip_path, "w") as zf:
+                zf.writestr(
+                    "0000800_adapter.safetensors",
+                    b"fake-trained-lora-weights",
+                )
+                zf.writestr("0000800_optimizer.safetensors", b"optstate")
         return recorded["rc"]
 
     from imgen import subprocess_helpers as sh
@@ -121,9 +127,10 @@ def mock_subprocess(monkeypatch):
 @pytest.fixture
 def patch_preflight(monkeypatch):
     """Default preflight: ample RAM, on AC. Tests override per scenario."""
-    # klein-4b training_peak_ram_gb=28.0 + 3.0 safety = 31.0 GB needed.
-    # Default fixture provides 32 GB available so preflight passes;
-    # individual tests override available_gb to exercise the die path.
+    # klein-4b training_peak_ram_gb=22.0 (§M.1-recalibrated) + 3.0 safety
+    # = 25.0 GB needed. Default fixture provides 32 GB available so
+    # preflight passes; individual tests override available_gb to
+    # exercise the die path.
     state = {
         "total_gb": 64.0,
         "available_gb": 32.0,
@@ -266,10 +273,63 @@ class TestCmdTrainCollision:
         rc = cmd_train(_make_args(dataset_dir, overwrite=True))
         assert rc == 0
         assert mock_subprocess["calls"] == 1
-        # New content from the fake subprocess wrote 0000800 ckpt.
+        # New content from the fake subprocess: adapter extracted from the
+        # 0000800 checkpoint zip.
         assert (loras / "alina.safetensors").read_bytes() == (
             b"fake-trained-lora-weights"
         )
+
+    def test_collision_message_includes_existing_trigger_and_date(
+        self, state_dir, dataset_dir, fake_mflux_train_bin,
+        mock_subprocess, patch_preflight, patch_token, patch_prompt, capsys,
+    ):
+        """The refusal enriches with the existing LoRA's trigger + train
+        date (from its meta) so the user can decide overwrite vs rename."""
+        loras = state_dir / "loras"
+        loras.mkdir(mode=0o700)
+        (loras / "alina.safetensors").write_bytes(b"old")
+        (loras / "alina.meta.json").write_text(json.dumps({
+            "trigger": "al1na woman",
+            "trained_at": "2026-05-01T12:00:00",
+        }))
+        from imgen.commands.train import cmd_train
+        with pytest.raises(SystemExit) as exc:
+            cmd_train(_make_args(dataset_dir))
+        assert exc.value.code == 2
+        captured = capsys.readouterr()
+        msg = captured.out + captured.err
+        assert "al1na woman" in msg
+        assert "2026-05-01" in msg
+
+    def test_collision_message_degrades_without_meta(
+        self, state_dir, dataset_dir, fake_mflux_train_bin,
+        mock_subprocess, patch_preflight, patch_token, patch_prompt,
+    ):
+        """No meta.json next to the existing .safetensors → bare message,
+        no crash (best-effort summary returns '')."""
+        loras = state_dir / "loras"
+        loras.mkdir(mode=0o700)
+        (loras / "alina.safetensors").write_bytes(b"old")
+        from imgen.commands.train import cmd_train
+        with pytest.raises(SystemExit) as exc:
+            cmd_train(_make_args(dataset_dir))
+        assert exc.value.code == 2
+
+    def test_existing_lora_summary_helper(self, tmp_path):
+        """Unit-level: _existing_lora_summary formats trigger + date, and
+        degrades to '' on missing/corrupt/control-byte meta."""
+        from imgen.commands.train import _existing_lora_summary
+        meta = tmp_path / "x.meta.json"
+        meta.write_text(json.dumps({
+            "trigger": "al1na woman", "trained_at": "2026-05-01T12:00:00",
+        }))
+        out = _existing_lora_summary(meta)
+        assert "al1na woman" in out and "2026-05-01" in out
+        # missing file → ''
+        assert _existing_lora_summary(tmp_path / "nope.meta.json") == ""
+        # control-byte trigger dropped
+        meta.write_text(json.dumps({"trigger": "al1na\x1b[2J"}))
+        assert "\x1b" not in _existing_lora_summary(meta)
 
 
 # ── Model resolution ─────────────────────────────────────────────
@@ -295,7 +355,8 @@ class TestCmdTrainPreflight:
         self, state_dir, dataset_dir, fake_mflux_train_bin,
         mock_subprocess, patch_preflight, patch_token, patch_prompt,
     ):
-        """klein-4b needs 28 + 3 = 31 GB headroom. Provide 20 GB → die."""
+        """klein-4b needs 22 + 3 = 25 GB headroom (§M.1-recalibrated).
+        Provide 20 GB → preflight dies without --force."""
         patch_preflight["available_gb"] = 20.0
         from imgen.commands.train import cmd_train
         with pytest.raises(SystemExit) as exc:
