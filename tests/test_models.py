@@ -207,6 +207,9 @@ class TestBuiltinModelsLiteral:
             "flux2-klein-edit-9b",
             "ltx-video",
             "flux2-klein-4b",
+            # v0.11.1 (V-2): klein-4b in edit/i2i mode for LoRA-driven
+            # restyle of an input photo.
+            "flux2-klein-4b-edit",
         }
 
     def test_builtin_models_engine_routing(self):
@@ -222,6 +225,7 @@ class TestBuiltinModelsLiteral:
             "flux2-klein-edit-9b": "mflux",
             "ltx-video": "diffusers_mps",
             "flux2-klein-4b": "mflux",
+            "flux2-klein-4b-edit": "mflux",
         }
         for name, m in BUILTIN_MODELS.items():
             assert m.engine == expected_engines[name], (
@@ -267,6 +271,8 @@ class TestBuiltinModelsLiteral:
             "flux2-klein-edit-9b",
             "ltx-video",
             "flux2-klein-4b",
+            # v0.11.1 (V-2): klein-4b edit/i2i row; no v0.7 alias.
+            "flux2-klein-4b-edit",
         }
 
     def test_backend_from_model_preserves_v07_shape(self):
@@ -424,6 +430,60 @@ class TestFlux2Klein4bRow:
         assert m.enhance_system_prompt is None
 
 
+class TestFlux2Klein4bEditRow:
+    """v0.11.1 (V-2): ``flux2-klein-4b-edit`` — klein-4b in edit/i2i mode
+    so a klein-4b-trained LoRA can restyle an INPUT photo. Same weights as
+    the t2i row, driven through mflux-generate-flux2-edit + --image-paths.
+    REAL-SMOKE-GATED before tag per [[feedback-new-backend-real-smoke]]."""
+
+    def test_in_registry(self):
+        from imgen.models import BUILTIN_MODELS
+        assert "flux2-klein-4b-edit" in BUILTIN_MODELS
+
+    def test_uses_edit_binary_with_klein_4b_base(self):
+        from imgen.models import BUILTIN_MODELS
+        m = BUILTIN_MODELS["flux2-klein-4b-edit"]
+        assert m.binary == "mflux-generate-flux2-edit"
+        assert m.extra_args == ("-m", "flux2-klein-4b")
+
+    def test_is_i2i_with_image_paths_flag(self):
+        from imgen.models import BUILTIN_MODELS
+        m = BUILTIN_MODELS["flux2-klein-4b-edit"]
+        assert m.image_flag == "--image-paths"
+
+    def test_lora_compat_group_matches_klein_4b_base(self):
+        """The crux of V-2: same compat group as flux2-klein-4b, so a
+        LoRA trained on the base loads in edit mode (`--lora stas`)."""
+        from imgen.models import BUILTIN_MODELS
+        m = BUILTIN_MODELS["flux2-klein-4b-edit"]
+        base = BUILTIN_MODELS["flux2-klein-4b"]
+        assert m.lora_compat_group == "flux2-klein-4b"
+        assert m.lora_compat_group == base.lora_compat_group
+
+    def test_distilled_no_cfg_no_negatives(self):
+        from imgen.models import BUILTIN_MODELS
+        m = BUILTIN_MODELS["flux2-klein-4b-edit"]
+        assert m.supports_negative is False
+        assert m.min_guidance == 1.0 == m.max_guidance == m.default_guidance
+
+    def test_defaults_to_full_bf16(self):
+        """Same weights as the base, whose q8 t2i was poor → edit also
+        defaults to q16 (full bf16) for quality. Smoke confirms."""
+        from imgen.models import BUILTIN_MODELS
+        assert BUILTIN_MODELS["flux2-klein-4b-edit"].default_quantize == 16
+
+    def test_gated_repo_and_token(self):
+        from imgen.models import BUILTIN_MODELS
+        m = BUILTIN_MODELS["flux2-klein-4b-edit"]
+        assert m.needs_token is True
+        assert m.hf_gated_repo == "black-forest-labs/FLUX.2-klein-4B"
+
+    def test_not_a_training_target(self):
+        """Edit is an inference row; training stays on the base t2i row."""
+        from imgen.models import BUILTIN_MODELS
+        assert BUILTIN_MODELS["flux2-klein-4b-edit"].training is None
+
+
 class TestModelTrainingField:
     """v0.10.0 commit 1 — ``Model.training: TrainingConfig | None``
     nested field per [[project-v100-design]] §R.1 ROUND-1 CLOSURES.
@@ -546,10 +606,14 @@ class TestModelsForCompatGroups:
     """P2: maps a LoRA's compat group(s) to the --model(s) that load it,
     powering the actionable incompat warn."""
 
-    def test_klein_4b_group_maps_to_klein_4b_model(self):
+    def test_klein_4b_group_maps_to_both_klein_4b_models(self):
+        """v0.11.1: the flux2-klein-4b compat group now spans BOTH the
+        t2i base and the edit/i2i row — so a klein-4b LoRA's --list-loras
+        hint + incompat warn correctly suggest either. Sorted."""
         from imgen.models import models_for_compat_groups
         assert models_for_compat_groups(("flux2-klein-4b",)) == [
             "flux2-klein-4b",
+            "flux2-klein-4b-edit",
         ]
 
     def test_unknown_group_maps_to_empty(self):

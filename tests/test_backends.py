@@ -25,6 +25,8 @@ def test_BACKENDS_contains_flux_qwen_flux_dev_flux2():
     assert set(BACKENDS.keys()) == {
         "flux", "qwen", "flux-dev", "flux2-klein-edit-9b", "ltx-video",
         "flux2-klein-4b",
+        # v0.11.1 (V-2): klein-4b edit/i2i row.
+        "flux2-klein-4b-edit",
     }
 
 

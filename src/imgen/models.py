@@ -892,6 +892,43 @@ BUILTIN_MODELS: dict[str, Model] = {
         ),
     ),
 
+    # FLUX.2-klein-4b-edit — v0.11.1 (V-2): klein-4b in edit/i2i mode, so a
+    # klein-4b LoRA (e.g. a trained identity) can edit/restyle an INPUT
+    # photo. Same unified klein-4b weights as the t2i row above, driven
+    # through mflux-generate-flux2-edit + --image-paths. lora_compat_group
+    # is "flux2-klein-4b" (NOT the 9B edit row's group) so
+    # `imgen generate <photo> --model flux2-klein-4b-edit --lora stas`
+    # loads a 4B-trained LoRA. REAL-SMOKE-GATED before tag per
+    # [[feedback-new-backend-real-smoke]] — dry-run can't catch mflux's
+    # runtime arg-acceptance rules.
+    "flux2-klein-4b-edit": Model(
+        engine="mflux",
+        binary="mflux-generate-flux2-edit",
+        needs_token=True,
+        image_flag="--image-paths",
+        supports_strength=False,
+        supports_negative=False,  # FLUX.2 family deliberately dropped CFG/neg
+        extra_args=("-m", "flux2-klein-4b"),
+        enhance_system_prompt=None,
+        enhance_invariants=(),
+        lora_compat_group="flux2-klein-4b",
+        hf_gated_repo="black-forest-labs/FLUX.2-klein-4B",
+        # Same 4B weights as the t2i row → mirror its RAM (baseline 14,
+        # 4 GB/MP). The edit input-image encode is small vs the transformer;
+        # conservative until a real edit smoke refines it.
+        ram_baseline_gb=14.0,
+        ram_slope_gb_per_mp=4.0,
+        encoder_ram_gb=0.0,
+        # Distilled: guidance pinned 1.0 (min=max). q8 t2i was poor on
+        # klein-4b, so default to q16 (full bf16) for edit quality too —
+        # same weights; ~22 GB → 32 GB Mac. Smoke confirms before tag.
+        default_steps=20,
+        default_guidance=1.0,
+        min_guidance=1.0,
+        max_guidance=1.0,
+        default_quantize=16,
+    ),
+
     # FLUX.2-klein-edit-9b — Hires-Fix refine default (name unchanged at 4b).
     "flux2-klein-edit-9b": Model(
         engine="mflux",

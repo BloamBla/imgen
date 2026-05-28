@@ -720,7 +720,7 @@ def test_merge_adds_new_user_backends():
     # User TOMLs land on top of the built-in set.
     assert set(merged.keys()) == {
         "flux", "qwen", "flux-dev", "flux2-klein-edit-9b", "ltx-video",
-        "flux2-klein-4b",
+        "flux2-klein-4b", "flux2-klein-4b-edit",  # v0.11.1 (V-2)
         "sdxl",
     }
     assert merged["sdxl"].binary == "sdxl-bin"
