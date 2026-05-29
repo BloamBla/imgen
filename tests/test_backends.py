@@ -27,6 +27,8 @@ def test_BACKENDS_contains_flux_qwen_flux_dev_flux2():
         "flux2-klein-4b",
         # v0.11.1 (V-2): klein-4b edit/i2i row.
         "flux2-klein-4b-edit",
+        # v0.11.4: klein-9b t2i + 2nd training base.
+        "flux2-klein-9b",
     }
 
 

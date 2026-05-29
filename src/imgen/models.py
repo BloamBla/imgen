@@ -43,6 +43,7 @@ __all__ = [
     "TrainingTargetSpec",
     "VideoConfig",
     "_KLEIN_4B_TARGET_MODULES",
+    "_KLEIN_9B_TARGET_MODULES",
     "_V07_TO_V08_MODEL_RENAMES",
     "_VALID_LORA_RANKS",
     "_VALID_QUANTIZE_TRAIN",
@@ -325,6 +326,43 @@ _KLEIN_4B_TARGET_MODULES: tuple[TrainingTargetSpec, ...] = (
 )
 
 
+# klein-9b training targets (v0.11.4 — 2nd training base). SAME flux2 attention
+# structure as klein-4b (to_q/k/v/to_out direct linears on double blocks, to_out
+# only on single blocks — q/k/v fused in single blocks), just MORE layers. Block
+# counts from the cached FLUX.2-klein-9B transformer/config.json:
+# num_layers=8 (double transformer_blocks 0..7) + num_single_layers=24
+# (single_transformer_blocks 0..23). BlockRange end is EXCLUSIVE → end=8 / end=24
+# (the §M.1 IndexError lesson: wrong counts crash at LoRA-injection before any
+# training, so a real klein-9b train smoke MUST gate the tag).
+_KLEIN_9B_TARGET_MODULES: tuple[TrainingTargetSpec, ...] = (
+    TrainingTargetSpec(
+        module_path="transformer_blocks.{block}.attn.to_q",
+        blocks=(0, 8),
+        rank=16,
+    ),
+    TrainingTargetSpec(
+        module_path="transformer_blocks.{block}.attn.to_k",
+        blocks=(0, 8),
+        rank=16,
+    ),
+    TrainingTargetSpec(
+        module_path="transformer_blocks.{block}.attn.to_v",
+        blocks=(0, 8),
+        rank=16,
+    ),
+    TrainingTargetSpec(
+        module_path="transformer_blocks.{block}.attn.to_out",
+        blocks=(0, 8),
+        rank=16,
+    ),
+    TrainingTargetSpec(
+        module_path="single_transformer_blocks.{block}.attn.to_out",
+        blocks=(0, 24),
+        rank=16,
+    ),
+)
+
+
 @dataclass(frozen=True, slots=True)
 class TrainingConfig:
     """v0.10 training-specific Model config. Absent (Model.training is
@@ -481,8 +519,8 @@ class Model:
     # v0.11.0: per-Model inference quant default. None = fall through to the
     # global ``DEFAULTS["quantize"]``. A value wins over the global default
     # (but NOT over an explicit --quantize or --preview). flux2-klein-4b
-    # sets 16 (full bf16): its q8 t2i is poor, q16 is excellent — so the
-    # quality default must be q16, not the global 8.
+    # sets 16 (full bf16): its q8 t2i underwhelmed on the prompts we tried,
+    # q16 looked clearly better — so the quality default is q16, not global 8.
     default_quantize: int | None = None
     # Tuple-of-tuples rather than dict — immutable so frozen=True actually
     # IS frozen. Engine code converts to dict at the call boundary.
@@ -875,8 +913,8 @@ BUILTIN_MODELS: dict[str, Model] = {
         default_guidance=1.0,
         min_guidance=1.0,
         max_guidance=1.0,
-        # v0.11.0: q8 t2i is poor on klein-4b, full bf16 (q16) is excellent
-        # (real M2 Pro smoke). As the `imgen draw` default it must default to
+        # v0.11.0: q8 t2i underwhelmed on klein-4b in our M2 Pro smoke, full
+        # bf16 (q16) looked clearly better. As the `imgen draw` default it sets
         # q16 for quality; ~22 GB → 32 GB Mac (preflight gates lower-RAM).
         default_quantize=16,
         # — v0.10.0 commit 2: training enabled —
@@ -919,14 +957,74 @@ BUILTIN_MODELS: dict[str, Model] = {
         ram_baseline_gb=14.0,
         ram_slope_gb_per_mp=4.0,
         encoder_ram_gb=0.0,
-        # Distilled: guidance pinned 1.0 (min=max). q8 t2i was poor on
-        # klein-4b, so default to q16 (full bf16) for edit quality too —
+        # Distilled: guidance pinned 1.0 (min=max). q8 t2i underwhelmed on
+        # klein-4b in our smoke, so default to q16 (full bf16) for edit too —
         # same weights; ~22 GB → 32 GB Mac. Smoke confirms before tag.
         default_steps=20,
         default_guidance=1.0,
         min_guidance=1.0,
         max_guidance=1.0,
         default_quantize=16,
+    ),
+
+    # FLUX.2-klein-9b — v0.11.4: the 9B sibling of flux2-klein-4b, completing
+    # the base/edit × 4b/9b matrix. SAME unified klein-9b weights as the
+    # flux2-klein-edit-9b refine row (no extra download), driven through the
+    # t2i binary mflux-generate-flux2. A heavier, higher-detail t2i than the 4B
+    # default — q8 smoke (2026-05-29) produced a strong photoreal coastal scene
+    # (~20.5 GB resident at q8/1024² on M2 Pro 32 GB). default_quantize=8 (NOT
+    # 16): 9B@q16 ≈ 35-45 GB won't fit 32 GB, and unlike 4B the 9B holds quality
+    # at q8 (more capacity). 48 GB+ users can pass -q 16. Also a 2nd LoRA-training
+    # base (TrainingConfig below) — REAL-SMOKE-GATED per
+    # [[feedback-new-backend-real-smoke]] for BOTH t2i and training.
+    "flux2-klein-9b": Model(
+        engine="mflux",
+        binary="mflux-generate-flux2",
+        needs_token=True,
+        image_flag="--image-path",  # t2i; build_cmd gates emission when
+                                    # input_path is None (klein-4b base pattern).
+        supports_strength=False,
+        supports_negative=False,  # FLUX.2 family deliberately dropped CFG/neg
+        extra_args=("-m", "flux2-klein-9b"),
+        enhance_system_prompt=None,
+        enhance_invariants=(),
+        lora_compat_group="flux2-klein-9b",
+        hf_gated_repo="black-forest-labs/FLUX.2-klein-9B",
+        # ram_baseline is Q8-anchored (per mflux_engine.py). MEASURED: klein-9b
+        # t2i @ q8 / 1024² ≈ 20.5 GB resident (2026-05-29 smoke). baseline=18
+        # → q8/1MP estimate ≈ 22.5 GB (honest: ≥ reality, passes preflight on a
+        # 32 GB Mac). NOTE: this is LOWER than the edit-9b row's 27.0 on the
+        # SAME weights — different workload: t2i@q8@1024² is lighter than
+        # edit@q4@1536-2048². CAVEAT: q16/1024² estimates ~28 GB, but real 9B@q16
+        # is ~35-45 GB (the shared q16-premium constant is 4b-calibrated and
+        # under-models a 9B) → an explicit `-q 16` on a 32 GB Mac may pass the
+        # gate then OOM. q8 is the default + the protected path; q16 is a
+        # 48 GB+ opt-in (documented).
+        ram_baseline_gb=18.0,
+        ram_slope_gb_per_mp=4.0,
+        encoder_ram_gb=0.0,
+        # Distilled FLUX.2 — guidance pinned 1.0 (min=max). q8 t2i looked
+        # strong in our smoke (unlike 4B where q8 underwhelmed), so q8 is the
+        # default quality/RAM sweet spot here; q16 only on 48 GB+.
+        default_steps=20,
+        default_guidance=1.0,
+        min_guidance=1.0,
+        max_guidance=1.0,
+        default_quantize=8,
+        # — v0.11.4: 2nd training base —
+        training=TrainingConfig(
+            # MEASURED (M2 Pro 32 GB smoke, 2026-05-29, q8/512/rank16/low_ram):
+            # the real training STEP peaks ~37.6 GB resident + ~18.6 GB swap.
+            # NOTE the trap that bit us: the schedule-warmup phase sits at a
+            # misleading ~20 GB — the true peak is the forward+backward+
+            # optimizer training step, NOT the warmup. At ~50 s/it that's an
+            # ~8× swap-thrash slowdown on 32 GB → klein-9b training WORKS but
+            # is NOT productive on 32 GB; 48 GB+ runs it cleanly (matches the
+            # colleague's "swaps on 48 GB"). 42.0 keeps the preflight gate
+            # appropriately protective (need ~45 > 32 → --force for the brave).
+            training_peak_ram_gb=42.0,
+            target_modules=_KLEIN_9B_TARGET_MODULES,
+        ),
     ),
 
     # FLUX.2-klein-edit-9b — Hires-Fix refine default (name unchanged at 4b).
@@ -951,6 +1049,10 @@ BUILTIN_MODELS: dict[str, Model] = {
         #   baseline = (23 - 4*2.36 - 0.5) / 0.5 ≈ 27.0
         # Verified: 27*0.5 + 4*2.36 + 0 + 0.5 = 23.4 GB ≈ 23 ✓
         #           27*0.5 + 4*4.19 + 0 + 0.5 = 30.76 GB ≈ 30 ✓
+        # NOTE: the flux2-klein-9b t2i row (v0.11.4) shares these 9B weights
+        # but uses a LOWER ram_baseline (18.0) — intentionally, its workload
+        # (t2i@q8@1024²) is lighter than this edit row's (q4@1536-2048²). Keep
+        # the two calibrated independently; they are NOT meant to match.
         ram_baseline_gb=27.0,
         ram_slope_gb_per_mp=4.0,
         encoder_ram_gb=0.0,

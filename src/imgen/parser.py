@@ -752,7 +752,8 @@ def build_parser(
     t = sub.add_parser(
         "train",
         help="Train a LoRA adapter from a dataset of images. "
-             "v0.10.0+ — uses mflux-train via flux2-klein-4b base.",
+             "v0.10.0+ — uses mflux-train; bases flux2-klein-4b (default) "
+             "or flux2-klein-9b (v0.11.4, 48 GB+).",
     )
     _add_train_args(t, defaults)
 
@@ -1395,8 +1396,8 @@ def _add_train_args(
     # here is the sentinel for "no CLI override".
     p.add_argument(
         "--base", type=str, default="flux2-klein-4b", metavar="NAME",
-        help="Training base model (default flux2-klein-4b). v0.10.0 "
-             "ships klein-4b only; other bases trigger-gated for v0.10.x.",
+        help="Training base model (default flux2-klein-4b). v0.11.4 also "
+             "supports flux2-klein-9b (heavier; 48 GB+ — thrashes on 32 GB).",
     )
     p.add_argument(
         "--steps", type=_int_range(50, 5000), default=None,

@@ -210,6 +210,8 @@ class TestBuiltinModelsLiteral:
             # v0.11.1 (V-2): klein-4b in edit/i2i mode for LoRA-driven
             # restyle of an input photo.
             "flux2-klein-4b-edit",
+            # v0.11.4: klein-9b t2i + 2nd training base.
+            "flux2-klein-9b",
         }
 
     def test_builtin_models_engine_routing(self):
@@ -226,6 +228,7 @@ class TestBuiltinModelsLiteral:
             "ltx-video": "diffusers_mps",
             "flux2-klein-4b": "mflux",
             "flux2-klein-4b-edit": "mflux",
+            "flux2-klein-9b": "mflux",
         }
         for name, m in BUILTIN_MODELS.items():
             assert m.engine == expected_engines[name], (
@@ -273,6 +276,8 @@ class TestBuiltinModelsLiteral:
             "flux2-klein-4b",
             # v0.11.1 (V-2): klein-4b edit/i2i row; no v0.7 alias.
             "flux2-klein-4b-edit",
+            # v0.11.4: klein-9b t2i + 2nd training base; no v0.7 alias.
+            "flux2-klein-9b",
         }
 
     def test_backend_from_model_preserves_v07_shape(self):
@@ -484,6 +489,89 @@ class TestFlux2Klein4bEditRow:
         assert BUILTIN_MODELS["flux2-klein-4b-edit"].training is None
 
 
+class TestFlux2Klein9bRow:
+    """v0.11.4: ``flux2-klein-9b`` — the 9B sibling of flux2-klein-4b,
+    completing the base/edit × 4b/9b matrix. t2i via mflux-generate-flux2
+    AND a 2nd LoRA-training base. Same unified 9B weights as the edit-9b
+    refine row. REAL-SMOKE-GATED (t2i + training) per
+    [[feedback-new-backend-real-smoke]]."""
+
+    def test_in_registry(self):
+        from imgen.models import BUILTIN_MODELS
+        assert "flux2-klein-9b" in BUILTIN_MODELS
+
+    def test_uses_t2i_binary_with_klein_9b_base(self):
+        from imgen.models import BUILTIN_MODELS
+        m = BUILTIN_MODELS["flux2-klein-9b"]
+        assert m.binary == "mflux-generate-flux2"
+        assert m.extra_args == ("-m", "flux2-klein-9b")
+
+    def test_default_quantize_is_8_not_16(self):
+        """Unlike the 4B rows (q16 default), 9B@q16 won't fit 32 GB and
+        9B holds quality at q8 (smoke) → q8 is the default sweet spot."""
+        from imgen.models import BUILTIN_MODELS
+        assert BUILTIN_MODELS["flux2-klein-9b"].default_quantize == 8
+
+    def test_distilled_no_cfg_no_negatives(self):
+        from imgen.models import BUILTIN_MODELS
+        m = BUILTIN_MODELS["flux2-klein-9b"]
+        assert m.supports_negative is False
+        assert m.min_guidance == 1.0 == m.max_guidance == m.default_guidance
+
+    def test_lora_compat_group_matches_edit_9b(self):
+        """Same 9B compat group as the edit-9b row (distinct from 4B) — a
+        9B LoRA loads on either 9B row, never on a 4B model."""
+        from imgen.models import BUILTIN_MODELS
+        m = BUILTIN_MODELS["flux2-klein-9b"]
+        assert m.lora_compat_group == "flux2-klein-9b"
+        assert m.lora_compat_group == BUILTIN_MODELS["flux2-klein-edit-9b"].lora_compat_group
+
+    def test_gated_repo_and_token(self):
+        from imgen.models import BUILTIN_MODELS
+        m = BUILTIN_MODELS["flux2-klein-9b"]
+        assert m.needs_token is True
+        assert m.hf_gated_repo == "black-forest-labs/FLUX.2-klein-9B"
+
+    def test_is_a_training_target(self):
+        from imgen.models import BUILTIN_MODELS
+        m = BUILTIN_MODELS["flux2-klein-9b"]
+        assert m.training is not None
+        assert m.training_supported is True
+
+    def test_training_target_modules_use_9b_block_counts(self):
+        """klein-9b transformer has num_layers=8 (double) + num_single_layers=24
+        per the cached config.json; BlockRange end is EXCLUSIVE so the targets
+        must be (0,8) / (0,24). Wrong counts crash at LoRA injection (§M.1
+        IndexError lesson) — locked here AND smoke-gated."""
+        from imgen.models import BUILTIN_MODELS
+        targets = BUILTIN_MODELS["flux2-klein-9b"].training.target_modules
+        double = [t for t in targets if t.module_path.startswith("transformer_blocks")]
+        single = [t for t in targets if t.module_path.startswith("single_transformer_blocks")]
+        assert all(t.blocks == (0, 8) for t in double), [t.blocks for t in double]
+        assert len(double) == 4  # to_q/to_k/to_v/to_out
+        assert all(t.blocks == (0, 24) for t in single)
+        assert len(single) == 1  # single blocks expose only to_out
+
+    def test_training_peak_ram_is_a_positive_estimate(self):
+        """Measured ~37.6 GB resident peak on the M2 Pro smoke; gate value
+        42 GB. Must exceed the 4b training peak (9B is heavier)."""
+        from imgen.models import BUILTIN_MODELS
+        peak = BUILTIN_MODELS["flux2-klein-9b"].training.training_peak_ram_gb
+        assert peak > BUILTIN_MODELS["flux2-klein-4b"].training.training_peak_ram_gb
+
+    def test_t2i_q8_preflight_estimate_fits_32gb(self):
+        """Calibration lock: the DEFAULT t2i path (q8/1024²) must NOT
+        false-block on a 32 GB Mac. The smoke measured ~20.5 GB resident;
+        ram_baseline=18 → ~22.5 GB estimate. Guard band: ≥ ~20 (don't
+        under-estimate below reality) and low enough to pass preflight
+        (estimate + ~3 GB safety ≤ 32). A regression to the edit-9b's
+        baseline=27 would push this to ~31.5 and false-block — this test
+        catches that."""
+        from imgen.checks import ram_required_gb
+        est = ram_required_gb("flux2-klein-9b", 8, 1.0)
+        assert 20.0 <= est <= 25.0, f"klein-9b q8/1MP estimate {est} off-band"
+
+
 class TestModelTrainingField:
     """v0.10.0 commit 1 — ``Model.training: TrainingConfig | None``
     nested field per [[project-v100-design]] §R.1 ROUND-1 CLOSURES.
@@ -555,10 +643,10 @@ class TestModelTrainingField:
         the v0.10 cross-rule in __post_init__ is a no-op for them."""
         from imgen.models import BUILTIN_MODELS
         for name, m in BUILTIN_MODELS.items():
-            # All v0.9 rows default training=None until commit 2 adds
-            # the klein-4b row with training=TrainingConfig(...).
-            if name == "flux2-klein-4b":
-                # commit 2 will set training= on this row
+            # The trainable rows set training=TrainingConfig(...):
+            # flux2-klein-4b (v0.10 commit 2) + flux2-klein-9b (v0.11.4,
+            # 2nd training base). Every other built-in defaults to None.
+            if name in ("flux2-klein-4b", "flux2-klein-9b"):
                 continue
             assert m.training is None, (
                 f"v0.9 builtin {name!r} unexpectedly has training set"
@@ -614,6 +702,16 @@ class TestModelsForCompatGroups:
         assert models_for_compat_groups(("flux2-klein-4b",)) == [
             "flux2-klein-4b",
             "flux2-klein-4b-edit",
+        ]
+
+    def test_klein_9b_group_maps_to_both_klein_9b_models(self):
+        """v0.11.4: symmetric to the 4b pair — the flux2-klein-9b compat
+        group now spans the new t2i base AND the edit-9b refine row, so a
+        9B LoRA's incompat warn / --list-loras hint suggests either. Sorted."""
+        from imgen.models import models_for_compat_groups
+        assert models_for_compat_groups(("flux2-klein-9b",)) == [
+            "flux2-klein-9b",
+            "flux2-klein-edit-9b",
         ]
 
     def test_unknown_group_maps_to_empty(self):

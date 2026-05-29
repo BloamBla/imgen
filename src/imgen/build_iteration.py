@@ -418,7 +418,8 @@ def _resolve_iteration_params(
         final_quantize = 0
     elif model is not None and model.default_quantize is not None:
         # v0.11.0: per-Model inference quant default (flux2-klein-4b → 16
-        # full bf16, since its q8 t2i is poor). Wins over the global
+        # full bf16, since its q8 t2i underwhelmed in our smoke and q16
+        # looked clearly better). Wins over the global
         # default but NOT over an explicit --quantize or --preview.
         final_quantize = model.default_quantize
     else:

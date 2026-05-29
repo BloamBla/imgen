@@ -613,11 +613,13 @@ def cmd_train(args) -> int:
     except (KeyError, ValueError) as e:
         die(str(e), code=2)
     if model.training is None:
+        from ..models import BUILTIN_MODELS
+        trainable = sorted(
+            n for n, m in BUILTIN_MODELS.items() if m.training_supported
+        )
         die(
             f"--base {args.base!r} does not support training. "
-            "v0.10.0 ships training only for `flux2-klein-4b`. "
-            "Other bases will be enabled in v0.10.x as smoke results "
-            "land.",
+            f"Trainable bases: {', '.join(trainable)}.",
             code=2,
         )
     tc = model.training

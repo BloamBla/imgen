@@ -250,8 +250,9 @@ def test_backends_models_no_circular_import():
             "from imgen.models import BUILTIN_MODELS; "
             # v0.9 commit 7: ltx-video → 5. v0.10 commit 2:
             # flux2-klein-4b → 6. v0.11.1 (V-2): flux2-klein-4b-edit → 7.
-            "assert len(BUILTIN_BACKENDS) == 7; "
-            "assert len(BUILTIN_MODELS) == 7; "
+            # v0.11.4: flux2-klein-9b → 8.
+            "assert len(BUILTIN_BACKENDS) == 8; "
+            "assert len(BUILTIN_MODELS) == 8; "
             "print('ok')"
         )],
         capture_output=True, text=True, timeout=30,

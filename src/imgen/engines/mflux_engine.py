@@ -31,12 +31,13 @@ __all__ = ["MfluxEngine"]
 # Used by MfluxEngine.ram_estimate_gb so --quantize 16 isn't over-blocked.
 #
 # Calibrated from ONE smoke (klein-4b q8→q16 ≈ +3 GB on a 14 GB baseline).
-# Safe FLOOR for the registry: bigger bases have a larger baseline, and
-# this premium scales WITH baseline — so a heavier model's q16 estimate
-# grows proportionally and correctly BLOCKS on 32 GB (klein-9b q16 ≈ 40 GB
-# → blocked, as it should be). The risk is only forward: a FUTURE model
-# whose true weight-fraction exceeds ~0.3 could be slightly under-estimated
-# — re-smoke + refine this when a 2nd bf16-practical base lands.
+# LIMITATION (v0.11.4): this 4b-calibrated 0.3 fraction UNDER-models a 9B at
+# q16. The flux2-klein-9b t2i row (baseline=18) estimates q16/1024² ≈ 28 GB,
+# but real 9B@q16 is ~35-45 GB → an explicit `-q 16` on a 32 GB Mac can pass
+# the gate then OOM (it does NOT reliably block — see the flux2-klein-9b row
+# caveat in models.py). q8 is the default + protected path; q16 is a
+# documented 48 GB+ opt-in. Proper fix = a per-model q16 premium (or hard
+# cap) — tracked in [[project-v10x-backlog]].
 _BF16_WEIGHT_PREMIUM_FRAC: float = 0.3
 
 
