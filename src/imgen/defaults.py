@@ -35,7 +35,15 @@ DEFAULTS = {
     # `[defaults] backend = ...` (DEPRECATED warn-and-bridge) and
     # `[defaults] model = ...` (preferred) through the v0.8.x
     # deprecation window; v0.9.0 drops the legacy key.
-    "model": "flux-kontext",
+    # v0.11.2: i2i default (generate/batch) flipped flux-kontext →
+    # flux2-klein-4b-edit (FLUX.2 migration; FLUX.1 weights no longer
+    # cached by default). flux-kontext stays SELECTABLE via
+    # `--model flux-kontext` (re-downloads on demand) for its tuned
+    # identity-anchor restyle contract; klein-4b-edit additionally lets a
+    # klein-4b LoRA (e.g. `stas`) edit an input photo. NOTE: klein-4b-edit
+    # ships enhance_system_prompt=None — no Kontext identity-anchor enhance
+    # contract yet (validate no-LoRA restyle quality; see v0.11.2 smoke).
+    "model": "flux2-klein-4b-edit",
     # t2i default for `imgen draw`. Its own config key (NOT covered by
     # the `backend`→`model` rename; architect HIGH-1, 4a pre-vet).
     # v0.11.0: flipped flux-dev → flux2-klein-4b (FLUX.2 migration). The

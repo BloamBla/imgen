@@ -525,8 +525,9 @@ def _format_incompat_warn(
 
     P2: names the ``--model`` that WOULD load the LoRA (mapped from its
     compat group) so a silently-skipped LoRA always tells the user how
-    to fix it — the trap being a klein-4b LoRA passed on the
-    flux-kontext / flux-dev default, filtered out before a long run.
+    to fix it — e.g. a flux-1 (Kontext) LoRA passed on the
+    flux2-klein-4b-edit i2i default (v0.11.2+), or a klein-4b LoRA on
+    --model flux-kontext, filtered out before a long run.
     Falls back to naming the group when no built-in model matches.
     """
     from .models import models_for_compat_groups
@@ -1221,8 +1222,9 @@ def build_bare_i2i_iteration(
         seed=seed,
         style_name=style_name,
         # P2 + P3: this is the bare `imgen <photo> --custom-prompt --lora`
-        # path — the exact trap (a klein-4b --lora silently skipped on the
-        # flux-kontext default). Surface incompat warn + trigger note.
+        # path — the incompat trap (e.g. a flux-1 --lora silently skipped on
+        # the flux2-klein-4b-edit i2i default since v0.11.2). Surface incompat
+        # warn + trigger note.
         lora_feedback_seen=set(),
     )
 

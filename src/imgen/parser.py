@@ -867,7 +867,8 @@ def _add_generate_args(
     # at 4b — registry source-of-truth flipped to BUILTIN_MODELS, args
     # attribute matches the CLI flag. v0.8.0 commit 5 promoted the
     # internal default key to v0.8 canonical form too (defaults.py
-    # ships ``DEFAULTS["model"] = "flux-kontext"``), so the value
+    # ships ``DEFAULTS["model"] = "flux2-klein-4b-edit"`` since v0.11.2),
+    # so the value
     # reaches argparse as a v0.8 name — ``_resolve_v07_alias`` passes
     # it through cleanly with no pre-translation needed.
     _model_default = defaults["model"]
@@ -1192,8 +1193,8 @@ def _add_refine_args(
         default="flux2-klein-edit-9b", metavar="NAME",
         help="Model (default flux2-klein-edit-9b — FLUX.2-klein-9B distilled "
              "edit variant). Override with --model flux-kontext to use "
-             "FLUX.1-Kontext-dev (faster, already cached, lower native res "
-             "ceiling).",
+             "FLUX.1-Kontext-dev (faster, lower native res ceiling; weights "
+             "re-download on first use since v0.11.2 dropped FLUX.1 from cache).",
     )
     p.add_argument(
         "-q", "--quantize", type=int, choices=[3, 4, 5, 6, 8, 16],

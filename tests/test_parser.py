@@ -838,17 +838,18 @@ class TestNoModelFlagDefault:
         from imgen.parser import build_parser
         parser = build_parser()
         args = parser.parse_args(["generate", "photo.jpg"])
-        # DEFAULTS["backend"] = "flux" → pre-translated to
-        # "flux-kontext" via _v07_default_to_v08_for_i2i, fed as
-        # argparse default → resolver returns it unchanged (v0.8
-        # canonical in registry).
-        assert args.model == "flux-kontext"
+        # v0.11.2: i2i default (generate/batch) flipped flux-kontext →
+        # flux2-klein-4b-edit (FLUX.2 migration; FLUX.1 weights no longer
+        # cached by default). Sourced from DEFAULTS["model"]; already
+        # v0.8-canonical in the registry, so the resolver returns it
+        # unchanged. flux-kontext stays selectable via --model.
+        assert args.model == "flux2-klein-4b-edit"
 
     def test_batch_no_model_resolves_to_v08_default(self):
         from imgen.parser import build_parser
         parser = build_parser()
         args = parser.parse_args(["batch", "/tmp/dir"])
-        assert args.model == "flux-kontext"
+        assert args.model == "flux2-klein-4b-edit"
 
     def test_draw_no_model_resolves_to_backend_draw_default(self):
         """draw's default is ``defaults["backend_draw"]``, which v0.11.0
