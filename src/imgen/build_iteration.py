@@ -372,7 +372,12 @@ def _resolve_iteration_params(
                        preset is a style preset, not a CLI override;
                        v0.6.2 design lock-in)
       * ``quantize`` : CLI > preview > bf16-only(0) > model.default_quantize > merged_defaults
-      * ``guidance`` : CLI > preset > model.default_guidance > merged_defaults
+      * ``guidance`` : CLI > pinned-model.default_guidance > preset >
+                       model.default_guidance > merged_defaults
+                       (v0.11.3: a guidance-pinned model — distilled,
+                       min==max, e.g. klein → 1.0 — overrides a *preset's*
+                       guidance to avoid out-of-range hard-fail; an explicit
+                       CLI --guidance still wins and is rejected by validate)
       * ``strength`` : CLI > preset > merged_defaults
 
     v0.8.0 commit 7 (§M) added the per-Model default_steps /
@@ -421,6 +426,21 @@ def _resolve_iteration_params(
 
     if args.guidance is not None:
         final_guidance = args.guidance
+    elif (
+        model is not None
+        and model.min_guidance == model.max_guidance
+        and preset.guidance is not None
+    ):
+        # v0.11.3: a distilled model pins guidance (klein → min==max==1.0).
+        # A style preset's guidance is tuned for flux-1/Kontext (e.g.
+        # anime=4.0) and would be out-of-range → hard-fail validation
+        # ("--guidance 4.0 out of range [1.0, 1.0]"). Since v0.11.2 made
+        # flux2-klein-4b-edit the i2i default, `imgen <photo> --style anime`
+        # hit exactly that crash. The pinned model's value wins over the
+        # preset (graceful: the style's incompat flux-1 LoRA is skipped with
+        # an actionable warn anyway). An explicit CLI --guidance still flows
+        # through the branch above and is (intentionally, §M) rejected.
+        final_guidance = model.default_guidance
     elif preset.guidance is not None:
         final_guidance = preset.guidance
     elif model is not None:

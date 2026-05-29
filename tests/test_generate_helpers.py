@@ -1359,6 +1359,63 @@ def test_build_iterations_guidance_falls_back_to_defaults(
     )
 
 
+def test_build_iterations_guidance_preset_yields_to_pinned_model(
+    fake_styles, tmp_path
+):
+    """v0.11.3: a style preset's guidance (tuned for flux-1, e.g. anime=4.0)
+    must NOT override a distilled model that pins guidance (klein → 1.0).
+    Before the fix it did, and `imgen <photo> --style anime` on the
+    v0.11.2 default flux2-klein-4b-edit hard-failed validation
+    ('--guidance 4.0 out of range [1.0, 1.0]'). The pinned model's value
+    wins over the preset; an explicit CLI --guidance still flows through
+    the higher-precedence branch and is rejected by validate (§M intent)."""
+    fake_styles["anime"] = Style(prompt="x", guidance=4.0)
+
+    its = _build(
+        fake_styles=fake_styles,
+        tmp_path=tmp_path,
+        args=_build_args(model="flux2-klein-4b-edit"),
+    )
+
+    assert its[0].final_guidance == pytest.approx(1.0)
+
+
+def test_build_iterations_guidance_preset_survives_on_unpinned_model(
+    fake_styles, tmp_path
+):
+    """Contrast: on a non-pinned model (flux-kontext, guidance 1.0–10.0)
+    the preset guidance is honored — the pinned-model clamp must not
+    over-reach to models that genuinely accept a CFG range."""
+    fake_styles["anime"] = Style(prompt="x", guidance=4.0)
+
+    its = _build(
+        fake_styles=fake_styles,
+        tmp_path=tmp_path,
+        args=_build_args(model="flux-kontext"),
+    )
+
+    assert its[0].final_guidance == pytest.approx(4.0)
+
+
+def test_build_iterations_explicit_cli_guidance_on_pinned_model_still_rejected(
+    fake_styles, tmp_path
+):
+    """§M invariant: the v0.11.3 pinned-model clamp must NOT swallow an
+    explicit CLI --guidance. A user who explicitly passes --guidance 4.0 on
+    a distilled model (klein, pinned 1.0) should still hit the validation
+    error — the clamp only overrides a *preset's* guidance, never the CLI's.
+    Guards against a future refactor moving the pinned branch above the CLI
+    branch (which would silently clamp explicit requests instead of erroring)."""
+    fake_styles["anime"] = Style(prompt="x")
+
+    with pytest.raises(SystemExit):
+        _build(
+            fake_styles=fake_styles,
+            tmp_path=tmp_path,
+            args=_build_args(model="flux2-klein-4b-edit", guidance=4.0),
+        )
+
+
 def test_build_iterations_strength_cli_beats_preset(fake_styles, tmp_path):
     fake_styles["anime"] = Style(prompt="x", strength=0.55)
 

@@ -16,4 +16,4 @@ mflux + MLX; video path via HuggingFace ``diffusers`` on MPS in a
 separate ``.venv-diffusers/`` to avoid the torch ↔ MLX conflict.
 """
 
-__version__ = "0.11.2"
+__version__ = "0.11.3"
